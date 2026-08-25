@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nostalgia — Layout Sandbox</title>
+    <style>
+      :root {
+        --bg: #1c1a17;
+        --panel: #262320;
+        --ink: #f3ece0;
+        --muted: #a99e8d;
+        --accent: #c9a227;
+        --line: #3a352f;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        min-height: 100vh;
+      }
+      .sidebar {
+        width: 320px;
+        flex-shrink: 0;
+        background: var(--panel);
+        border-right: 1px solid var(--line);
+        padding: 16px;
+        overflow-y: auto;
+        height: 100vh;
+      }
+      .stage {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        overflow: auto;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      .sub { color: var(--muted); font-size: 12px; margin: 0 0 16px; line-height: 1.4; }
+      .group { margin-bottom: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+      .group:first-of-type { border-top: none; padding-top: 0; }
+      .group h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 10px; }
+      label { display: block; font-size: 13px; margin: 8px 0 4px; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .row > * { flex: 1; }
+      button {
+        background: #34302a;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      button:hover { background: #423c34; }
+      button.primary { background: var(--accent); color: #2a2113; border-color: var(--accent); font-weight: 600; }
+      button.primary:hover { background: #d9b237; }
+      button.active { outline: 2px solid var(--accent); }
+      input[type="number"], select {
+        width: 100%;
+        background: #1a1815;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 13px;
+      }
+      input[type="range"] { width: 100%; }
+      .seg { display: flex; gap: 4px; }
+      .seg button { flex: 1; padding: 6px; }
+      canvas {
+        background: #fff;
+        box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+        max-width: 100%;
+        max-height: 88vh;
+        cursor: grab;
+      }
+      canvas.dragging { cursor: grabbing; }
+      .cell-btns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+      .cell-btn { position: relative; }
+      .cell-btn .badge { position: absolute; top: 2px; left: 4px; font-size: 9px; color: var(--accent); }
+      .hint { font-size: 11px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+      textarea {
+        width: 100%; height: 140px; background: #14120f; color: #cfe6c0;
+        border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+        font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+        white-space: pre; overflow: auto;
+      }
+      .pill { display: inline-block; font-size: 11px; background: #34302a; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; margin: 2px 2px 0 0; }
+    </style>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <h1>Layout Sandbox</h1>
+      <p class="sub">
+        Arrange your captures in the cells exactly how the print should
+        look, then hit <b>Copy spec</b> and paste it back in chat (or
+        just screenshot the canvas). The print sheet shown here matches
+        the DS-RX1's real imageable area.
+      </p>
+
+      <div class="group">
+        <h2>Sheet</h2>
+        <label>Orientation</label>
+        <div class="seg">
+          <button id="ori-portrait" class="active">Portrait 4×6</button>
+          <button id="ori-landscape">Landscape 6×4</button>
+        </div>
+        <label>Grid (rows × cols)</label>
+        <div class="row">
+          <input type="number" id="rows" value="2" min="1" max="4" />
+          <input type="number" id="cols" value="2" min="1" max="4" />
+        </div>
+        <label>Cell gap (px on the real sheet)</label>
+        <input type="number" id="gap" value="24" min="0" max="200" />
+        <label>Outer margin (px)</label>
+        <input type="number" id="margin" value="24" min="0" max="300" />
+        <div class="hint">2×2 default matches the 2×2 Layout template. Change rows/cols to mock other templates.</div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-weight:600;">
+          <input type="checkbox" id="showCut" style="width:auto;margin:0;" />
+          Show 2-inch cut line
+        </label>
+        <div class="hint">The DS-RX1 cuts a 4×6 down the middle into two 2×6 strips (vertical cut on portrait, horizontal on landscape). Both halves print identically — design one strip per half.</div>
+      </div>
+
+      <div class="group">
+        <h2>Cells — click to select</h2>
+        <div class="cell-btns" id="cellBtns"></div>
+        <div class="hint" id="selInfo">Select a cell, then load a photo into it.</div>
+      </div>
+
+      <div class="group" id="cellControls" style="display:none">
+        <h2>Selected cell</h2>
+        <button id="loadPhoto" class="primary" style="width:100%">Load photo into this cell</button>
+        <label>Fit</label>
+        <div class="seg">
+          <button id="fit-cover" class="active">Cover (fill+crop)</button>
+          <button id="fit-contain">Contain (fit+margins)</button>
+        </div>
+        <label>Rotate</label>
+        <div class="seg">
+          <button data-rot="0" class="active">0°</button>
+          <button data-rot="90">90°</button>
+          <button data-rot="180">180°</button>
+          <button data-rot="270">270°</button>
+        </div>
+        <label>Zoom <span id="zoomVal">100%</span></label>
+        <input type="range" id="zoom" min="50" max="300" value="100" />
+        <div class="hint">Drag the photo on the canvas to pan it within the cell.</div>
+      </div>
+
+      <div class="group">
+        <h2>Frame overlay</h2>
+        <div class="row">
+          <button id="loadFrame">Load frame PNG</button>
+          <button id="clearFrame">Clear</button>
+        </div>
+        <div class="hint" id="frameInfo">Tries to auto-load the 2×2 template frame. If it doesn't appear, click "Load frame PNG" and pick <b>public/strip-frame/2x2 Layout.png</b>.</div>
+        <label>Frame position</label>
+        <div class="seg">
+          <button id="frame-over" class="active">On top</button>
+          <button id="frame-under">Behind photos</button>
+        </div>
+        <label>Frame opacity <span id="frameOpacityVal">100%</span></label>
+        <input type="range" id="frameOpacity" min="0" max="100" value="100" />
+        <div class="hint">"On top" suits frames with transparent photo windows; "Behind photos" suits frames whose slots are solid cream. Lower opacity to check cell alignment.</div>
+      </div>
+
+      <div class="group">
+        <h2>Export</h2>
+        <div class="row">
+          <button id="copySpec" class="primary">Copy spec</button>
+          <button id="downloadPng">Download PNG</button>
+        </div>
+        <textarea id="spec" readonly placeholder="Spec appears here after you arrange the cells…"></textarea>
+      </div>
+    </aside>
+
+    <main class="stage">
+      <canvas id="c"></canvas>
+    </main>
+
+    <input type="file" id="fileInput" accept="image/*" style="display:none" />
+
+    <script>
+      // ── Logical sheet dimensions (DS-RX1 true imageable area) ──
+      const SHEETS = {
+        portrait: { w: 1240, h: 1844 },
+        landscape: { w: 1844, h: 1240 },
+      };
+
+      const state = {
+        orientation: "portrait",
+        rows: 2,
+        cols: 2,
+        gap: 24,
+        margin: 24,
+        showCut: false, // draw the DS-RX1 2-inch cut line down the middle
+        cells: [], // { img, fit, rot, zoom, panX, panY }  (panX/panY in cell-fraction)
+        selected: 0,
+        frameImg: null, // overlay PNG (e.g. 2×2 Layout.png)
+        frameMode: "over", // "over" = draw on top, "under" = behind photos
+        frameOpacity: 1,
+      };
+
+      const canvas = document.getElementById("c");
+      const ctx = canvas.getContext("2d");
+      let displayScale = 1;
+
+      function sheet() {
+        return SHEETS[state.orientation];
+      }
+
+      function cellCount() {
+        return state.rows * state.cols;
+      }
+
+      function ensureCells() {
+        const n = cellCount();
+        while (state.cells.length < n) {
+          state.cells.push({ img: null, fit: "cover", rot: 0, zoom: 1, panX: 0.5, panY: 0.5 });
+        }
+        state.cells.length = n;
+        if (state.selected >= n) state.selected = 0;
+      }
+
+      function cellRects() {
+        const s = sheet();
+        const { rows, cols, gap, margin } = state;
+        const innerW = s.w - margin * 2 - gap * (cols - 1);
+        const innerH = s.h - margin * 2 - gap * (rows - 1);
+        const cw = innerW / cols;
+        const ch = innerH / rows;
+        const rects = [];
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            rects.push({
+              x: margin + c * (cw + gap),
+              y: margin + r * (ch + gap),
+              w: cw,
+              h: ch,
+            });
+          }
+        }
+        return rects;
+      }
+
+      function layout() {
+        const s = sheet();
+        // Fit the display canvas to the viewport while keeping logical coords.
+        const maxH = Math.min(window.innerHeight * 0.88, 900);
+        const maxW = Math.min(window.innerWidth - 360, 1100);
+        displayScale = Math.min(maxW / s.w, maxH / s.h);
+        canvas.width = s.w;
+        canvas.height = s.h;
+        canvas.style.width = s.w * displayScale + "px";
+        canvas.style.height = s.h * displayScale + "px";
+      }
+
+      function drawFrame() {
+        if (!state.frameImg) return;
+        const s = sheet();
+        ctx.save();
+        ctx.globalAlpha = state.frameOpacity;
+        ctx.drawImage(state.frameImg, 0, 0, s.w, s.h);
+        ctx.restore();
+      }
+
+      // The DS-RX1 2-inch cut halves the 4" (1240 px) dimension, yielding
+      // two 2×6 strips. On a portrait 4×6 that's a VERTICAL cut at the
+      // horizontal middle; on a landscape 6×4 it's a HORIZONTAL cut at
+      // the vertical middle. This is a guide only — not part of the print.
+      function drawCutLine() {
+        if (!state.showCut) return;
+        const s = sheet();
+        const portrait = s.w <= s.h;
+        ctx.save();
+        ctx.strokeStyle = "#e0202a";
+        ctx.lineWidth = 4;
+        ctx.setLineDash([26, 16]);
+        ctx.beginPath();
+        if (portrait) {
+          const x = Math.round(s.w / 2);
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, s.h);
+        } else {
+          const y = Math.round(s.h / 2);
+          ctx.moveTo(0, y);
+          ctx.lineTo(s.w, y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#e0202a";
+        ctx.font = "bold 30px sans-serif";
+        if (portrait) ctx.fillText("✂ 2-inch cut", s.w / 2 + 14, 42);
+        else ctx.fillText("✂ 2-inch cut", 14, s.h / 2 - 14);
+        ctx.restore();
+      }
+
+      function draw() {
+        const s = sheet();
+        ctx.clearRect(0, 0, s.w, s.h);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, s.w, s.h);
+
+        // Frame drawn BEHIND photos when in "under" mode.
+        if (state.frameImg && state.frameMode === "under") drawFrame();
+
+        const rects = cellRects();
+        rects.forEach((rect, i) => {
+          const cell = state.cells[i];
+          // Cell background
+          ctx.fillStyle = "#efe9dc";
+          ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+
+          if (cell && cell.img) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(rect.x, rect.y, rect.w, rect.h);
+            ctx.clip();
+            drawPhotoInCell(cell, rect);
+            ctx.restore();
+          }
+        });
+
+        // Frame drawn ON TOP of photos when in "over" mode.
+        if (state.frameImg && state.frameMode === "over") drawFrame();
+
+        // Sandbox UI helpers (index labels + selection) on top of
+        // everything so you can still see/select cells through the
+        // frame. These are NOT part of the final print.
+        rects.forEach((rect, i) => {
+          ctx.fillStyle = "rgba(0,0,0,0.45)";
+          ctx.font = "bold 28px sans-serif";
+          ctx.fillText(String(i + 1), rect.x + 10, rect.y + 36);
+          ctx.lineWidth = i === state.selected ? 8 : 2;
+          ctx.strokeStyle = i === state.selected ? "#c9a227" : "rgba(0,0,0,0.25)";
+          ctx.strokeRect(rect.x + ctx.lineWidth / 2, rect.y + ctx.lineWidth / 2, rect.w - ctx.lineWidth, rect.h - ctx.lineWidth);
+        });
+
+        // 2-inch cut guide on top of everything.
+        drawCutLine();
+        updateSpec();
+      }
+
+      function drawPhotoInCell(cell, rect) {
+        const img = cell.img;
+        // Account for 90/270 rotation by swapping the effective image aspect.
+        const rot = (cell.rot % 360 + 360) % 360;
+        const swap = rot === 90 || rot === 270;
+        const iw = swap ? img.naturalHeight : img.naturalWidth;
+        const ih = swap ? img.naturalWidth : img.naturalHeight;
+        const imgAspect = iw / ih;
+        const cellAspect = rect.w / rect.h;
+
+        // Base fit
+        let baseW, baseH;
+        if (cell.fit === "cover") {
+          if (imgAspect > cellAspect) { baseH = rect.h; baseW = rect.h * imgAspect; }
+          else { baseW = rect.w; baseH = rect.w / imgAspect; }
+        } else {
+          if (imgAspect > cellAspect) { baseW = rect.w; baseH = rect.w / imgAspect; }
+          else { baseH = rect.h; baseW = rect.h * imgAspect; }
+        }
+        const dw = baseW * cell.zoom;
+        const dh = baseH * cell.zoom;
+        // Pan: panX/panY are 0..1 fractions of the overflow.
+        const overflowX = dw - rect.w;
+        const overflowY = dh - rect.h;
+        const dx = rect.x - overflowX * cell.panX;
+        const dy = rect.y - overflowY * cell.panY;
+
+        ctx.save();
+        ctx.translate(dx + dw / 2, dy + dh / 2);
+        ctx.rotate((rot * Math.PI) / 180);
+        // When rotated 90/270 the draw box is the unswapped image box.
+        if (swap) {
+          ctx.drawImage(img, -dh / 2, -dw / 2, dh, dw);
+        } else {
+          ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+        }
+        ctx.restore();
+      }
+
+      function updateSpec() {
+        const s = sheet();
+        const rects = cellRects();
+        const spec = {
+          orientation: state.orientation,
+          sheet: { width: s.w, height: s.h },
+          grid: { rows: state.rows, cols: state.cols },
+          gap: state.gap,
+          margin: state.margin,
+          twoInchCut: state.showCut
+            ? {
+                enabled: true,
+                axis: s.w <= s.h ? "vertical" : "horizontal",
+                at: s.w <= s.h ? Math.round(s.w / 2) : Math.round(s.h / 2),
+              }
+            : { enabled: false },
+          cells: rects.map((rect, i) => {
+            const cell = state.cells[i] || {};
+            return {
+              index: i + 1,
+              rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.w), h: Math.round(rect.h) },
+              hasPhoto: !!cell.img,
+              fit: cell.fit,
+              rotation: cell.rot,
+              zoom: Math.round((cell.zoom || 1) * 100) / 100,
+              pan: { x: Math.round((cell.panX ?? 0.5) * 100) / 100, y: Math.round((cell.panY ?? 0.5) * 100) / 100 },
+            };
+          }),
+        };
+        document.getElementById("spec").value = JSON.stringify(spec, null, 2);
+      }
+
+      // ── Cell selector buttons ──
+      function renderCellButtons() {
+        const wrap = document.getElementById("cellBtns");
+        wrap.innerHTML = "";
+        for (let i = 0; i < cellCount(); i++) {
+          const b = document.createElement("button");
+          b.className = "cell-btn" + (i === state.selected ? " active" : "");
+          b.innerHTML = `<span class="badge">${state.cells[i]?.img ? "●" : "○"}</span>Cell ${i + 1}`;
+          b.onclick = () => { state.selected = i; syncControls(); renderCellButtons(); draw(); };
+          wrap.appendChild(b);
+        }
+      }
+
+      function syncControls() {
+        const cell = state.cells[state.selected];
+        document.getElementById("cellControls").style.display = cell ? "block" : "none";
+        if (!cell) return;
+        document.getElementById("fit-cover").classList.toggle("active", cell.fit === "cover");
+        document.getElementById("fit-contain").classList.toggle("active", cell.fit === "contain");
+        document.querySelectorAll("[data-rot]").forEach((el) =>
+          el.classList.toggle("active", Number(el.dataset.rot) === cell.rot),
+        );
+        const z = document.getElementById("zoom");
+        z.value = Math.round((cell.zoom || 1) * 100);
+        document.getElementById("zoomVal").textContent = z.value + "%";
+        document.getElementById("selInfo").textContent = `Cell ${state.selected + 1} selected.`;
+      }
+
+      // ── Controls wiring ──
+      document.getElementById("ori-portrait").onclick = () => setOri("portrait");
+      document.getElementById("ori-landscape").onclick = () => setOri("landscape");
+      function setOri(o) {
+        state.orientation = o;
+        document.getElementById("ori-portrait").classList.toggle("active", o === "portrait");
+        document.getElementById("ori-landscape").classList.toggle("active", o === "landscape");
+        layout(); draw();
+      }
+
+      ["rows", "cols", "gap", "margin"].forEach((id) => {
+        document.getElementById(id).oninput = (e) => {
+          state[id] = Math.max(0, parseInt(e.target.value || "0", 10));
+          ensureCells(); renderCellButtons(); syncControls(); draw();
+        };
+      });
+
+      document.getElementById("showCut").addEventListener("change", (e) => {
+        state.showCut = e.target.checked;
+        draw();
+      });
+
+      document.getElementById("loadPhoto").onclick = () => {
+        document.getElementById("fileInput").click();
+      };
+      document.getElementById("fileInput").onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const img = new Image();
+          img.onload = () => {
+            state.cells[state.selected].img = img;
+            renderCellButtons(); draw();
+          };
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+        e.target.value = "";
+      };
+
+      document.getElementById("fit-cover").onclick = () => { state.cells[state.selected].fit = "cover"; syncControls(); draw(); };
+      document.getElementById("fit-contain").onclick = () => { state.cells[state.selected].fit = "contain"; syncControls(); draw(); };
+      document.querySelectorAll("[data-rot]").forEach((el) => {
+        el.onclick = () => { state.cells[state.selected].rot = Number(el.dataset.rot); syncControls(); draw(); };
+      });
+      document.getElementById("zoom").oninput = (e) => {
+        state.cells[state.selected].zoom = Number(e.target.value) / 100;
+        document.getElementById("zoomVal").textContent = e.target.value + "%";
+        draw();
+      };
+
+      // ── Frame overlay wiring ──
+      const frameInput = document.createElement("input");
+      frameInput.type = "file";
+      frameInput.accept = "image/*";
+      frameInput.style.display = "none";
+      document.body.appendChild(frameInput);
+
+      function loadFrameFromSrc(src, infoText) {
+        const img = new Image();
+        img.onload = () => {
+          state.frameImg = img;
+          document.getElementById("frameInfo").textContent =
+            infoText || `Frame loaded (${img.naturalWidth}×${img.naturalHeight}).`;
+          draw();
+        };
+        img.onerror = () => {
+          document.getElementById("frameInfo").textContent =
+            "Couldn't auto-load the frame — click \"Load frame PNG\" and pick public/strip-frame/2x2 Layout.png.";
+        };
+        img.src = src;
+      }
+
+      document.getElementById("loadFrame").onclick = () => frameInput.click();
+      frameInput.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => loadFrameFromSrc(reader.result, `Frame loaded: ${file.name}`);
+        reader.readAsDataURL(file);
+        e.target.value = "";
+      };
+      document.getElementById("clearFrame").onclick = () => {
+        state.frameImg = null;
+        document.getElementById("frameInfo").textContent = "Frame cleared.";
+        draw();
+      };
+      document.getElementById("frame-over").onclick = () => {
+        state.frameMode = "over";
+        document.getElementById("frame-over").classList.add("active");
+        document.getElementById("frame-under").classList.remove("active");
+        draw();
+      };
+      document.getElementById("frame-under").onclick = () => {
+        state.frameMode = "under";
+        document.getElementById("frame-under").classList.add("active");
+        document.getElementById("frame-over").classList.remove("active");
+        draw();
+      };
+      document.getElementById("frameOpacity").oninput = (e) => {
+        state.frameOpacity = Number(e.target.value) / 100;
+        document.getElementById("frameOpacityVal").textContent = e.target.value + "%";
+        draw();
+      };
+
+      // Try to auto-load the 2×2 template frame relative to this file
+      // (works whether opened via file:// or the dev server). Canvas
+      // may become "tainted" so Download PNG might fail after this —
+      // screenshots still work, and a file-picker load is taint-free.
+      loadFrameFromSrc("../strip-frame/2x2%20Layout.png", "Auto-loaded 2×2 template frame.");
+
+      // ── Pan via drag on canvas ──
+      let dragging = false, lastX = 0, lastY = 0;
+      canvas.addEventListener("mousedown", (e) => {
+        const { cx, cy } = toLogical(e);
+        // Select the cell under the cursor
+        const rects = cellRects();
+        const hit = rects.findIndex((r) => cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h);
+        if (hit >= 0) { state.selected = hit; syncControls(); renderCellButtons(); }
+        dragging = true; lastX = cx; lastY = cy; canvas.classList.add("dragging");
+        draw();
+      });
+      window.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
+        const cell = state.cells[state.selected];
+        if (!cell || !cell.img) return;
+        const { cx, cy } = toLogical(e);
+        const rect = cellRects()[state.selected];
+        // Convert pixel delta into pan-fraction delta (inverted: drag right → see more left)
+        cell.panX = clamp(cell.panX - (cx - lastX) / Math.max(1, rect.w), 0, 1);
+        cell.panY = clamp(cell.panY - (cy - lastY) / Math.max(1, rect.h), 0, 1);
+        lastX = cx; lastY = cy;
+        draw();
+      });
+      window.addEventListener("mouseup", () => { dragging = false; canvas.classList.remove("dragging"); });
+
+      function toLogical(e) {
+        const r = canvas.getBoundingClientRect();
+        return { cx: (e.clientX - r.left) / displayScale, cy: (e.clientY - r.top) / displayScale };
+      }
+      function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+      // ── Export ──
+      document.getElementById("copySpec").onclick = () => {
+        const ta = document.getElementById("spec");
+        ta.select();
+        navigator.clipboard.writeText(ta.value).then(
+          () => { document.getElementById("copySpec").textContent = "Copied!"; setTimeout(() => (document.getElementById("copySpec").textContent = "Copy spec"), 1200); },
+          () => {},
+        );
+      };
+      document.getElementById("downloadPng").onclick = () => {
+        const a = document.createElement("a");
+        a.href = canvas.toDataURL("image/png");
+        a.download = "layout-mockup.png";
+        a.click();
+      };
+
+      window.addEventListener("resize", () => { layout(); draw(); });
+
+      // ── Init ──
+      ensureCells();
+      renderCellButtons();
+      syncControls();
+      layout();
+      draw();
+    </script>
+  </body>
+</html>

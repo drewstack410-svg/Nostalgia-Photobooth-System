@@ -1,0 +1,365 @@
+/* Nostalgia Photobooth — public gallery styles
+ * ---------------------------------------------
+ * Self-contained, no framework. Designed for mobile-first usage
+ * (people land here from a QR code on their phone) but scales up
+ * cleanly on desktop. Warm, bold Nostalgia palette (espresso +
+ * cream + gold) — a big centered title, a borderless preview
+ * "stage" with Template / Grid / GIF tabs, and one obvious primary
+ * action (Save to Camera Roll). */
+
+:root {
+  /* Brand backdrop: the deep green from the Nostalgia logo artwork
+     (#253822 sampled from NOSTALGIA PHOTOBOOTH LOGO.jpg), with the
+     blush wordmark colour as the accent. Replaces the old espresso
+     gradient so the landing page matches the brand. */
+  --bg-top: #2e4029;
+  --bg-bottom: #1a2618;
+  --cream: #f2d4c4;
+  --cream-dim: rgba(242, 212, 196, 0.75);
+  --gold: #e8b49c;
+  --gold-strong: #d2917a;
+  --ink: #1b2619;
+  --stage-bg: #16200f;
+  --thumb-border: rgba(250, 243, 230, 0.18);
+  /* Controls (tabs, save button, secondary link) are plain white rather
+     than the blush wordmark colour — white reads far more clearly on the
+     deep green, and the blush now belongs to the logo alone. */
+  --control: #ffffff;
+  --control-soft: rgba(255, 255, 255, 0.14);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --radius-md: 18px;
+  --radius-pill: 999px;
+  /* Client asked for Helvetica throughout. "Helvetica Neue" first for
+     iOS/macOS (where most scans land), then Helvetica, then Arial as the
+     metric-compatible stand-in on Windows/Android. */
+  --font-display: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-body: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  color: var(--cream);
+  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+}
+
+.page {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 28px 20px 36px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  min-height: 100vh;
+}
+
+.intro {
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+/* Brand wordmark (blush on the green ground). Deliberately small — the
+   photos are the point of this page, not the logo. */
+.intro-logo {
+  display: block;
+  width: min(46%, 190px);
+  height: auto;
+  margin: 4px auto 10px;
+}
+
+/* Keeps the page title for screen readers / SEO now that the visible
+   title is artwork. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.intro-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 28px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  margin: 0 0 6px;
+  color: var(--cream);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  /* Long custom titles shouldn't break the layout */
+  overflow-wrap: break-word;
+}
+
+.intro-subtitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--control);
+}
+
+/* ── Stage: the preview frame ────────────────────────────────────── */
+/* The dashed border was removed at the client's request — the frame is
+   now a plain rounded panel. */
+.stage {
+  position: relative;
+  width: 100%;
+  background: var(--stage-bg);
+  border: none;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  aspect-ratio: 4 / 5;
+}
+
+.stage-share-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--control);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.stage-share-btn:hover {
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.stage-inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.stage-img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: block;
+}
+
+/* Grid preview: a live CSS grid of the individual captures. Rows are
+ * computed inline (see app.js) so 2, 3, 4+ photos all lay out sensibly. */
+.stage-grid {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  gap: 3px;
+  padding: 3px;
+}
+
+.stage-grid img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.stage-loading,
+.stage-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cream-dim);
+  text-align: center;
+  padding: 0 16px;
+  font-size: 14px;
+  background: var(--stage-bg);
+}
+
+/* `display: flex` above outranks the UA `[hidden]{display:none}` rule
+ * (class beats bare attribute) — reassert the hide explicitly. */
+.stage-loading[hidden],
+.stage-error[hidden] {
+  display: none;
+}
+
+.stage-error p {
+  margin: 0;
+}
+
+/* ── Tabs: Template / Grid / GIF segmented pill control ─────────── */
+/* Labels are set in app.js in mixed case; the uppercasing is presentation
+   only, so the JS and the accessible name stay readable. */
+.tabs {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.tab-btn {
+  flex: 1 1 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--control);
+  background: transparent;
+  color: var(--control);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.tab-btn:hover {
+  background: var(--control-soft);
+}
+
+.tab-btn.active {
+  background: var(--control);
+  color: var(--ink);
+}
+
+/* ── Primary action ──────────────────────────────────────────────── */
+.save-btn {
+  width: 100%;
+  padding: 16px 20px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--control);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+}
+
+.save-btn:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.save-btn:active {
+  transform: scale(0.98);
+}
+
+.save-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* Secondary action stays lower-case on purpose — it is the quiet option
+   next to the uppercase primary button. */
+.individual-link {
+  background: none;
+  border: none;
+  color: var(--control);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.individual-link:hover {
+  color: var(--control);
+  opacity: 0.8;
+}
+
+.individual-panel {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 8px;
+}
+
+.individual-thumb {
+  position: relative;
+  background: #000;
+  border: 2px solid var(--thumb-border);
+  border-radius: 10px;
+  overflow: hidden;
+  aspect-ratio: 1 / 1;
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.individual-thumb:hover {
+  border-color: var(--control);
+}
+
+.individual-thumb:active {
+  transform: scale(0.96);
+}
+
+.individual-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.individual-thumb-check {
+  position: absolute;
+  inset: auto 0 0 0;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--control);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-align: center;
+  padding: 3px 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.individual-thumb.saved .individual-thumb-check {
+  opacity: 1;
+}
+
+.footnote {
+  text-align: center;
+  font-size: 12px;
+  color: var(--cream-dim);
+  font-family: var(--font-display);
+  font-style: italic;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+@media (min-width: 480px) {
+  .intro-title {
+    font-size: 32px;
+  }
+}

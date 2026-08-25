@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no"
+    />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://res.cloudinary.com https://*.cloudinary.com; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' https://api.cloudinary.com https://res.cloudinary.com https://*.cloudinary.com http://127.0.0.1:8090 http://localhost:8090 ws://127.0.0.1:8090 ws://localhost:8090;"
+    />
+    <title>Nostalgia Photobooth</title>
+    <!-- Preload fonts for vintage look -->
+    <style>
+      @font-face {
+        font-family: "Playfair Display";
+        src: local("Playfair Display");
+        font-display: swap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

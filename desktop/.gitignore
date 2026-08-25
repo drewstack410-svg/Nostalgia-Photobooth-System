@@ -1,0 +1,71 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies
+node_modules
+.npm
+
+# Build outputs
+dist
+dist-electron
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Electron
+release/
+*.asar
+
+# TypeScript
+*.tsbuildinfo
+
+# Testing
+coverage
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Archives / packaged builds — these are produced by the build,
+# not source. Keep them out of git.
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Local working / scratch folders
+.tmp/
+
+# Claude Code worktrees and per-session metadata
+.claude/
+
+# Vendored design sources (kept locally, exported assets are
+# already in public/strip-frame as PNG/SVG).
+public/strip-frame/*.pdf
+
+# Downloaded asset archives (Google Drive-style timestamped folders)
+NOSTALGIA CUBE-*/
+
+# Default background videos — client-supplied media, ~62MB each. GitHub
+# warns past 50MB and anything committed lives in the history forever, so
+# these are distributed outside the repo. See public/backgrounds/README.md
+# for the filenames and where to get them.
+public/backgrounds/*.mp4
+public/backgrounds/*.webm
+public/backgrounds/*.mov

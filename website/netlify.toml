@@ -1,0 +1,25 @@
+# Netlify config for drag-and-drop deploys.
+# Used when this folder itself is uploaded as the site root via
+# Netlify Drop (https://app.netlify.com/drop). The repo-root
+# netlify.toml is what runs for git-connected deploys; this one
+# kicks in when the folder is its own site root.
+
+[build]
+  publish = "."
+  command = ""
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # Cache the page shell briefly; Cloudinary handles its own
+    # cache headers for the images it serves.
+    Cache-Control = "public, max-age=300"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Friendly fallback for any unknown subpath — keeps deep links
+# from 404'ing if someone bookmarks a sub-URL.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

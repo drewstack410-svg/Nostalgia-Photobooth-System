@@ -1,0 +1,79 @@
+{
+  "name": "nostalgia-photobooth",
+  "version": "1.0.0",
+  "description": "A vintage-themed photobooth application for touchscreen kiosks",
+  "main": "electron/main.js",
+  "scripts": {
+    "pb:serve": "pocketbase serve --migrationsDir=pb_migrations",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron:build": "vite build && electron-builder"
+  },
+  "dependencies": {
+    "@brick-a-brack/napi-canon-cameras": "^0.1.5",
+    "pinia": "^2.1.7",
+    "pocketbase": "^0.26.8",
+    "qrcode": "^1.5.4",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0",
+    "xlsx": "^0.18.5",
+    "xlsx-js-style": "^1.2.0"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/qrcode": "^1.5.6",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "concurrently": "^8.2.2",
+    "electron": "^29.1.0",
+    "electron-builder": "^24.13.3",
+    "sharp": "^0.34.5",
+    "typescript": "~5.4.0",
+    "vite": "^5.1.6",
+    "vue-tsc": "^2.0.6",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.nostalgia.photobooth",
+    "productName": "Nostalgia Photobooth",
+    "directories": {
+      "output": "dist-electron",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "node_modules/@brick-a-brack/napi-canon-cameras/**/*",
+      "!node_modules/@brick-a-brack/napi-canon-cameras/src/**/*",
+      "!node_modules/@brick-a-brack/napi-canon-cameras/build/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "public/luts",
+        "to": "luts"
+      },
+      {
+        "from": "public/strip-frame",
+        "to": "strip-frame"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.photography"
+    },
+    "win": {
+      "target": "nsis",
+      "sign": false,
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
