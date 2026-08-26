@@ -14,6 +14,7 @@ import {
   buildCubePreview,
   grainCaptureIntensity,
   grainPreviewOpacity,
+  vignettePreviewStyle,
 } from "@/utils/filterPreview";
 import type { CubePreview } from "@/utils/filterPreview";
 import { getPaperSizePx, occupancyFill } from "@/utils/printLayout";
@@ -72,6 +73,8 @@ const stream = ref<MediaStream | null>(null);
 
 const isCountingDown = ref(false);
 const isCapturing = ref(false);
+const isReviewing = ref(false);
+const reviewPhotoUrl = ref<string | null>(null);
 const countdownValue = ref(3);
 const showFlash = ref(false);
 const cameraReady = ref(false);
@@ -258,6 +261,10 @@ const grainOverlayStyle = computed(() => {
   if (opacity <= 0) return null;
   return { opacity: String(opacity) };
 });
+
+const vignetteOverlayStyle = computed(() =>
+  vignettePreviewStyle(selectedAdjustments.value.vignette),
+);
 
 // If selected filter is removed, fall back to first available
 watch(
@@ -576,7 +583,13 @@ function dismissCameraError() {
 // every shot after that uses the (usually shorter) "subsequent"
 // countdown, matching a real photobooth's pacing.
 function startCapture() {
-  if (isCountingDown.value || isCapturing.value || !cameraReady.value || store.hasAllPhotos)
+  if (
+    isCountingDown.value ||
+    isCapturing.value ||
+    isReviewing.value ||
+    !cameraReady.value ||
+    store.hasAllPhotos
+  )
     return;
   // Suspend the inactivity clock for the WHOLE multi-shot run.
   sequenceActive = true;
@@ -611,6 +624,18 @@ function cancelCountdownSleep() {
   }
 }
 
+const SHOT_REVIEW_MS = 4000;
+
+async function showShotReview() {
+  const last = store.capturedPhotos[store.capturedPhotos.length - 1];
+  if (!last?.dataUrl) return;
+  reviewPhotoUrl.value = last.dataUrl;
+  isReviewing.value = true;
+  await sleepCountdown(SHOT_REVIEW_MS);
+  isReviewing.value = false;
+  reviewPhotoUrl.value = null;
+}
+
 async function runCountdownAndCapture() {
   if (isUnmounted) return;
 
@@ -642,10 +667,18 @@ async function runCountdownAndCapture() {
   const success = await capturePhoto();
   isCapturing.value = false;
 
+  if (success && !isUnmounted) {
+    await showShotReview();
+  }
+
+  if (isUnmounted) return;
   if (success && !store.hasAllPhotos) {
     await runCountdownAndCapture();
   } else {
     endSequence();
+    if (success && store.hasAllPhotos) {
+      router.push("/printing");
+    }
   }
 }
 
@@ -868,8 +901,8 @@ async function capturePhotoInner(hadLiveView: boolean) {
           ctx.restore();
         }
 
-        // Bake levels / contrast / shadows AFTER overlay and BEFORE grain
-        // — same stack as the live SVG preview (tone → overlay → grain).
+        // Bake levels / contrast / shadows / vignette AFTER overlay and
+        // BEFORE grain — same stack as the live preview.
         if (filter) {
           const adj = store.resolvedAdjustments(filter);
           const adjusted = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -892,16 +925,10 @@ async function capturePhotoInner(hadLiveView: boolean) {
         store.addPhoto(finalImageData);
 
         // Restart live view in the background so the next countdown can
-        // start immediately instead of waiting ~1.5s for EVF to come back.
+        // start as soon as the 4s review ends, instead of waiting ~1.5s
+        // for EVF after the guest has already seen the shot.
         if (hadLiveView && !store.hasAllPhotos) {
           void startLiveView();
-        }
-
-        // Check if all photos captured
-        if (store.hasAllPhotos) {
-          setTimeout(() => {
-            if (!isUnmounted) router.push("/printing");
-          }, 1000);
         }
   } catch (error) {
     console.error("[Camera] Error processing capture:", error);
@@ -1081,7 +1108,7 @@ function cancelInactivityWarning() {
 // ("kapag on going na yung timer hindi nadin dapat maciclick yung back
 // button kasi no retake kami"). The button is also visually disabled.
 function goBack() {
-  if (isCountingDown.value || isCapturing.value) return;
+  if (isCountingDown.value || isCapturing.value || isReviewing.value) return;
   resetInactivityTimer();
 
   // Check if there are captured photos
@@ -1209,7 +1236,7 @@ onUnmounted(() => {
     <!-- Back Button — bottom-left, cream/ghost style (v2). -->
     <button
       class="ghost-btn back-btn"
-      :disabled="isCountingDown || isCapturing"
+      :disabled="isCountingDown || isCapturing || isReviewing"
       @click="goBack"
     >
       Back
@@ -1266,7 +1293,7 @@ onUnmounted(() => {
           autoplay
           muted
           playsinline
-        /><img v-else-if="liveViewFrame" :src="liveViewFrame" class="liveview-img" :class="{ mirror: store.mirrorMode }" /><div v-if="overlayStyle" class="filter-overlay" :style="overlayStyle" aria-hidden="true"></div><div v-if="grainOverlayStyle" class="film-grain-overlay" :style="grainOverlayStyle" aria-hidden="true"></div></div>
+        /><img v-else-if="liveViewFrame" :src="liveViewFrame" class="liveview-img" :class="{ mirror: store.mirrorMode }" /><div v-if="overlayStyle" class="filter-overlay" :style="overlayStyle" aria-hidden="true"></div><div v-if="vignetteOverlayStyle" class="liveview-vignette" :style="vignetteOverlayStyle" aria-hidden="true"></div><div v-if="grainOverlayStyle" class="film-grain-overlay" :style="grainOverlayStyle" aria-hidden="true"></div></div>
         <!-- Blur style: sharp feed in centered window with white border -->
         <template v-if="effectiveFrameStyle === 'blur'">
           <div class="camera-feed-sharp-wrap">
@@ -1298,7 +1325,7 @@ onUnmounted(() => {
                 <div class="liveview-crop-bar liveview-crop-bar--left"></div>
                 <div class="liveview-crop-bar liveview-crop-bar--right"></div>
               </div>
-              <div v-if="overlayStyle" class="filter-overlay" :style="overlayStyle" aria-hidden="true"></div><div v-if="grainOverlayStyle" class="film-grain-overlay" :style="grainOverlayStyle" aria-hidden="true"></div>
+              <div v-if="overlayStyle" class="filter-overlay" :style="overlayStyle" aria-hidden="true"></div><div v-if="vignetteOverlayStyle" class="liveview-vignette" :style="vignetteOverlayStyle" aria-hidden="true"></div><div v-if="grainOverlayStyle" class="film-grain-overlay" :style="grainOverlayStyle" aria-hidden="true"></div>
             </div>
           </div>
         </template>
@@ -1330,7 +1357,7 @@ onUnmounted(() => {
             <div class="liveview-crop-bar liveview-crop-bar--left"></div>
             <div class="liveview-crop-bar liveview-crop-bar--right"></div>
           </div>
-          <div v-if="overlayStyle" class="filter-overlay" :style="overlayStyle" aria-hidden="true"></div><div v-if="grainOverlayStyle" class="film-grain-overlay" :style="grainOverlayStyle" aria-hidden="true"></div>
+          <div v-if="overlayStyle" class="filter-overlay" :style="overlayStyle" aria-hidden="true"></div><div v-if="vignetteOverlayStyle" class="liveview-vignette" :style="vignetteOverlayStyle" aria-hidden="true"></div><div v-if="grainOverlayStyle" class="film-grain-overlay" :style="grainOverlayStyle" aria-hidden="true"></div>
         </div>
 
         <!-- Hidden canvas for capture -->
@@ -1342,6 +1369,12 @@ onUnmounted(() => {
         <!-- Countdown Overlay -->
         <div v-if="isCountingDown" class="countdown-overlay">
           <div class="countdown-number">{{ countdownValue }}</div>
+        </div>
+
+        <!-- Freeze the just-taken shot so the guest can see it before
+             the next countdown (or printing) starts. -->
+        <div v-if="reviewPhotoUrl" class="shot-review">
+          <img class="shot-review-img" :src="reviewPhotoUrl" alt="" />
         </div>
         </div>
       </div>
@@ -1380,8 +1413,8 @@ onUnmounted(() => {
     <div class="action-area">
       <button
         class="start-btn"
-        :class="{ capturing: isCountingDown || isCapturing }"
-        :disabled="isCountingDown || isCapturing || !cameraReady || store.hasAllPhotos"
+        :class="{ capturing: isCountingDown || isCapturing || isReviewing }"
+        :disabled="isCountingDown || isCapturing || isReviewing || !cameraReady || store.hasAllPhotos"
         @click="startCapture"
       >
         Start
@@ -1691,6 +1724,13 @@ onUnmounted(() => {
   z-index: 1;
 }
 
+.liveview-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
 .camera-feed {
   isolation: isolate;
 }
@@ -1878,6 +1918,29 @@ onUnmounted(() => {
     transform: scale(1.1);
     opacity: 0.8;
   }
+}
+
+/* Last-shot freeze: sits in the viewfinder (inside the wooden padding)
+   so the guest sees the processed capture for SHOT_REVIEW_MS. */
+.shot-review {
+  position: absolute;
+  inset: 16px;
+  z-index: 3;
+  overflow: hidden;
+  background: #000;
+  pointer-events: none;
+}
+
+.camera-frame--none .shot-review {
+  inset: 0;
+}
+
+.shot-review-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
 }
 
 /* Filter Controls: 4 buttons */

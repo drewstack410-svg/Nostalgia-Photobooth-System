@@ -78,6 +78,8 @@ const grainStyle = computed(() => {
   return { opacity: String(opacity) };
 });
 
+const vignetteStyle = computed(() => vignettePreviewStyle(adj.value.vignette));
+
 watch(
   () => props.filter,
   async (f) => {
@@ -156,6 +158,7 @@ onUnmounted(() => {
         {{ cameraError || "Opening camera…" }}
       </p>
       <div v-if="overlayStyle" class="flp-overlay" :style="overlayStyle" />
+      <div v-if="vignetteStyle" class="flp-vignette" :style="vignetteStyle" />
       <div v-if="grainStyle" class="flp-grain" :style="grainStyle" />
     </div>
     <p class="flp-hint">
@@ -220,6 +223,7 @@ onUnmounted(() => {
 }
 
 .flp-overlay,
+.flp-vignette,
 .flp-grain {
   position: absolute;
   inset: 0;
