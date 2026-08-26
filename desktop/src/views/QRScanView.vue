@@ -9,8 +9,8 @@ const store = usePhotoboothStore();
 const qrDataUrl = ref("");
 const isGenerating = ref(true);
 const qrTargetUrl = ref("");
-// True when we couldn't find any Cloudinary URL — most likely
-// Cloudinary creds aren't configured or the upload failed.
+// True when we couldn't find any cloud URL — most likely
+// R2 isn't configured or the upload failed.
 const qrUnavailable = ref(false);
 
 // Admin-configurable auto-return countdown (Settings → Timing).

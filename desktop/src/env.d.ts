@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly VITE_ADMIN_USERNAME?: string;
   readonly VITE_CLOUDINARY_CLOUD_NAME?: string;
   readonly VITE_CLOUDINARY_UPLOAD_PRESET?: string;
+  readonly VITE_R2_PUBLIC_URL?: string;
+  readonly VITE_R2_FOLDER?: string;
 }
 
 interface PhotoInfo {
@@ -144,6 +146,26 @@ interface PrintPhotoResult {
 
 interface ElectronAPI {
   savePhoto: (imageData: string, filename?: string) => Promise<SaveResult>;
+  uploadToR2?: (payload: {
+    imageData: string;
+    folder?: string;
+    publicId?: string;
+  }) => Promise<{
+    success: boolean;
+    url?: string;
+    publicId?: string;
+    error?: string;
+  }>;
+  getR2Status?: () => Promise<{
+    configured: boolean;
+    connected?: boolean;
+    apiOk?: boolean;
+    publicOk?: boolean;
+    bucket?: string;
+    publicUrl?: string;
+    missing?: string[];
+    error?: string;
+  }>;
   /**
    * Save a transient image to the OS temp directory. Use for the print
    * sheet so it doesn't pollute the user's Pictures/NostalgiaPhotobooth

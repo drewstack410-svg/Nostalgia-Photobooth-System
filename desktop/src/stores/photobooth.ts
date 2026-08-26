@@ -284,7 +284,7 @@ export interface CameraFilter {
    * sepia/bw/fujifilm, and for cube filters whose baseFilter is sepia.
    */
   grainEnabled?: boolean;
-  /** Fine-tune sliders: grain, levels, contrast, shadows. */
+  /** Fine-tune sliders: grain, levels, contrast, shadows, vignette. */
   adjustments?: FilterAdjustments;
 }
 
@@ -293,6 +293,7 @@ export interface FilterAdjustments {
   levels: number;
   contrast: number;
   shadows: number;
+  vignette: number;
 }
 
 export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
@@ -300,6 +301,7 @@ export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
   levels: 0,
   contrast: 0,
   shadows: 0,
+  vignette: 0,
 };
 
 // -----------------------------------------------------------------------------
@@ -341,15 +343,14 @@ const BUILTIN_TEMPLATES: Template[] = [
     id: "builtin-2x2-layout",
     name: "2×2 Layout",
     // 2×2 Layout PNG is portrait (1240×1844) — match the paper.
-    // Default margin/gap (24/24) → cells 584×886, matching the
-    // layout-sandbox spec. cellZoom 0.8 pulls each photo back to 80%
-    // (centred) inside its window per the spec's per-cell zoom.
+    // Photos fill each film window edge-to-edge (cover, no inset zoom).
     photoCount: 4,
     layout: "vertical",
     paperSize: "4x6-portrait",
     frameRows: 2,
     frameCols: 2,
-    cellZoom: 0.8,
+    cellZoom: 1,
+    fitMode: "cover",
     frameImageUrl: `${import.meta.env.BASE_URL}strip-frame/2x2 Layout.png`,
     isActive: true,
   },
@@ -625,6 +626,17 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   const currentPhotoIndex = ref(0);
 
   /**
+   * Live copy of the selected template (cells, zoom, fitMode) from the
+   * templates list — not the snapshot taken at pick time. The shooting
+   * preview and print composite must follow the latest admin layout.
+   */
+  const sessionTemplate = computed(() => {
+    const sel = selectedTemplate.value;
+    if (!sel) return null;
+    return templates.value.find((t) => t.id === sel.id) ?? sel;
+  });
+
+  /**
    * How many photos the guest actually SHOOTS.
    *
    * `photoCount` is authoritative — NOT rows x cols. A sheet can hold
@@ -648,8 +660,9 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   /** Cells on the sheet (may exceed requiredPhotos → repeated copies). */
   const templateCellCount = computed(() => {
-    const t = selectedTemplate.value;
+    const t = sessionTemplate.value;
     if (!t) return 0;
+    if (t.cells?.length) return t.cells.length;
     const rows = t.frameRows;
     const cols = t.frameCols;
     if (rows != null && cols != null && rows > 0 && cols > 0) return rows * cols;
@@ -1321,6 +1334,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       levels: n(raw.levels, -100, 100, 0),
       contrast: n(raw.contrast, -100, 100, 0),
       shadows: n(raw.shadows, 0, 100, 0),
+      vignette: n(raw.vignette, 0, 100, 0),
     };
   }
 
@@ -1332,6 +1346,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       levels: a?.levels ?? 0,
       contrast: a?.contrast ?? 0,
       shadows: a?.shadows ?? 0,
+      vignette: a?.vignette ?? 0,
     };
   }
 
@@ -1420,7 +1435,10 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       const newActiveState = !(current?.isActive !== false);
       builtinTemplateOverrides.value = {
         ...builtinTemplateOverrides.value,
-        [id]: { isActive: newActiveState },
+        [id]: {
+          ...(builtinTemplateOverrides.value[id] ?? {}),
+          isActive: newActiveState,
+        },
       };
       saveBuiltinTemplateOverrides();
       return;
@@ -1443,7 +1461,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   // ---- Session actions ----
   function selectTemplate(template: Template) {
-    selectedTemplate.value = template;
+    selectedTemplate.value =
+      templates.value.find((t) => t.id === template.id) ?? template;
     capturedPhotos.value = [];
     currentPhotoIndex.value = 0;
   }
@@ -1675,6 +1694,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     activeTemplates,
     customTemplates,
     selectedTemplate,
+    sessionTemplate,
 
     // -----------------------------
     // Camera Options & Session

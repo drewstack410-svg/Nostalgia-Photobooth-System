@@ -15,6 +15,7 @@ import {
   buildAdjustmentTable,
   buildCubePreview,
   grainPreviewOpacity,
+  vignettePreviewStyle,
 } from "@/utils/filterPreview";
 import type { CubePreview } from "@/utils/filterPreview";
 

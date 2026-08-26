@@ -13,7 +13,7 @@
  */
 import { computed, ref, watch } from "vue";
 import type { Template } from "@/stores/photobooth";
-import { getPaperSizePx, getTemplateCellRects } from "@/utils/printLayout";
+import { getPaperSizePx, getTemplateCellRects, occupancyFill } from "@/utils/printLayout";
 import { getFrameWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
 
@@ -123,20 +123,20 @@ const cells = computed(() => {
   }));
 });
 
-// object-fit:cover gives the cover-fit base size; scale() applies
-// cellZoom about the centre — together identical to PrintingView's
-// baseW/baseH x cellZoom, centred and clipped to the cell.
+// Fill the occupancy canvas (layout-editor slots, or detected windows)
+// edge-to-edge. Cover-fit, never shrink — cellZoom < 1 was leaving a
+// white/cream margin inside every film window.
 const photoStyle = computed(() => {
-  // Mirrors the print composite exactly: zoom applies on both paths, and
-  // the offset nudges the photo within its window (percentage of the
-  // window, so it scales with the preview size).
   const t = props.template;
-  const zoom = t.cellZoom ?? 1;
+  const hasSlots =
+    (t.cells?.length ?? 0) > 0 || !!(frameWindows.value && frameSize.value);
+  const { zoom, fitMode } = occupancyFill(t, hasSlots);
   const ox = t.cellOffsetX ?? 0;
   const oy = t.cellOffsetY ?? 0;
   return {
     transform: `translate(${ox}%, ${oy}%) scale(${zoom})`,
-    objectFit: t.fitMode ?? "contain",
+    objectFit: fitMode,
+    transformOrigin: "center center",
   };
 });
 
@@ -170,7 +170,7 @@ const activeCells = computed(() => {
       v-for="(cell, i) in cells"
       :key="i"
       class="tlp-cell"
-      :class="{ 'tlp-cell--empty': !photos[i] }"
+      :class="{ 'tlp-cell--empty': !photoFor(i) }"
       :style="cell"
     >
       <img
@@ -219,6 +219,10 @@ const activeCells = computed(() => {
 .tlp--fluid {
   width: min(100cqw, calc(100cqh * var(--sheet-ar)));
   height: min(100cqh, calc(100cqw / var(--sheet-ar)));
+  /* If container queries haven't resolved yet, still occupy the parent
+     so the Kodak frame preview doesn't collapse to 0×0. */
+  min-width: 8rem;
+  min-height: 12rem;
 }
 
 .tlp-cell {
@@ -234,14 +238,15 @@ const activeCells = computed(() => {
   background: var(--color-cream);
 }
 
-/* object-fit is bound from the template's fitMode so the shooting
-   screen shows exactly what prints — contain (whole photo, letterboxed)
-   by default, matching the print composite. */
+/* Occupancy canvas: photo fills the slot edge-to-edge (cover). */
 .tlp-photo {
   width: 100%;
   height: 100%;
+  min-width: 100%;
+  min-height: 100%;
   object-position: center;
   display: block;
+  flex-shrink: 0;
 }
 
 .tlp-slot-num {

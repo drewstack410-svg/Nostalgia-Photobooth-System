@@ -155,6 +155,8 @@ export interface FilterAdjustments {
   contrast: number;
   /** Shadow lift, 0–100. Only raises dark tones. */
   shadows: number;
+  /** Edge darkening, 0–100. 0 = none. */
+  vignette: number;
 }
 
 export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
@@ -162,6 +164,7 @@ export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
   levels: 0,
   contrast: 0,
   shadows: 0,
+  vignette: 0,
 };
 
 function clamp01(v: number): number {
@@ -216,12 +219,50 @@ export function applyAdjustmentsToImageData(
   adj: FilterAdjustments,
 ): void {
   const lut = buildAdjustmentLut(adj);
-  if (!lut) return;
+  if (lut) {
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = lut[data[i]];
+      data[i + 1] = lut[data[i + 1]];
+      data[i + 2] = lut[data[i + 2]];
+    }
+  }
+  applyVignetteToImageData(imageData, adj.vignette);
+}
+
+/**
+ * Darkens toward the corners. Inner ~35% of the frame stays untouched;
+ * falloff is quadratic so the centre of the face doesn't pick up a
+ * grey wash. Strength 100 ≈ 72% multiply-down at the corners.
+ */
+export function applyVignetteToImageData(
+  imageData: ImageData,
+  vignette: number,
+): void {
+  const amount = Math.max(0, Math.min(100, vignette)) / 100;
+  if (amount <= 0) return;
   const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    data[i] = lut[data[i]];
-    data[i + 1] = lut[data[i + 1]];
-    data[i + 2] = lut[data[i + 2]];
+  const w = imageData.width;
+  const h = imageData.height;
+  const cx = (w - 1) / 2;
+  const cy = (h - 1) / 2;
+  const maxDist = Math.hypot(cx, cy) || 1;
+  const inner = 0.35;
+  const span = 1 - inner;
+  const strength = amount * 0.72;
+  for (let y = 0; y < h; y++) {
+    const dy = (y - cy) / maxDist;
+    for (let x = 0; x < w; x++) {
+      const d = Math.hypot((x - cx) / maxDist, dy);
+      let t = (d - inner) / span;
+      if (t <= 0) continue;
+      if (t > 1) t = 1;
+      const m = 1 - strength * t * t;
+      const i = (y * w + x) * 4;
+      data[i] *= m;
+      data[i + 1] *= m;
+      data[i + 2] *= m;
+    }
   }
 }
 
@@ -233,6 +274,21 @@ export function grainCaptureIntensity(grain: number): number {
 /** Live-preview overlay opacity from a 0–100 slider. */
 export function grainPreviewOpacity(grain: number): number {
   return Math.max(0, Math.min(0.55, (grain / 100) * 0.55));
+}
+
+/** CSS for the live-preview vignette overlay, or null when off. */
+export function vignettePreviewStyle(
+  vignette: number,
+): Record<string, string> | null {
+  const amount = Math.max(0, Math.min(100, vignette));
+  if (amount <= 0) return null;
+  const inner = Math.max(18, 58 - amount * 0.18);
+  const mid = Math.min(90, inner + 26);
+  const edge = (amount / 100) * 0.78;
+  const soft = (amount / 100) * 0.28;
+  return {
+    background: `radial-gradient(ellipse at center, transparent ${inner}%, rgba(0,0,0,${soft.toFixed(3)}) ${mid}%, rgba(0,0,0,${edge.toFixed(3)}) 100%)`,
+  };
 }
 
 export interface CubePreview {

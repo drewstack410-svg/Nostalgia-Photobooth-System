@@ -2,8 +2,10 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
-import { uploadToCloudinary } from "@/services/cloudinary";
-import { getPaperSizePx } from "@/utils/printLayout";
+// Cloudinary unsigned uploads are parked. Guest copies now go to Cloudflare R2.
+// import { uploadToCloudinary } from "@/services/cloudinary";
+import { uploadToR2 } from "@/services/r2";
+import { getPaperSizePx, occupancyFill } from "@/utils/printLayout";
 import type { Rect } from "@/utils/printLayout";
 import { getFrameWindows, scaleWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
@@ -119,11 +121,10 @@ async function printSavedPhoto(filePath: string, copiesOverride?: number) {
 
 // Build the URL of the public gallery page that the QR code points
 // at. The gallery is a static site hosted on Netlify (see
-// `gallery/README.md`); it reads the cloud name + capture publicIds
-// + session tag from the query string and renders a phone-friendly
-// carousel + animated GIF tile.
+// `gallery/README.md`); it reads the R2 public base + capture keys
+// from the query string and renders a phone-friendly carousel + GIF.
 //
-// Falls back to "" when Cloudinary or the gallery base URL aren't
+// Falls back to "" when R2 or the gallery base URL aren't
 // configured — QRScanView handles that case by showing a friendly
 // "cloud upload didn't complete" message instead of a dead QR.
 function buildGalleryUrl(
@@ -132,11 +133,16 @@ function buildGalleryUrl(
   printId?: string,
 ): string {
   if (publicIds.length === 0 && !printId) return "";
-  const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
-  if (!cloudName) {
-    console.warn("[Gallery] No VITE_CLOUDINARY_CLOUD_NAME set");
+  const r2Base = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
+  if (!r2Base) {
+    console.warn("[Gallery] No VITE_R2_PUBLIC_URL set");
     return "";
   }
+  // const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
+  // if (!cloudName) {
+  //   console.warn("[Gallery] No VITE_CLOUDINARY_CLOUD_NAME set");
+  //   return "";
+  // }
 
   // Default to a relative `/gallery/` path so the dev environment
   // serves the page from inside the Vite dev server when there's no
@@ -148,7 +154,7 @@ function buildGalleryUrl(
   ).replace(/\/+$/, "/"); // ensure single trailing slash
 
   const url = new URL(base);
-  url.searchParams.set("cloud", cloudName);
+  url.searchParams.set("base", r2Base);
   url.searchParams.set("ids", publicIds.join(","));
   if (sessionTag) url.searchParams.set("tag", sessionTag);
   // The finished templated print (frame applied). The gallery shows it
@@ -202,7 +208,7 @@ function cropLeftHalf(dataUrl: string): Promise<string> {
 async function createCompositeImage(
   purpose: "print" | "display" = "print",
 ): Promise<string> {
-  const template = store.selectedTemplate;
+  const template = store.sessionTemplate;
   if (!template) return "";
 
   // ── Canvas dimensions come from the template's declared paperSize.
@@ -350,29 +356,50 @@ async function createCompositeImage(
       const { cols, rows } = grid;
       const margin = template.cellMargin ?? 0;
       const gap = template.cellGap ?? 0;
-      const cellZoom = template.cellZoom ?? 1;
       const innerW = area.width - margin * 2 - gap * (cols - 1);
       const innerH = area.height - margin * 2 - gap * (rows - 1);
       const cellW = innerW / cols;
       const cellH = innerH / rows;
-      const slotCount = cols * rows;
+      const editorCells = template.cells?.length
+        ? template.cells.map((c) => ({
+            x: area.x + c.x * area.width,
+            y: area.y + c.y * area.height,
+            width: c.w * area.width,
+            height: c.h * area.height,
+            rotation: c.rotation || 0,
+          }))
+        : null;
+      const { zoom, fitMode: framelessFit } = occupancyFill(
+        template,
+        !!editorCells,
+      );
+      const slotCount = editorCells ? editorCells.length : cols * rows;
       console.log(
-        `[Composite] frameless grid ${cols}×${rows}, cells ${Math.round(cellW)}×${Math.round(cellH)}, margin ${margin}, gap ${gap}, cellZoom ${cellZoom}`,
+        `[Composite] frameless ${editorCells ? `${editorCells.length} editor slot(s)` : `grid ${cols}×${rows}`}, cells ${Math.round(cellW)}×${Math.round(cellH)}, margin ${margin}, gap ${gap}, zoom ${zoom}`,
       );
 
       for (let i = 0; i < slotCount; i++) {
         const img = loadedImages[i % count];
-        const col = i % cols;
-        const row = Math.floor(i / cols);
-        const cellX = Math.round(area.x + margin + col * (cellW + gap));
-        const cellY = Math.round(area.y + margin + row * (cellH + gap));
-        const cw = Math.round(cellW);
-        const ch = Math.round(cellH);
+        let cellX: number;
+        let cellY: number;
+        let cw: number;
+        let ch: number;
+        let rotation = 0;
+        if (editorCells) {
+          ({ x: cellX, y: cellY, width: cw, height: ch } = editorCells[i]);
+          rotation = editorCells[i].rotation ?? 0;
+        } else {
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          cellX = Math.round(area.x + margin + col * (cellW + gap));
+          cellY = Math.round(area.y + margin + row * (cellH + gap));
+          cw = Math.round(cellW);
+          ch = Math.round(cellH);
+        }
 
-        // Fit × cellZoom, centred (matches the frame-PNG path).
+        // Fit × zoom, centred (matches the frame-PNG path).
         const imgAspect = img.naturalWidth / img.naturalHeight;
         const cAspect = cw / ch;
-        const framelessFit = template.fitMode ?? "contain";
         let baseW: number;
         let baseH: number;
         const fillsWidthFirst =
@@ -384,14 +411,21 @@ async function createCompositeImage(
           baseH = ch;
           baseW = ch * imgAspect;
         }
-        const dw = baseW * cellZoom;
-        const dh = baseH * cellZoom;
+        const dw = baseW * zoom;
+        const dh = baseH * zoom;
         const offX = template.cellOffsetX ?? 0;
         const offY = template.cellOffsetY ?? 0;
         const dx = cellX + (cw - dw) / 2 + (cw * offX) / 100;
         const dy = cellY + (ch - dh) / 2 + (ch * offY) / 100;
 
         ctx.save();
+        if (rotation) {
+          const pivotX = cellX + cw / 2;
+          const pivotY = cellY + ch / 2;
+          ctx.translate(pivotX, pivotY);
+          ctx.rotate((rotation * Math.PI) / 180);
+          ctx.translate(-pivotX, -pivotY);
+        }
         ctx.beginPath();
         ctx.rect(cellX, cellY, cw, ch);
         ctx.clip();
@@ -540,8 +574,6 @@ async function createCompositeImage(
             // pair can express. That mismatch (papered over by
             // cellZoom 0.8) is why captures sat a few px off inside every
             // window.
-            // Default to contain: never silently crop a guest's face.
-            const fitMode = template.fitMode ?? "contain";
             const offsetX = template.cellOffsetX ?? 0;
             const offsetY = template.cellOffsetY ?? 0;
             // HIGHEST PRECEDENCE: slots the operator positioned by hand
@@ -594,10 +626,9 @@ async function createCompositeImage(
                 let cw: number;
                 let ch: number;
                 let rotation = 0;
-                // cellZoom applies on BOTH paths. It used to be forced to
-                // 1 here, which silently disabled the admin's zoom field
-                // for every template with frame artwork.
-                let zoom = cellZoom;
+                // Layout-editor slots and detected windows ARE the occupancy
+                // canvas — fill them cover-fit, never inset/letterbox.
+                const { zoom, fitMode } = occupancyFill(template, !!slots);
                 if (slots) {
                   ({ x: cellX, y: cellY, width: cw, height: ch } = slots[i]);
                   rotation = slots[i].rotation ?? 0;
@@ -608,7 +639,6 @@ async function createCompositeImage(
                   cellY = printArea.y + GRID_MARGIN + row * (fCellH + GRID_GAP);
                   cw = fCellW;
                   ch = fCellH;
-                  zoom = cellZoom;
                 }
 
                 // Cover-fit base dimensions, then apply zoom.
@@ -907,7 +937,7 @@ async function saveComposite() {
       const compositeUploadPromise: Promise<string | undefined> = (async () => {
         try {
           if (!shareComposite) return undefined;
-          const cr = await uploadToCloudinary(
+          const cr = await uploadToR2(
             shareComposite,
             "nostalgia-photobooth",
             `nostalgia_${sessionTs}_print`,
@@ -962,18 +992,16 @@ async function saveComposite() {
             console.error(`[Save] Capture ${idx} disk save error:`, e);
           }
 
-          // Cloudinary upload (per-capture, raw camera image — NO
-          // template, NO frame, NO composite). Tag every capture in
-          // the session with the same `session_<ts>` tag so the
-          // gallery page can hit Cloudinary's `multi` endpoint and
-          // get back an animated GIF of all of them stitched.
+          // Cloudflare R2 upload (per-capture, raw camera image — NO
+          // template, NO frame, NO composite). Session tag is unused by
+          // R2; the gallery GIF is built client-side from `ids`.
           let cloudUrl: string | undefined;
           let cloudPublicId: string | undefined;
           try {
             const publicId = `nostalgia_${sessionTs}_${idx}_${Math.random()
               .toString(36)
               .substring(2, 8)}`;
-            const cr = await uploadToCloudinary(
+            const cr = await uploadToR2(
               photo.dataUrl,
               "nostalgia-photobooth",
               publicId,
@@ -1004,11 +1032,9 @@ async function saveComposite() {
       );
 
       // Build the QR's target: the public gallery page URL with the
-      // per-capture publicIds and the session tag. The gallery page
-      // (gallery/index.html, hosted on Netlify) reads these from the
-      // query string and renders a carousel + thumbnails + an
-      // animated GIF tile (via Cloudinary's `multi` endpoint, which
-      // stitches all images sharing the session tag).
+      // per-capture R2 object keys. The gallery page (hosted on
+      // Netlify) reads `base` + `ids` and renders a carousel + GIF
+      // built client-side from those images.
       const successfulIds = captureResults
         .map((r) => r.cloudPublicId)
         .filter((id): id is string => !!id);
@@ -1022,7 +1048,7 @@ async function saveComposite() {
         console.log("[Save] Gallery URL for QR:", sessionShareableUrl);
       } else {
         console.warn(
-          "[Save] No gallery URL — Cloudinary uploads didn't produce any usable publicIds",
+          "[Save] No gallery URL — R2 uploads didn't produce any usable publicIds",
         );
       }
 

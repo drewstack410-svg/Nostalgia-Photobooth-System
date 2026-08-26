@@ -5,6 +5,8 @@ const http = require('http');
 // Outbound client for the client's payment middleware (PULL mode).
 // Inert unless PAYMENT_API_URL is set — see electron/paymentMiddleware.js.
 const paymentMiddleware = require('./paymentMiddleware');
+const r2 = require('./r2Upload');
+r2.loadEnvFile(path.join(__dirname, '..', '.env'));
 
 // Try to load Canon EDSDK wrapper (optional - will fallback if not available)
 let CanonCameraBrowser, Camera, CameraProperty, Option, ImageQuality;
@@ -116,7 +118,7 @@ function createWindow() {
       contextIsolation: true,
       preload: preloadPath,
       webSecurity: true,
-      // Allow connections to Cloudinary API
+      // Allow connections to Cloudflare R2 / PocketBase
       allowRunningInsecureContent: false,
     },
     icon: appIconPath(),
@@ -152,14 +154,14 @@ function createWindow() {
 
   console.log('[Main] Camera/microphone permissions configured');
 
-  // Set Content Security Policy to allow Cloudinary API
+  // Set Content Security Policy to allow Cloudflare R2 + PocketBase
   // Modify CSP headers before page loads
   mainWindow.webContents.session.webRequest.onHeadersReceived(
     (details, callback) => {
       const cspHeader =
         "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-        "connect-src 'self' https://api.cloudinary.com https://res.cloudinary.com https://*.cloudinary.com http://127.0.0.1:8090 http://localhost:8090 ws://127.0.0.1:8090 ws://localhost:8090; " +
-        "img-src 'self' data: blob: https://res.cloudinary.com https://*.cloudinary.com; " +
+        "connect-src 'self' https://*.r2.dev https://*.r2.cloudflarestorage.com http://127.0.0.1:8090 http://localhost:8090 ws://127.0.0.1:8090 ws://localhost:8090; " +
+        "img-src 'self' data: blob: https: https://*.r2.dev https://*.r2.cloudflarestorage.com; " +
         "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
         "font-src 'self' data: https://fonts.gstatic.com;";
@@ -183,10 +185,10 @@ function createWindow() {
       if (existingCSP) {
         existingCSP.remove();
       }
-      // Add new CSP meta tag (Cloudinary + PocketBase)
+      // Add new CSP meta tag (Cloudflare R2 + PocketBase)
       const meta = document.createElement('meta');
       meta.httpEquiv = 'Content-Security-Policy';
-      meta.content = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self' https://api.cloudinary.com https://res.cloudinary.com https://*.cloudinary.com http://127.0.0.1:8090 http://localhost:8090 ws://127.0.0.1:8090 ws://localhost:8090; img-src 'self' data: blob: https://res.cloudinary.com https://*.cloudinary.com; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';";
+      meta.content = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self' https://*.r2.dev https://*.r2.cloudflarestorage.com http://127.0.0.1:8090 http://localhost:8090 ws://127.0.0.1:8090 ws://localhost:8090; img-src 'self' data: blob: https: https://*.r2.dev https://*.r2.cloudflarestorage.com; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';";
       document.getElementsByTagName('head')[0].appendChild(meta);
       void 0;
     `,
@@ -316,6 +318,20 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  void r2.pingR2().then((status) => {
+    if (status.connected) {
+      console.log(
+        `[R2] Connected. Cloudflare API healthy (bucket ${status.bucket}) — public ${status.publicUrl}`,
+      );
+    } else if (!status.configured) {
+      console.warn(
+        `[R2] Not configured — missing ${(status.missing || []).join(", ")}. Guest QR uploads will be skipped.`,
+      );
+    } else {
+      console.error(`[R2] Not connected to Cloudflare. ${status.error || ""}`);
+    }
+  });
+
   // Route getDisplayMedia() straight at the middleware's window so the
   // admin panel can show it live with no picker dialog (this is a kiosk
   // — there is nobody to click through a permission prompt).
@@ -751,6 +767,18 @@ ipcMain.handle("save-temp-photo", async (event, { imageData, filename }) => {
       error: error instanceof Error ? error.message : "Unknown error",
     };
   }
+});
+
+ipcMain.handle("r2:status", async () => {
+  return r2.pingR2();
+});
+
+ipcMain.handle("r2:upload", async (_event, payload) => {
+  return r2.uploadToR2({
+    imageDataUrl: payload?.imageData || payload?.imageDataUrl,
+    folder: payload?.folder,
+    publicId: payload?.publicId,
+  });
 });
 
 // IPC Handlers

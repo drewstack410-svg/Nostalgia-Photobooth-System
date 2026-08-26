@@ -1,9 +1,12 @@
 // Nostalgia Photobooth — public gallery viewer
 // ---------------------------------------------
 // Vanilla JS, no framework, no build step. Reads URL params:
-//   ?cloud=<cloud_name>   (required) Cloudinary cloud name.
-//   &ids=<id1,id2,...>    (required) comma-separated public IDs of
-//                         the individual captures from this session.
+//   ?base=<public_url>    (required for R2) Cloudflare R2 public base,
+//                         e.g. https://pub-xxxx.r2.dev — no trailing slash.
+//   ?cloud=<cloud_name>   (legacy) Cloudinary cloud name, kept so old
+//                         printed QR codes still open.
+//   &ids=<id1,id2,...>    (required) comma-separated object keys /
+//                         public IDs of the individual captures.
 //                         Order is preserved. Also powers the "GIF"
 //                         view (built client-side, see below).
 //   &tag=<session_tag>    (optional, unused by GIF anymore) kept for
@@ -39,6 +42,7 @@
 
   // ─── URL param parsing ────────────────────────────────────────────
   const params = new URLSearchParams(window.location.search);
+  const r2Base = (params.get("base") || "").trim().replace(/\/+$/, "");
   const cloud = (params.get("cloud") || "").trim();
   const tag = (params.get("tag") || "").trim();
   const idsRaw = (params.get("ids") || "").trim();
@@ -67,7 +71,7 @@
   document.title = title;
 
   // ─── Sanity checks ────────────────────────────────────────────────
-  if (!cloud || (ids.length === 0 && !printId)) {
+  if ((!r2Base && !cloud) || (ids.length === 0 && !printId)) {
     showFatal(
       "This link is missing photo references. Try scanning the QR code from your printed strip again.",
     );
@@ -84,8 +88,8 @@
       key: "template",
       label: "Template",
       kind: "image",
-      url: cloudinaryImageUrl(cloud, printId),
-      downloadUrl: cloudinaryImageUrl(cloud, printId, {
+      url: imageUrl(printId),
+      downloadUrl: imageUrl(printId, {
         download: true,
         name: "nostalgia_template",
       }),
@@ -147,8 +151,8 @@
   function buildIndividualPanel() {
     individualPanelBuilt = true;
     ids.forEach((id, i) => {
-      const url = cloudinaryImageUrl(cloud, id);
-      const downloadUrl = cloudinaryImageUrl(cloud, id, {
+      const url = imageUrl(id);
+      const downloadUrl = imageUrl(id, {
         download: true,
         name: `nostalgia_${i + 1}`,
       });
@@ -214,7 +218,7 @@
         const img = document.createElement("img");
         img.alt = `Capture ${i + 1}`;
         img.loading = "lazy";
-        img.src = cloudinaryImageUrl(cloud, id);
+        img.src = imageUrl(id);
         grid.appendChild(img);
       });
       stageInner.appendChild(grid);
@@ -340,36 +344,25 @@
     );
   }
 
-  // Save a Cloudinary-hosted asset by URL — used for Template/GIF/
-  // individual-capture saves, where the file already lives on
-  // Cloudinary and we don't need to build anything client-side.
+  // Save a hosted asset by URL — Template / individual captures.
+  // R2 has no attachment transform, so we fetch as a blob when CORS
+  // allows (required for the gallery Grid/GIF canvas too).
   async function saveByUrl(url, filename) {
-    if (
-      isIOS() &&
-      navigator.share &&
-      navigator.canShare &&
-      typeof File !== "undefined"
-    ) {
-      try {
-        const res = await fetch(url);
-        if (res.ok) {
-          const blob = await res.blob();
-          const shared = await trySaveBlobViaShare(blob, filename);
-          if (shared) return;
-        }
-      } catch (err) {
-        if (err && err.name === "AbortError") return; // user cancelled
-        // otherwise fall through to a direct download
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const blob = await res.blob();
+        await saveBlob(blob, filename, blob.type || "image/jpeg");
+        return;
       }
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
     }
 
-    // Android + desktop: point the anchor straight at the Cloudinary
-    // URL (carries fl_attachment, so Content-Disposition triggers a
-    // real download the browser saves — no fetch, no CORS surprises).
     try {
       const a = document.createElement("a");
       a.href = url;
-      a.download = filename; // honoured same-origin; CD header wins cross-origin
+      a.download = filename;
       a.rel = "noopener";
       document.body.appendChild(a);
       a.click();
@@ -418,7 +411,7 @@
   // when building templates (see PrintingView.vue / SettingsView.vue).
   async function buildGridBlob(photoIds) {
     const imgs = await Promise.all(
-      photoIds.map((id) => loadCorsImage(cloudinaryImageUrl(cloud, id))),
+      photoIds.map((id) => loadCorsImage(imageUrl(id))),
     );
     const cols = imgs.length <= 1 ? 1 : imgs.length === 3 ? 3 : 2;
     const rows = Math.ceil(imgs.length / cols);
@@ -462,7 +455,7 @@
 
   function buildGifBlob(photoIds) {
     return new Promise((resolve, reject) => {
-      Promise.all(photoIds.map((id) => loadCorsImage(cloudinaryImageUrl(cloud, id))))
+      Promise.all(photoIds.map((id) => loadCorsImage(imageUrl(id))))
         .then((imgs) => {
           if (typeof GIF === "undefined") {
             reject(new Error("GIF encoder failed to load"));
@@ -505,9 +498,8 @@
   function loadCorsImage(src) {
     return new Promise((resolve, reject) => {
       const img = new Image();
-      // Cloudinary's public delivery URLs are served with permissive
-      // CORS headers, so this doesn't taint the canvas — required for
-      // canvas.toBlob() to work on cross-origin images at all.
+      // R2 public URLs need bucket CORS (GET from the gallery origin)
+      // so this doesn't taint the canvas — required for toBlob().
       img.crossOrigin = "anonymous";
       img.onload = () => resolve(img);
       img.onerror = reject;
@@ -546,23 +538,24 @@
       .replace(/>/g, "&gt;");
   }
 
-  // Build a Cloudinary delivery URL for a given public ID. When
-  // `download:true`, append `fl_attachment` so browsers treat the
-  // response as a file download instead of inlining it.
+  // Public image URL. New sessions use Cloudflare R2 (`base`).
+  // Older printed QR codes still pass Cloudinary `cloud` + public IDs.
+  function imageUrl(publicId, options = {}) {
+    if (r2Base) {
+      const key = String(publicId || "").replace(/^\/+/, "");
+      return `${r2Base}/${key}`;
+    }
+    return cloudinaryImageUrl(cloud, publicId, options);
+  }
+
+  // Legacy Cloudinary delivery URL for QR codes printed before R2.
   function cloudinaryImageUrl(cloud, publicId, options = {}) {
     const transforms = [];
     if (options.download) {
-      // Full-quality original for downloads, delivered as an
-      // attachment (Content-Disposition: attachment) so the browser
-      // saves a real file instead of inlining it. `fl_attachment:<name>`
-      // sets the saved filename server-side — important on Android,
-      // where a cross-origin `<a download>` can't set the name itself.
       transforms.push(
         options.name ? `fl_attachment:${options.name}` : "fl_attachment",
       );
     } else {
-      // Slight quality auto + format auto so the page is light on
-      // mobile data without us managing per-device sizes ourselves.
       transforms.push("q_auto", "f_auto");
     }
     const transformPath = transforms.join(",");

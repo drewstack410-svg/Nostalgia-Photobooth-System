@@ -3,6 +3,8 @@ import { onMounted, computed } from "vue";
 import { useRoute } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import { applyBoothConfig } from "@/lib/boothConfig";
+import { checkPocketBaseConnection } from "@/lib/pocketbase";
+import { checkR2Connection } from "@/services/r2";
 import { useCustomFonts } from "@/composables/useCustomFonts";
 import VintageTheme from "@/components/VintageTheme.vue";
 
@@ -61,6 +63,9 @@ onMounted(async () => {
   // machine's kiosk id and the shared server address are per-machine runtime
   // settings, not values baked into the build.
   await applyBoothConfig();
+  // Fire-and-forget so a down PocketBase never delays the title screen.
+  void checkPocketBaseConnection();
+  void checkR2Connection();
   // Templates next: they come off disk now (localStorage could not hold
   // them), and this must land before the operator can reach /templates.
   await store.hydrateTemplatesFromDisk();

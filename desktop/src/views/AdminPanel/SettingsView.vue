@@ -46,6 +46,7 @@ const showTimingModal = ref(false);
 const boothIdInput = ref("");
 const pocketBaseInput = ref("");
 const boothSaved = ref(false);
+const boothSaveError = ref("");
 const boothWarning = computed(() =>
   boothIdInput.value.trim()
     ? ""
@@ -59,11 +60,23 @@ onMounted(async () => {
 });
 
 async function saveBooth() {
-  boothSaved.value = await saveBoothConfig({
+  boothSaved.value = false;
+  boothSaveError.value = "";
+  if (!window.electronAPI?.setBoothConfig) {
+    boothSaveError.value =
+      "Booth settings only save in the Electron app (npm run electron:dev). Browser-only npm run dev cannot write this machine’s config.";
+    return;
+  }
+  const ok = await saveBoothConfig({
     kioskId: boothIdInput.value,
     pocketBaseUrl: pocketBaseInput.value,
   });
-  if (boothSaved.value) setTimeout(() => (boothSaved.value = false), 2000);
+  if (ok) {
+    boothSaved.value = true;
+    setTimeout(() => (boothSaved.value = false), 2000);
+  } else {
+    boothSaveError.value = "Could not save booth settings. Check the app log.";
+  }
 }
 
 // Admin PIN
@@ -1425,7 +1438,7 @@ function handleDeleteTemplate(template: Template, event: Event) {
               type="text"
               placeholder="e.g. booth-07"
               spellcheck="false"
-              @change="saveBooth"
+              @keydown.enter.prevent="saveBooth"
             />
           </label>
           <label class="booth-field">
@@ -1435,11 +1448,19 @@ function handleDeleteTemplate(template: Template, event: Event) {
               type="text"
               placeholder="http://192.168.1.10:8090 (blank = this machine)"
               spellcheck="false"
-              @change="saveBooth"
+              @keydown.enter.prevent="saveBooth"
             />
           </label>
-          <p v-if="boothWarning" class="booth-warning">{{ boothWarning }}</p>
-          <p v-else-if="boothSaved" class="booth-saved">Saved.</p>
+          <button
+            type="button"
+            class="btn btn-primary booth-save-btn"
+            @click="saveBooth"
+          >
+            Save booth settings
+          </button>
+          <p v-if="boothSaveError" class="booth-warning">{{ boothSaveError }}</p>
+          <p v-else-if="boothWarning" class="booth-warning">{{ boothWarning }}</p>
+          <p v-else-if="boothSaved" class="booth-saved">Saved on this machine.</p>
         </div>
 
         <button
@@ -1508,8 +1529,9 @@ function handleDeleteTemplate(template: Template, event: Event) {
         <div class="general-card">
           <h3 class="subsection-title">Camera detection</h3>
           <p class="section-desc">
-            Detect and connect the Canon camera. Turn OFF to run the app in
-            test mode (sample photo) without a camera connected.
+            Detect and connect the Canon camera. When no Canon is found,
+            the app uses this computer's webcam. Turn OFF to skip Canon
+            and go straight to the webcam.
           </p>
           <label class="filters-table-status" style="margin-top: 0.75rem;">
             <input
@@ -1518,7 +1540,7 @@ function handleDeleteTemplate(template: Template, event: Event) {
               aria-label="Toggle camera detection"
               @change="toggleCameraDetection"
             />
-            <span>{{ store.cameraDetectionEnabled ? "On (real camera)" : "Off (test mode)" }}</span>
+            <span>{{ store.cameraDetectionEnabled ? "On (Canon, then webcam)" : "Off (webcam only)" }}</span>
           </label>
         </div>
       </div>
@@ -2075,7 +2097,7 @@ function handleDeleteTemplate(template: Template, event: Event) {
     <AdminFormModal
       v-model:open="showFiltersModal"
       title="Filters"
-      description="Add LUT filters, then select one to fine-tune grain, levels, contrast and shadows on a live camera preview."
+      description="Add LUT filters, then select one to fine-tune grain, levels, contrast, shadows and vignette on a live camera preview."
       size="wide"
     >
       <div class="filters-studio">
@@ -2349,6 +2371,19 @@ function handleDeleteTemplate(template: Template, event: Event) {
               @input="updateAdjustment('shadows', Number(($event.target as HTMLInputElement).value))"
             />
             <span class="filter-adjust-value">{{ editingAdj.shadows }}</span>
+          </label>
+          <label class="filter-adjust-row">
+            <span>Vignette</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              :value="editingAdj.vignette"
+              :style="{ '--range-pct': `${editingAdj.vignette}%` }"
+              @input="updateAdjustment('vignette', Number(($event.target as HTMLInputElement).value))"
+            />
+            <span class="filter-adjust-value">{{ editingAdj.vignette }}</span>
           </label>
         </div>
       </aside>
@@ -3790,6 +3825,10 @@ function handleDeleteTemplate(template: Template, event: Event) {
   margin: 10px 0 0;
   font-size: 0.85rem;
   opacity: 0.75;
+}
+
+.booth-save-btn {
+  margin-top: 12px;
 }
 
 .filter-overlay-cell {

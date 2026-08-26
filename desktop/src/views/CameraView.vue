@@ -16,7 +16,7 @@ import {
   grainPreviewOpacity,
 } from "@/utils/filterPreview";
 import type { CubePreview } from "@/utils/filterPreview";
-import { getPaperSizePx } from "@/utils/printLayout";
+import { getPaperSizePx, occupancyFill } from "@/utils/printLayout";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
 
 const router = useRouter();
@@ -41,17 +41,26 @@ const effectiveFrameStyle = computed(() =>
 // top/bottom — add that case if such a template is ever introduced).
 const PHOTO_ASPECT = 3600 / 2400; // 1.5 — the 3:2 camera capture
 const cropBarPercent = computed(() => {
-  const t = store.selectedTemplate;
+  const t = store.sessionTemplate ?? store.selectedTemplate;
   if (!t) return 16.6667; // legacy default before a template is chosen
   const sheet = getPaperSizePx(t.paperSize);
-  const cols = Math.max(1, t.frameCols ?? 1);
-  const rows = Math.max(1, t.frameRows ?? 1);
-  const margin = t.cellMargin ?? 24;
-  const gap = t.cellGap ?? 24;
-  const cellW = (sheet.width - margin * 2 - gap * (cols - 1)) / cols;
-  const cellH = (sheet.height - margin * 2 - gap * (rows - 1)) / rows;
+  let cellW: number;
+  let cellH: number;
+  // Occupancy canvas first: the admin layout-editor slot (or the first
+  // saved cell) is what the capture must fill, not the even grid.
+  if (t.cells?.[0]) {
+    cellW = t.cells[0].w * sheet.width;
+    cellH = t.cells[0].h * sheet.height;
+  } else {
+    const cols = Math.max(1, t.frameCols ?? 1);
+    const rows = Math.max(1, t.frameRows ?? 1);
+    const margin = t.cellMargin ?? 24;
+    const gap = t.cellGap ?? 24;
+    cellW = (sheet.width - margin * 2 - gap * (cols - 1)) / cols;
+    cellH = (sheet.height - margin * 2 - gap * (rows - 1)) / rows;
+  }
   if (cellW <= 0 || cellH <= 0) return 16.6667;
-  const zoom = t.cellZoom ?? 1;
+  const { zoom } = occupancyFill(t, (t.cells?.length ?? 0) > 0);
   const visibleW = Math.min(1, cellW / cellH / (PHOTO_ASPECT * zoom));
   return Math.max(0, (1 - visibleW) / 2) * 100;
 });
@@ -276,8 +285,12 @@ watch(effectiveFrameStyle, async () => {
   }
 });
 
-// Layout type to match template preview (strip / horizontal)
-const template = computed(() => store.selectedTemplate);
+// Live copy of the selected layout (cells / frame art). Fall back to
+// the session snapshot so the left frame preview never disappears if
+// the live lookup is briefly empty.
+const liveTemplate = computed(
+  () => store.sessionTemplate ?? store.selectedTemplate,
+);
 
 
 // Check and initialize Canon EDSDK camera
@@ -354,23 +367,113 @@ async function initCanonCamera() {
   }
 }
 
+function webcamErrorMessage(err: unknown): string {
+  const name = err instanceof DOMException ? err.name : "";
+  const msg = err instanceof Error ? err.message : String(err);
+  if (name === "NotReadableError" || /could not start video source/i.test(msg)) {
+    return "Could not start this computer's camera. Close other apps using it (Camera, Teams, Zoom, Chrome), then retry. On Windows: Settings → Privacy & security → Camera → allow desktop apps.";
+  }
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return "Camera permission was denied. Allow camera access for this app and retry.";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return "No camera was found on this computer.";
+  }
+  if (name === "OverconstrainedError") {
+    return "This camera does not support the requested resolution. Retry to try a simpler mode.";
+  }
+  return msg || "Failed to start the camera.";
+}
+
+function stopWebcamTracks(media?: MediaStream | null) {
+  media?.getTracks().forEach((track) => track.stop());
+}
+
+async function openVideoStream(): Promise<MediaStream> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("Camera access is not available in this environment.");
+  }
+
+  stopWebcamTracks(stream.value);
+  stream.value = null;
+
+  const attempts: MediaStreamConstraints[] = [
+    { audio: false, video: { width: { ideal: 1920 }, height: { ideal: 1080 } } },
+    { audio: false, video: { facingMode: "user" } },
+    { audio: false, video: true },
+  ];
+
+  let lastError: unknown;
+  for (const constraints of attempts) {
+    try {
+      console.log("[Camera] getUserMedia", JSON.stringify(constraints));
+      const media = await navigator.mediaDevices.getUserMedia(constraints);
+      const label = media.getVideoTracks()[0]?.label || "(unnamed)";
+      console.log("[Camera] Webcam started:", label);
+      return media;
+    } catch (err) {
+      lastError = err;
+      console.warn(
+        "[Camera] getUserMedia failed:",
+        err instanceof Error ? `${err.name}: ${err.message}` : err,
+      );
+      stopWebcamTracks(
+        err && typeof err === "object" && "stream" in (err as object)
+          ? ((err as { stream?: MediaStream }).stream ?? null)
+          : null,
+      );
+    }
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter((d) => d.kind === "videoinput");
+    console.log(
+      "[Camera] Video devices:",
+      cams.map((c) => c.label || c.deviceId.slice(0, 8)),
+    );
+    for (const cam of cams) {
+      try {
+        const media = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { deviceId: { exact: cam.deviceId } },
+        });
+        console.log("[Camera] Webcam started on", cam.label || cam.deviceId);
+        return media;
+      } catch (err) {
+        lastError = err;
+        console.warn(
+          "[Camera] Device failed:",
+          cam.label || cam.deviceId,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  } catch (err) {
+    lastError = err;
+  }
+
+  throw new Error(webcamErrorMessage(lastError));
+}
+
 async function initWebcam() {
-  const media = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
-    audio: false,
-  });
+  const media = await openVideoStream();
   stream.value = media;
   cameraReady.value = true;
   await nextTick();
-  if (videoRef.value) {
-    videoRef.value.srcObject = media;
-    await videoRef.value.play();
-  }
-  if (videoBlurRef.value) {
-    videoBlurRef.value.srcObject = media;
-    await videoBlurRef.value.play();
-  }
-  console.log("[Camera] Test mode — using this computer's camera");
+  const bind = async (el: HTMLVideoElement | null) => {
+    if (!el) return;
+    el.srcObject = media;
+    el.muted = true;
+    try {
+      await el.play();
+    } catch (playErr) {
+      console.warn("[Camera] video.play() failed:", playErr);
+    }
+  };
+  await bind(videoRef.value);
+  await bind(videoBlurRef.value);
+  console.log("[Camera] Using this computer's camera");
 }
 
 // Initialize camera - EDSDK only
@@ -395,8 +498,11 @@ async function initCamera() {
     const canonInitialized = await initCanonCamera();
     
     if (!canonInitialized) {
-      // Error message already logged in initCanonCamera
-      throw new Error('Failed to connect to Canon camera. Check console for details.');
+      console.warn(
+        "[Camera] No Canon camera — falling back to this computer's webcam",
+      );
+      await initWebcam();
+      return;
     }
 
     console.log('[Camera] ✓ Camera initialization complete');
@@ -406,7 +512,8 @@ async function initCamera() {
     console.error("[Camera] Camera initialization error:", err);
 
     // Show error modal to user
-    cameraErrorMessage.value = err.message || 'Failed to initialize camera';
+    cameraErrorMessage.value =
+      err instanceof Error ? err.message : webcamErrorMessage(err);
     cameraErrorIsConnection.value = true;
     showCameraError.value = true;
 
@@ -450,8 +557,10 @@ async function stopLiveView() {
 function retryCameraConnection() {
   showCameraError.value = false;
   cameraErrorMessage.value = '';
+  stopWebcamTracks(stream.value);
+  stream.value = null;
   initCamera().catch(err => {
-    console.error('[Camera] Retry failed:', err);
+    console.error('[Camera] Retry failed:', err instanceof Error ? err.message : err);
   });
 }
 
@@ -578,18 +687,7 @@ async function capturePhotoInner(hadLiveView: boolean) {
   let sourceSrc: string | null = null;
   let sourceVideo: HTMLVideoElement | null = null;
 
-  if (!store.cameraDetectionEnabled) {
-    // Test mode used to stamp sample.png into every slot:
-    // sourceSrc = TEST_SAMPLE_SRC;
-    // console.log("[Camera] Test mode — capturing from sample.png");
-    sourceVideo = videoRef.value;
-    if (!sourceVideo || sourceVideo.readyState < 2) {
-      throw new Error("Webcam is not ready. Allow camera access and try again.");
-    }
-    console.log(
-      `[Camera] Test mode — capturing webcam frame ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`,
-    );
-  } else if (canonCameraConnected.value && window.electronAPI?.canonTakePhoto) {
+  if (canonCameraConnected.value && window.electronAPI?.canonTakePhoto) {
     try {
       console.log("[Camera] Taking photo with Canon EDSDK...");
       const result = await window.electronAPI.canonTakePhoto();
@@ -608,8 +706,13 @@ async function capturePhotoInner(hadLiveView: boolean) {
       throw error;
     }
   } else {
-    console.error("[Camera] Canon camera not connected or EDSDK not available");
-    throw new Error("Canon camera not available. Please ensure camera is connected via USB.");
+    sourceVideo = videoRef.value;
+    if (!sourceVideo || sourceVideo.readyState < 2) {
+      throw new Error("Camera is not ready. Allow camera access and try again.");
+    }
+    console.log(
+      `[Camera] Capturing webcam frame ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`,
+    );
   }
 
   try {
@@ -779,6 +882,11 @@ async function capturePhotoInner(hadLiveView: boolean) {
           }
         }
 
+        // Keep only the lit center of the live view (inside the crop
+        // bars). That is what the guest composed, and what the left
+        // strip should show — not the full wide camera frame.
+        cropCanvasToHighlightedView(canvas, ctx, cropBarPercent.value);
+
         const finalImageData = canvas.toDataURL("image/jpeg", 0.92);
         console.log(`[Camera] Image processed: ${Math.round(finalImageData.length / 1024)}KB (${canvas.width}x${canvas.height})`);
         store.addPhoto(finalImageData);
@@ -799,6 +907,57 @@ async function capturePhotoInner(hadLiveView: boolean) {
     console.error("[Camera] Error processing capture:", error);
     throw error;
   }
+}
+
+/**
+ * Crop the processed capture to the same window the live-view bars
+ * highlight. The viewfinder is a 3:2 box with object-fit:cover, then
+ * left/right bars of `cropBarPct`% each. Result aspect matches the
+ * template cell so the left strip shows that framed shot, not the
+ * full wide feed.
+ */
+function cropCanvasToHighlightedView(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  cropBarPct: number,
+) {
+  const srcW = canvas.width;
+  const srcH = canvas.height;
+  if (srcW < 2 || srcH < 2) return;
+
+  const VIEW_ASPECT = 3 / 2;
+  const srcAspect = srcW / srcH;
+  let sx = 0;
+  let sy = 0;
+  let sw = srcW;
+  let sh = srcH;
+  if (srcAspect > VIEW_ASPECT + 0.001) {
+    sw = srcH * VIEW_ASPECT;
+    sx = (srcW - sw) / 2;
+  } else if (srcAspect < VIEW_ASPECT - 0.001) {
+    sh = srcW / VIEW_ASPECT;
+    sy = (srcH - sh) / 2;
+  }
+
+  const bar = Math.max(0, Math.min(0.45, cropBarPct / 100));
+  if (bar > 0) {
+    sx += sw * bar;
+    sw *= 1 - 2 * bar;
+  }
+
+  sx = Math.max(0, Math.round(sx));
+  sy = Math.max(0, Math.round(sy));
+  sw = Math.max(1, Math.min(srcW - sx, Math.round(sw)));
+  sh = Math.max(1, Math.min(srcH - sy, Math.round(sh)));
+  if (sw >= srcW && sh >= srcH) return;
+
+  const cropped = ctx.getImageData(sx, sy, sw, sh);
+  canvas.width = sw;
+  canvas.height = sh;
+  ctx.putImageData(cropped, 0, 0);
+  console.log(
+    `[Camera] Cropped to highlighted view ${sw}x${sh} (bars ${cropBarPct.toFixed(1)}% / side)`,
+  );
 }
 
 function setFilter(filter: CameraFilter) {
@@ -1061,13 +1220,15 @@ onUnmounted(() => {
          shot lands (same geometry the print composite uses). -->
     <div class="strip-preview">
       <div class="strip-preview-tilt">
-        <TemplateLivePreview
-          v-if="store.selectedTemplate"
-          :template="store.selectedTemplate"
-          :photos="capturedPhotoUrls"
-          :active-index="store.capturedPhotos.length"
-          fluid
-        />
+        <div class="strip-preview-cq">
+          <TemplateLivePreview
+            v-if="liveTemplate"
+            :template="liveTemplate"
+            :photos="capturedPhotoUrls"
+            :active-index="store.capturedPhotos.length"
+            fluid
+          />
+        </div>
       </div>
     </div>
 
@@ -1340,6 +1501,7 @@ onUnmounted(() => {
   display: grid;
   /* Side columns share leftover space; the viewfinder takes the majority. */
   grid-template-columns: minmax(0, 1fr) minmax(0, 2.4fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   align-items: stretch;
   /* Bottom padding clears the absolutely-positioned Back button. */
   padding: 2.25rem 3rem 6.75rem;
@@ -1370,6 +1532,8 @@ onUnmounted(() => {
    TemplateLivePreview.vue, which derives it from the real template
    instead of the old hardcoded 4:3 placeholder boxes. */
 .strip-preview {
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -1383,15 +1547,30 @@ onUnmounted(() => {
   min-width: 0;
   min-height: 0;
   display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  /* Carries the vintage tilt the old placeholder card had.
+     Keep transform OFF the size-container — CQ on a transformed
+     element can collapse to 0×0 and hide the frame preview. */
+  transform: rotate(-3deg);
+}
+
+.strip-preview-cq {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
   align-items: center;
   justify-content: center;
   container-type: size;
-  /* Carries the vintage tilt the old placeholder card had. */
-  transform: rotate(-3deg);
 }
 
 /* Camera Container */
 .camera-container {
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -1821,6 +2000,8 @@ onUnmounted(() => {
 
 /* Action Area */
 .action-area {
+  grid-column: 3;
+  grid-row: 1;
   min-width: 0;
   min-height: 0;
   display: flex;

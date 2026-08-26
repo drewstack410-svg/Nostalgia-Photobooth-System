@@ -9,6 +9,9 @@ try {
       return ipcRenderer.invoke('save-photo', { imageData, filename });
     },
 
+    uploadToR2: (payload) => ipcRenderer.invoke('r2:upload', payload),
+    getR2Status: () => ipcRenderer.invoke('r2:status'),
+
     // Temp-folder save for transient print sheets — file ends up in
     // the OS temp dir, NOT in the user's Pictures/NostalgiaPhotobooth
     // folder. Use this for the print composite so the user's saved

@@ -152,7 +152,33 @@ export interface TemplateLayoutSpec {
   cellMargin?: number;
   cellGap?: number;
   cellZoom?: number;
+  fitMode?: "cover" | "contain";
+  /** Hand-placed occupancy slots from the admin layout editor. */
+  cells?: Array<{ x: number; y: number; w: number; h: number; rotation?: number }> | null;
   frameImageUrl?: string;
+}
+
+/**
+ * How a capture sits inside an occupancy slot (layout-editor canvas or
+ * a detected frame window). Those rectangles ARE the photo box — fill
+ * them cover-fit and never shrink. `cellZoom` below 1 used to inset
+ * every photo and leave white/cream around it inside the film window.
+ */
+export function occupancyFill(
+  template: Pick<TemplateLayoutSpec, "cellZoom" | "fitMode" | "cells">,
+  hasSlotRects: boolean,
+): { zoom: number; fitMode: "cover" | "contain" } {
+  const hasEditorCells = (template.cells?.length ?? 0) > 0;
+  if (hasSlotRects || hasEditorCells) {
+    return {
+      zoom: Math.max(template.cellZoom ?? 1, 1),
+      fitMode: "cover",
+    };
+  }
+  return {
+    zoom: template.cellZoom ?? 1,
+    fitMode: template.fitMode ?? "contain",
+  };
 }
 
 /**

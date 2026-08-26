@@ -19,7 +19,7 @@
 //        transaction id / QR image from it.
 //
 // WHY THE MAIN PROCESS: the renderer's Content-Security-Policy allows
-// connect-src only to 'self' + Cloudinary, so a fetch() from Vue to any
+// connect-src only to 'self' + R2 + PocketBase, so a fetch() from Vue to any
 // middleware host is blocked outright. Outbound HTTP must live here.
 //
 // EVERYTHING IS CONFIG-DRIVEN. We do not know the middleware's exact

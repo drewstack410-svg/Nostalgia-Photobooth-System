@@ -17,7 +17,7 @@
  * survives app updates, because userData is not touched by a reinstall.
  */
 import { setKioskId } from "@/lib/dashboardPb";
-import { setPocketBaseUrl } from "@/lib/pocketbase";
+import { checkPocketBaseConnection, setPocketBaseUrl } from "@/lib/pocketbase";
 
 export interface BoothSettings {
   kioskId: string;
@@ -79,6 +79,7 @@ export async function saveBoothConfig(
   if (typeof patch.pocketBaseUrl === "string" && patch.pocketBaseUrl.trim()) {
     current.pocketBaseUrl = patch.pocketBaseUrl.trim();
     setPocketBaseUrl(current.pocketBaseUrl);
+    void checkPocketBaseConnection();
   }
   return true;
 }
