@@ -79,6 +79,7 @@
   const lightboxStage = document.getElementById("hlLightboxStage");
   const lightboxClose = document.getElementById("hlLightboxClose");
   let lightboxCleanup = null;
+  let stripResizeCleanup = null;
 
   titleEl.textContent = title;
   document.title = title;
@@ -229,13 +230,10 @@
     const isHighlight = view && view.kind === "highlight";
     stageEl.classList.toggle("is-video", false);
     stageEl.classList.toggle("is-highlight-strip", !!isHighlight);
-    if (printAspect && isHighlight) {
-      stageEl.style.setProperty(
-        "--strip-ar",
-        printAspect.w + " / " + printAspect.h,
-      );
-    } else {
-      stageEl.style.removeProperty("--strip-ar");
+    stageEl.style.removeProperty("--strip-ar");
+    if (stripResizeCleanup) {
+      stripResizeCleanup();
+      stripResizeCleanup = null;
     }
     if (filmstripEl) filmstripEl.hidden = true;
     if (filmstripEl) filmstripEl.innerHTML = "";
@@ -325,8 +323,14 @@
       .split(",")
       .map((part) => {
         const n = part.split("_").map(Number);
-        if (n.length < 4 || n.some((v) => !isFinite(v))) return null;
-        return { x: n[0], y: n[1], w: n[2], h: n[3] };
+        if (n.length < 4 || n.slice(0, 4).some((v) => !isFinite(v))) return null;
+        return {
+          x: n[0],
+          y: n[1],
+          w: n[2],
+          h: n[3],
+          r: n.length >= 5 && isFinite(n[4]) ? n[4] : 0,
+        };
       })
       .filter(Boolean);
   }
@@ -342,36 +346,122 @@
 
   function defaultSlots(n, portrait) {
     const count = Math.max(1, n);
-    if (portrait || count >= 3) {
-      const pad = 0.07;
-      const gap = 0.016;
-      const inner = 1 - pad * 2;
-      const h = (inner - gap * (count - 1)) / count;
-      const w = 0.78;
-      const x = (1 - w) / 2;
-      return Array.from({ length: count }, (_, i) => ({
-        x,
-        y: pad + i * (h + gap),
-        w,
-        h,
-      }));
+    let cols = 1;
+    let rows = count;
+    if (count === 2) {
+      cols = portrait ? 1 : 2;
+      rows = portrait ? 2 : 1;
+    } else if (count === 3) {
+      cols = portrait ? 1 : 3;
+      rows = portrait ? 3 : 1;
+    } else if (count === 4) {
+      cols = 2;
+      rows = 2;
+    } else if (count <= 6) {
+      cols = portrait ? 2 : 3;
+      rows = Math.ceil(count / cols);
+    } else {
+      cols = 2;
+      rows = Math.ceil(count / cols);
     }
-    const cols = count === 2 ? 2 : 2;
-    const rows = Math.ceil(count / cols);
-    const pad = 0.06;
-    const gap = 0.02;
-    const cw = (1 - pad * 2 - gap * (cols - 1)) / cols;
-    const ch = (1 - pad * 2 - gap * (rows - 1)) / rows;
+    const padX = 0.055;
+    const padY = 0.07;
+    const gapX = 0.035;
+    const gapY = 0.055;
+    const cw = (1 - padX * 2 - gapX * (cols - 1)) / cols;
+    const ch = (1 - padY * 2 - gapY * (rows - 1)) / rows;
     return Array.from({ length: count }, (_, i) => {
       const c = i % cols;
       const r = Math.floor(i / cols);
       return {
-        x: pad + c * (cw + gap),
-        y: pad + r * (ch + gap),
+        x: padX + c * (cw + gapX),
+        y: padY + r * (ch + gapY),
         w: cw,
         h: ch,
+        r: 0,
       };
     });
+  }
+
+  // When the QR has no slot list, read photo windows off the printed
+  // PNG (black film frames with photos already in the holes).
+  function detectSlotsFromPrint(img) {
+    try {
+      const srcW = img.naturalWidth;
+      const srcH = img.naturalHeight;
+      if (!srcW || !srcH) return [];
+      const maxW = 280;
+      const scale = Math.min(1, maxW / srcW);
+      const w = Math.max(1, Math.round(srcW * scale));
+      const h = Math.max(1, Math.round(srcH * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return [];
+      ctx.drawImage(img, 0, 0, w, h);
+      const data = ctx.getImageData(0, 0, w, h).data;
+      const seen = new Uint8Array(w * h);
+      const isContent = (idx) => {
+        const o = idx * 4;
+        return 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2] > 38;
+      };
+      const rects = [];
+      const minArea = w * h * 0.012;
+      const stack = new Int32Array(w * h);
+      for (let start = 0; start < w * h; start++) {
+        if (seen[start] || !isContent(start)) continue;
+        let sp = 0;
+        stack[sp++] = start;
+        seen[start] = 1;
+        let minX = w;
+        let maxX = 0;
+        let minY = h;
+        let maxY = 0;
+        let area = 0;
+        while (sp > 0) {
+          const p = stack[--sp];
+          const x = p % w;
+          const y = (p / w) | 0;
+          area++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          const nbs = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1];
+          for (let k = 0; k < 4; k++) {
+            const next = nbs[k];
+            if (next < 0 || seen[next] || !isContent(next)) continue;
+            seen[next] = 1;
+            stack[sp++] = next;
+          }
+        }
+        if (area < minArea) continue;
+        const bw = maxX - minX + 1;
+        const bh = maxY - minY + 1;
+        if (bw / w < 0.12 || bh / h < 0.12) continue;
+        rects.push({
+          x: minX / w,
+          y: minY / h,
+          w: bw / w,
+          h: bh / h,
+          r: 0,
+        });
+      }
+      rects.sort((a, b) => a.y - b.y || a.x - b.x);
+      const rows = [];
+      rects.forEach((r) => {
+        const row = rows.find(
+          (grp) => Math.abs(grp[0].y - r.y) < Math.min(grp[0].h, r.h) * 0.5,
+        );
+        if (row) row.push(r);
+        else rows.push([r]);
+      });
+      rows.forEach((row) => row.sort((a, b) => a.x - b.x));
+      return rows.flat();
+    } catch (err) {
+      return [];
+    }
   }
 
   function formatPlayerTime(secs) {
@@ -410,6 +500,19 @@
     lightboxCleanup = mountHighlightPlayer(lightboxStage, urls, startIndex);
   }
 
+  function containFitBox(nw, nh, maxW, maxH) {
+    const scale = Math.min(maxW / nw, maxH / nh);
+    return { w: Math.max(1, nw * scale), h: Math.max(1, nh * scale) };
+  }
+
+  function sizeHighlightStrip(strip, nw, nh) {
+    const box = stageInner.getBoundingClientRect();
+    const fit = containFitBox(nw, nh, box.width, box.height);
+    strip.style.width = fit.w + "px";
+    strip.style.height = fit.h + "px";
+    strip.style.aspectRatio = nw + " / " + nh;
+  }
+
   function renderHighlight(view) {
     loadingEl.hidden = true;
     updateSaveLabel(view);
@@ -420,63 +523,103 @@
 
     const n = view.urls.length;
     const portrait = printAspect ? printAspect.h >= printAspect.w : n >= 3;
-    const slots =
-      layoutSlots.length >= n ? layoutSlots.slice(0, n) : defaultSlots(n, portrait);
-
     const strip = document.createElement("div");
     strip.className = "highlight-strip";
-    if (printAspect) {
-      strip.style.aspectRatio = printAspect.w + " / " + printAspect.h;
-    } else {
-      strip.style.aspectRatio = portrait ? "2 / 3" : "3 / 2";
+
+    function mountSlots(slots) {
+      Array.from(strip.querySelectorAll(".highlight-slot")).forEach((el) =>
+        el.remove(),
+      );
+      slots.forEach((slot, i) => {
+        const url = view.urls[i % n];
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "highlight-slot";
+        btn.style.left = slot.x * 100 + "%";
+        btn.style.top = slot.y * 100 + "%";
+        btn.style.width = slot.w * 100 + "%";
+        btn.style.height = slot.h * 100 + "%";
+        if (slot.r) {
+          btn.style.transform = "rotate(" + slot.r + "deg)";
+        }
+        btn.setAttribute("aria-label", "Play highlight " + ((i % n) + 1));
+
+        const vid = document.createElement("video");
+        vid.src = url;
+        vid.muted = true;
+        vid.loop = true;
+        vid.playsInline = true;
+        vid.setAttribute("playsinline", "");
+        vid.setAttribute("webkit-playsinline", "");
+        vid.preload = "metadata";
+        vid.setAttribute("controlslist", "nodownload");
+        btn.appendChild(vid);
+
+        const badge = document.createElement("span");
+        badge.className = "highlight-slot-play";
+        badge.innerHTML =
+          '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>';
+        btn.appendChild(badge);
+
+        btn.addEventListener("click", () => {
+          Array.from(strip.querySelectorAll("video")).forEach((v) => v.pause());
+          openHighlightLightbox(view.urls, i % n);
+        });
+        vid.addEventListener("loadeddata", () => {
+          vid.play().catch(() => {});
+        });
+
+        strip.appendChild(btn);
+      });
+    }
+
+    function applySlots(count, isPortrait, frameImg) {
+      if (layoutSlots.length) {
+        mountSlots(layoutSlots);
+        return;
+      }
+      mountSlots(defaultSlots(count, isPortrait));
+      if (!frameImg || !frameImg.src) return;
+      const probe = new Image();
+      probe.crossOrigin = "anonymous";
+      probe.onload = () => {
+        const detected = detectSlotsFromPrint(probe);
+        if (detected.length >= Math.min(2, count)) mountSlots(detected);
+      };
+      probe.src = frameImg.src;
+    }
+
+    function watchStripSize(nw, nh) {
+      sizeHighlightStrip(strip, nw, nh);
+      if (typeof ResizeObserver === "undefined") return;
+      const ro = new ResizeObserver(() => sizeHighlightStrip(strip, nw, nh));
+      ro.observe(stageInner);
+      stripResizeCleanup = () => ro.disconnect();
     }
 
     if (printId) {
+      loadingEl.hidden = false;
       const frame = document.createElement("img");
       frame.className = "highlight-strip-frame";
       frame.alt = "Template";
+      frame.onload = () => {
+        loadingEl.hidden = true;
+        watchStripSize(frame.naturalWidth, frame.naturalHeight);
+        applySlots(n, frame.naturalHeight >= frame.naturalWidth, frame);
+      };
+      frame.onerror = () => {
+        loadingEl.hidden = true;
+        const ar = printAspect || { w: portrait ? 2 : 3, h: portrait ? 3 : 2 };
+        watchStripSize(ar.w, ar.h);
+        applySlots(n, ar.h >= ar.w);
+      };
       frame.src = imageUrl(printId);
       strip.appendChild(frame);
+    } else {
+      const ar = printAspect || { w: portrait ? 2 : 3, h: portrait ? 3 : 2 };
+      watchStripSize(ar.w, ar.h);
+      applySlots(n, ar.h >= ar.w);
     }
-
-    view.urls.forEach((url, i) => {
-      const slot = slots[i] || defaultSlots(n, portrait)[i];
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "highlight-slot";
-      btn.style.left = slot.x * 100 + "%";
-      btn.style.top = slot.y * 100 + "%";
-      btn.style.width = slot.w * 100 + "%";
-      btn.style.height = slot.h * 100 + "%";
-      btn.setAttribute("aria-label", "Play highlight " + (i + 1));
-
-      const vid = document.createElement("video");
-      vid.src = url;
-      vid.muted = true;
-      vid.loop = true;
-      vid.playsInline = true;
-      vid.setAttribute("playsinline", "");
-      vid.setAttribute("webkit-playsinline", "");
-      vid.preload = "metadata";
-      vid.setAttribute("controlslist", "nodownload");
-      btn.appendChild(vid);
-
-      const badge = document.createElement("span");
-      badge.className = "highlight-slot-play";
-      badge.innerHTML =
-        '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>';
-      btn.appendChild(badge);
-
-      btn.addEventListener("click", () => {
-        Array.from(strip.querySelectorAll("video")).forEach((v) => v.pause());
-        openHighlightLightbox(view.urls, i);
-      });
-      vid.addEventListener("loadeddata", () => {
-        vid.play().catch(() => {});
-      });
-
-      strip.appendChild(btn);
-    });
 
     stageInner.appendChild(strip);
   }

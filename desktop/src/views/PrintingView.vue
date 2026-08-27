@@ -5,7 +5,7 @@ import { usePhotoboothStore } from "@/stores/photobooth";
 // Cloudinary unsigned uploads are parked. Guest copies now go to Cloudflare R2.
 // import { uploadToCloudinary } from "@/services/cloudinary";
 import { uploadToR2 } from "@/services/r2";
-import { getPaperSizePx, occupancyFill } from "@/utils/printLayout";
+import { getPaperSizePx, getTemplateCellRects, occupancyFill } from "@/utils/printLayout";
 import type { Rect } from "@/utils/printLayout";
 import { getFrameWindows, scaleWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
@@ -148,55 +148,108 @@ function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; ext: string } | n
 // Falls back to "" when R2 or the gallery base URL aren't
 // configured — QRScanView handles that case by showing a friendly
 // "cloud upload didn't complete" message instead of a dead QR.
-function galleryLayoutParam(): { slots: string; par: string } | null {
+function loadNaturalSize(
+  src: string,
+): Promise<{ w: number; h: number } | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () =>
+      resolve(
+        img.naturalWidth && img.naturalHeight
+          ? { w: img.naturalWidth, h: img.naturalHeight }
+          : null,
+      );
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+type GallerySlot = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rotation?: number;
+};
+
+// Same precedence as the print composite / live preview: hand-placed
+// cells, then transparent windows in the frame art, then the margin/gap
+// grid. Fractions are of the GALLERY print PNG (one strip for 2×6).
+async function galleryLayoutParam(): Promise<{ slots: string; par: string } | null> {
   const t = store.sessionTemplate ?? store.selectedTemplate;
   if (!t) return null;
   const sheet = getPaperSizePx(t.paperSize);
   const par = `${Math.round(sheet.width)}x${Math.round(sheet.height)}`;
-  let rects: { x: number; y: number; w: number; h: number }[] = [];
+  let rects: GallerySlot[] = [];
+
   if (t.cells?.length) {
-    rects = t.cells.map((c) => ({ x: c.x, y: c.y, w: c.w, h: c.h }));
-  } else {
-    const cols = Math.max(1, t.frameCols ?? 1);
-    const rows = Math.max(1, t.frameRows ?? 1);
-    const margin = t.cellMargin ?? 24;
-    const gap = t.cellGap ?? 24;
-    const cellW =
-      (sheet.width - margin * 2 - gap * (cols - 1)) / cols / sheet.width;
-    const cellH =
-      (sheet.height - margin * 2 - gap * (rows - 1)) / rows / sheet.height;
-    const mx = margin / sheet.width;
-    const my = margin / sheet.height;
-    const gx = gap / sheet.width;
-    const gy = gap / sheet.height;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        rects.push({
-          x: mx + c * (cellW + gx),
-          y: my + r * (cellH + gy),
-          w: cellW,
-          h: cellH,
-        });
-      }
+    rects = t.cells.map((c) => ({
+      x: c.x,
+      y: c.y,
+      w: c.w,
+      h: c.h,
+      rotation: c.rotation || 0,
+    }));
+  } else if (t.frameImageUrl) {
+    const expected =
+      Math.max(1, t.frameRows ?? 0) * Math.max(1, t.frameCols ?? 0);
+    const [windows, frameSize] = await Promise.all([
+      getFrameWindows(
+        t.frameImageUrl,
+        expected > 1 ? expected : undefined,
+      ),
+      loadNaturalSize(t.frameImageUrl),
+    ]);
+    if (windows?.length && frameSize) {
+      const isStrip = t.paperSize === "2x6-portrait";
+      const printSheet = isStrip ? getPaperSizePx("4x6-portrait") : sheet;
+      const frameAspect = frameSize.w / frameSize.h;
+      const sheetAspect = printSheet.width / printSheet.height;
+      const designAspect = sheet.width / sheet.height;
+      const frameIsFullSheet =
+        isStrip &&
+        Math.abs(frameAspect - sheetAspect) <
+          Math.abs(frameAspect - designAspect);
+      const areaW = frameIsFullSheet ? frameSize.w / 2 : frameSize.w;
+      const areaH = frameSize.h;
+      const src = frameIsFullSheet
+        ? windows.filter((r) => r.x + r.width / 2 < areaW)
+        : windows;
+      rects = src.map((r) => ({
+        x: r.x / areaW,
+        y: r.y / areaH,
+        w: r.width / areaW,
+        h: r.height / areaH,
+      }));
     }
   }
-  const n = Math.max(1, store.requiredPhotos || rects.length);
-  rects = rects.slice(0, n);
+
+  if (!rects.length) {
+    rects = getTemplateCellRects(t).map((r) => ({
+      x: r.x / sheet.width,
+      y: r.y / sheet.height,
+      w: r.width / sheet.width,
+      h: r.height / sheet.height,
+    }));
+  }
+
   if (!rects.length) return null;
   const slots = rects
-    .map((c) =>
-      [c.x, c.y, c.w, c.h].map((v) => Number(v).toFixed(4)).join("_"),
-    )
+    .map((c) => {
+      const parts = [c.x, c.y, c.w, c.h].map((v) => Number(v).toFixed(4));
+      if (c.rotation) parts.push(Number(c.rotation).toFixed(2));
+      return parts.join("_");
+    })
     .join(",");
   return { slots, par };
 }
 
-function buildGalleryUrl(
+async function buildGalleryUrl(
   publicIds: string[],
   sessionTag: string,
   printId?: string,
   videoIds?: string[],
-): string {
+): Promise<string> {
   if (publicIds.length === 0 && !printId && !(videoIds && videoIds.length)) return "";
   const r2Base = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
   if (!r2Base) {
@@ -217,7 +270,7 @@ function buildGalleryUrl(
   if (videoIds && videoIds.length > 0) {
     url.searchParams.set("vids", videoIds.join(","));
   }
-  const layout = galleryLayoutParam();
+  const layout = await galleryLayoutParam();
   if (layout) {
     url.searchParams.set("slots", layout.slots);
     url.searchParams.set("par", layout.par);
@@ -1146,7 +1199,7 @@ async function saveComposite() {
         compositeUploadPromise,
         highlightUploadPromise,
       ]);
-      const sessionShareableUrl = buildGalleryUrl(
+      const sessionShareableUrl = await buildGalleryUrl(
         successfulIds,
         `session_${sessionTs}`,
         compositePublicId,
