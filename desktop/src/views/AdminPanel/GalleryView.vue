@@ -88,6 +88,12 @@ async function loadSavedPhotos() {
     savedPhotos.value = await Promise.all(
       photos.map(async (photo) => {
         const src = await window.electronAPI!.readPhoto(photo.path);
+        const folder = sessionFolderOf(photo.path);
+        const sib = store.recentStrips.find(
+          (s) =>
+            !!s.shareableUrl &&
+            (s.path === photo.path || sessionFolderOf(s.path) === folder),
+        );
         return {
           id: photo.path,
           src: src || "",
@@ -95,6 +101,7 @@ async function loadSavedPhotos() {
           timestamp: new Date(photo.created),
           path: photo.path,
           isLocal: false,
+          shareUrl: sib?.shareableUrl || "",
         };
       }),
     );
@@ -122,20 +129,56 @@ const qrPhoto = ref<GalleryPhoto | null>(null);
 const qrDataUrl = ref("");
 const qrBusy = ref(false);
 
+function sessionFolderOf(filePath?: string): string {
+  if (!filePath) return "";
+  return filePath.replace(/\\/g, "/").replace(/\/[^/]+$/, "").toLowerCase();
+}
+
+function resolveShareUrl(photo: GalleryPhoto): string {
+  if (photo.shareUrl) return photo.shareUrl;
+  const strips = store.recentStrips;
+  if (photo.sessionId) {
+    const sib = strips.find((s) => s.sessionId === photo.sessionId && s.shareableUrl);
+    if (sib?.shareableUrl) return sib.shareableUrl;
+  }
+  const folder = sessionFolderOf(photo.path);
+  if (folder) {
+    const sib = strips.find(
+      (s) => s.shareableUrl && sessionFolderOf(s.path) === folder,
+    );
+    if (sib?.shareableUrl) return sib.shareableUrl;
+  }
+  return "";
+}
+
+async function encodeQr(url: string): Promise<string> {
+  const colors = { dark: "#3d2b1f", light: "#f5f0e1" };
+  try {
+    return await QRCode.toDataURL(url, {
+      width: 600,
+      margin: 2,
+      color: colors,
+      errorCorrectionLevel: "M",
+    });
+  } catch {
+    return await QRCode.toDataURL(url, {
+      width: 600,
+      margin: 2,
+      color: colors,
+      errorCorrectionLevel: "L",
+    });
+  }
+}
+
 async function showQr(photo: GalleryPhoto) {
   qrPhoto.value = photo;
   qrDataUrl.value = "";
-  // No link means the upload never completed — show why rather than a
-  // QR that scans to nothing.
-  if (!photo.shareUrl) return;
+  const url = resolveShareUrl(photo);
+  if (url && !photo.shareUrl) photo.shareUrl = url;
+  if (!url) return;
   qrBusy.value = true;
   try {
-    qrDataUrl.value = await QRCode.toDataURL(photo.shareUrl, {
-      width: 600,
-      margin: 2,
-      color: { dark: "#3d2b1f", light: "#f5f0e1" },
-      errorCorrectionLevel: "M",
-    });
+    qrDataUrl.value = await encodeQr(url);
   } catch (err) {
     console.error("[Gallery] Failed to build QR:", err);
   } finally {

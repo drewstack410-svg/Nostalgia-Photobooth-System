@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@brick-a-brack/napi-canon-cameras": "^0.1.5",
+    "mp4-muxer": "^5.2.2",
     "pinia": "^2.1.7",
     "pocketbase": "^0.26.8",
     "qrcode": "^1.5.4",

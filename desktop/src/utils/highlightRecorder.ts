@@ -1,17 +1,26 @@
 /**
  * Session highlight clips: record the live view from 7.5s before the
- * shutter through 4s of the frozen post-shot preview. Canvas +
- * MediaRecorder so pausing the <video> also freezes the file (the
- * camera MediaStream would keep moving).
+ * shutter through 4s of the frozen post-shot preview.
  *
- * Webcam frames come from the <video> element; Canon EVF frames come
- * from the JPEG data-URL stream (`getStillUrl`).
+ * Frames are drawn to a canvas (so a paused <video> actually freezes)
+ * and encoded to H.264 MP4 via WebCodecs + mp4-muxer — iOS Safari will
+ * not play the WebM MediaRecorder would otherwise emit on Chromium.
  */
+
+import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 
 export const HIGHLIGHT_LEAD_MS = 7500;
 export const HIGHLIGHT_PREVIEW_MS = 4000;
 
 const MAX_WIDTH = 1280;
+const FPS = 30;
+const BITRATE = 2_500_000;
+const AVC_CODECS = [
+  "avc1.42001E",
+  "avc1.42001F",
+  "avc1.4D001E",
+  "avc1.64001E",
+];
 
 export type HighlightCaptureOpts = {
   video?: HTMLVideoElement | null;
@@ -21,35 +30,30 @@ export type HighlightCaptureOpts = {
 
 let canvas: HTMLCanvasElement | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
-let recorder: MediaRecorder | null = null;
-let chunks: Blob[] = [];
 let rafId = 0;
 let frozen = false;
+let recording = false;
 let sourceVideo: HTMLVideoElement | null = null;
 let getStillUrl: (() => string | null) | null = null;
 let getMirror: (() => boolean) | null = null;
 let stillImg: HTMLImageElement | null = null;
 let lastStillUrl = "";
-let mimeType = "";
-
-export function pickRecorderMime(): string {
-  if (typeof MediaRecorder === "undefined") return "";
-  const types = [
-    "video/mp4;codecs=avc1.42001E",
-    "video/mp4",
-    "video/webm;codecs=vp9",
-    "video/webm;codecs=vp8",
-    "video/webm",
-  ];
-  return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
-}
+let encoder: VideoEncoder | null = null;
+let muxer: Muxer<ArrayBufferTarget> | null = null;
+let startMs = 0;
+let frameCount = 0;
+let encodeFailed = false;
 
 export function isHighlightRecording(): boolean {
-  return recorder != null && recorder.state !== "inactive";
+  return recording && !encodeFailed;
 }
 
 function currentMirror(): boolean {
   return getMirror ? !!getMirror() : false;
+}
+
+function even(n: number): number {
+  return Math.max(2, n & ~1);
 }
 
 function sizeFromSources(
@@ -91,12 +95,6 @@ function pullStill() {
   stillImg.src = url;
 }
 
-function drawFrame() {
-  if (!canvas || !ctx) return;
-  if (!frozen) snapshotNow();
-  rafId = requestAnimationFrame(drawFrame);
-}
-
 function snapshotNow() {
   if (!canvas || !ctx) return;
   pullStill();
@@ -107,12 +105,70 @@ function snapshotNow() {
   }
 }
 
-export function startHighlightCapture(opts: HighlightCaptureOpts): boolean {
-  if (recorder) return true;
+function encodeCanvasFrame() {
+  if (!encoder || !canvas || encodeFailed) return;
+  if (encoder.state !== "configured") return;
+  if (encoder.encodeQueueSize > 8) return;
+  const timestamp = Math.max(0, Math.round((performance.now() - startMs) * 1000));
+  try {
+    const frame = new VideoFrame(canvas, {
+      timestamp,
+      alpha: "discard",
+    });
+    encoder.encode(frame, { keyFrame: frameCount % FPS === 0 });
+    frame.close();
+    frameCount++;
+  } catch (e) {
+    console.warn("[Highlight] Frame encode failed:", e);
+  }
+}
 
-  mimeType = pickRecorderMime();
-  if (!mimeType) {
-    console.warn("[Highlight] MediaRecorder not supported");
+function drawFrame() {
+  if (!canvas || !ctx || !recording) return;
+  if (!frozen) snapshotNow();
+  encodeCanvasFrame();
+  rafId = requestAnimationFrame(drawFrame);
+}
+
+function pickAvcCodec(width: number, height: number): string | null {
+  if (typeof VideoEncoder === "undefined") return null;
+  for (const codec of AVC_CODECS) {
+    try {
+      const encoder = new VideoEncoder({
+        output: () => {},
+        error: () => {},
+      });
+      encoder.configure({
+        codec,
+        width,
+        height,
+        bitrate: BITRATE,
+        framerate: FPS,
+        avc: { format: "avc" },
+      });
+      encoder.close();
+      return codec;
+    } catch {
+      /* try next profile */
+    }
+  }
+  return null;
+}
+
+function blobToDataUrl(blob: Blob): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () =>
+      resolve(typeof reader.result === "string" ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(blob);
+  });
+}
+
+export function startHighlightCapture(opts: HighlightCaptureOpts): boolean {
+  if (recording) return true;
+  if (typeof VideoEncoder === "undefined") {
+    console.warn("[Highlight] WebCodecs VideoEncoder is not available");
     return false;
   }
 
@@ -132,33 +188,65 @@ export function startHighlightCapture(opts: HighlightCaptureOpts): boolean {
 
   const scale = Math.min(1, MAX_WIDTH / size.width);
   canvas = document.createElement("canvas");
-  canvas.width = Math.max(2, Math.round(size.width * scale));
-  canvas.height = Math.max(2, Math.round(size.height * scale));
-  ctx = canvas.getContext("2d");
+  canvas.width = even(Math.round(size.width * scale));
+  canvas.height = even(Math.round(size.height * scale));
+  ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
   if (!ctx) return false;
 
-  frozen = false;
-  chunks = [];
-  snapshotNow();
-  drawFrame();
-
-  const recStream = canvas.captureStream(30);
-  try {
-    recorder = new MediaRecorder(recStream, {
-      mimeType,
-      videoBitsPerSecond: 2_500_000,
-    });
-  } catch (e) {
-    console.warn("[Highlight] MediaRecorder failed:", e);
-    stopLoop();
+  const codec = pickAvcCodec(canvas.width, canvas.height);
+  if (!codec) {
+    console.warn("[Highlight] No H.264 encoder available for MP4");
+    canvas = null;
+    ctx = null;
     return false;
   }
-  recorder.ondataavailable = (ev) => {
-    if (ev.data && ev.data.size > 0) chunks.push(ev.data);
-  };
-  recorder.start(400);
+
+  const target = new ArrayBufferTarget();
+  muxer = new Muxer({
+    target,
+    video: {
+      codec: "avc",
+      width: canvas.width,
+      height: canvas.height,
+      frameRate: FPS,
+    },
+    fastStart: "in-memory",
+    firstTimestampBehavior: "offset",
+  });
+
+  encodeFailed = false;
+  encoder = new VideoEncoder({
+    output: (chunk, meta) => {
+      try {
+        muxer?.addVideoChunk(chunk, meta);
+      } catch (e) {
+        console.warn("[Highlight] Mux failed:", e);
+        encodeFailed = true;
+      }
+    },
+    error: (e) => {
+      console.warn("[Highlight] Encoder error:", e);
+      encodeFailed = true;
+    },
+  });
+  encoder.configure({
+    codec,
+    width: canvas.width,
+    height: canvas.height,
+    bitrate: BITRATE,
+    framerate: FPS,
+    avc: { format: "avc" },
+    latencyMode: "realtime",
+  });
+
+  frozen = false;
+  frameCount = 0;
+  startMs = performance.now();
+  recording = true;
+  snapshotNow();
+  drawFrame();
   console.log(
-    `[Highlight] Recording ${canvas.width}x${canvas.height} ${mimeType}`,
+    `[Highlight] Recording MP4 ${canvas.width}x${canvas.height} ${codec}`,
   );
   return true;
 }
@@ -175,62 +263,74 @@ function stopLoop() {
 
 function resetState() {
   stopLoop();
+  recording = false;
   frozen = false;
+  encodeFailed = false;
   sourceVideo = null;
   getStillUrl = null;
   getMirror = null;
   stillImg = null;
   lastStillUrl = "";
-  recorder = null;
-  chunks = [];
+  frameCount = 0;
+  if (encoder && encoder.state !== "closed") {
+    try {
+      encoder.close();
+    } catch {
+      /* already closed */
+    }
+  }
+  encoder = null;
+  muxer = null;
   canvas = null;
   ctx = null;
 }
 
 export function abortHighlightCapture() {
-  if (recorder && recorder.state !== "inactive") {
-    try {
-      recorder.stop();
-    } catch {
-      /* already stopped */
-    }
-  }
+  recording = false;
   resetState();
 }
 
-export function stopHighlightCapture(): Promise<string | null> {
-  return new Promise((resolve) => {
-    const rec = recorder;
-    if (!rec || rec.state === "inactive") {
-      abortHighlightCapture();
-      resolve(null);
-      return;
-    }
-    rec.onstop = () => {
-      const type = rec.mimeType || mimeType || "video/webm";
-      const blob = new Blob(chunks, { type });
-      resetState();
-      if (blob.size < 100) {
-        console.warn("[Highlight] Clip empty");
-        resolve(null);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const url = typeof reader.result === "string" ? reader.result : null;
-        console.log(
-          `[Highlight] Clip ready ${Math.round(blob.size / 1024)}KB`,
-        );
-        resolve(url);
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    };
-    try {
-      rec.stop();
-    } catch {
-      abortHighlightCapture();
-      resolve(null);
-    }
-  });
+export async function stopHighlightCapture(): Promise<string | null> {
+  if (!recording || !encoder || !muxer) {
+    abortHighlightCapture();
+    return null;
+  }
+  recording = false;
+  stopLoop();
+  snapshotNow();
+  encodeCanvasFrame();
+
+  const enc = encoder;
+  const mx = muxer;
+  try {
+    if (enc.state === "configured") await enc.flush();
+  } catch (e) {
+    console.warn("[Highlight] Encoder flush failed:", e);
+  }
+  try {
+    if (enc.state !== "closed") enc.close();
+  } catch {
+    /* already closed */
+  }
+  encoder = null;
+
+  try {
+    mx.finalize();
+  } catch (e) {
+    console.warn("[Highlight] Mux finalize failed:", e);
+    resetState();
+    return null;
+  }
+
+  const buffer = mx.target.buffer;
+  muxer = null;
+  resetState();
+  if (!buffer || buffer.byteLength < 100) {
+    console.warn("[Highlight] Clip empty");
+    return null;
+  }
+  const blob = new Blob([buffer], { type: "video/mp4" });
+  const url = await blobToDataUrl(blob);
+  console.log(`[Highlight] MP4 ready ${Math.round(blob.size / 1024)}KB`);
+  return url;
 }

@@ -90,21 +90,31 @@ function returnToStart() {
 // THANK YOU! and Done. Reprints are still available to staff from
 // Admin → Gallery → Reprint.
 
+async function encodeQr(url: string, width: number, margin: number): Promise<string> {
+  const colors = { dark: "#3d2b1f", light: "#f5f0e1" };
+  try {
+    return await QRCode.toDataURL(url, {
+      width,
+      margin,
+      color: colors,
+      errorCorrectionLevel: "M",
+    });
+  } catch {
+    // Long gallery URLs (many highlight clips) can exceed version-40
+    // at M; L still scans fine on a phone camera.
+    return await QRCode.toDataURL(url, {
+      width,
+      margin,
+      color: colors,
+      errorCorrectionLevel: "L",
+    });
+  }
+}
+
 async function renderQr(url: string) {
   qrTargetUrl.value = url;
   console.log("[QR] Encoding URL:", url);
-  qrDataUrl.value = await QRCode.toDataURL(url, {
-    width: 900, // rendered ~412px on the kiosk; 300 upscaled visibly
-    // 1 module of quiet zone rather than the default 4. The cream plate
-    // behind the code (.qr-box::before) is itself quiet zone, so this stays
-    // scannable while giving the client the tighter border they asked for.
-    margin: 1,
-    color: {
-      dark: "#3d2b1f",
-      light: "#f5f0e1",
-    },
-    errorCorrectionLevel: "M",
-  });
+  qrDataUrl.value = await encodeQr(url, 900, 1);
 }
 
 /**

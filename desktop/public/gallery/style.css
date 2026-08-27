@@ -176,6 +176,196 @@ body {
   background: #000;
 }
 
+.stage.is-video {
+  aspect-ratio: 3 / 2;
+}
+
+/* Custom highlight player — cream/gold controls instead of the
+   browser's default blue chrome. */
+.player {
+  position: absolute;
+  inset: 0;
+  background: #000;
+}
+
+.player .stage-video,
+.player .player-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.player-photo[hidden],
+.player .stage-video[hidden],
+.player-bar[hidden],
+.player-nav[hidden] {
+  display: none;
+}
+
+.player-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+  width: 42px;
+  height: 42px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(22, 32, 15, 0.55);
+  color: var(--control);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.player-prev {
+  left: 8px;
+}
+
+.player-next {
+  right: 8px;
+}
+
+.player-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  background: linear-gradient(180deg, transparent, rgba(22, 32, 15, 0.88));
+  color: var(--control);
+}
+
+.player-btn {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--control);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.player-time {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--cream);
+  min-width: 72px;
+}
+
+.player-seek {
+  flex: 1 1 auto;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(242, 212, 196, 0.28);
+  outline: none;
+  cursor: pointer;
+}
+
+.player-seek::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.player-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--gold);
+  border: 2px solid var(--cream);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.player-seek::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(242, 212, 196, 0.28);
+}
+
+.player-seek::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--gold-strong);
+}
+
+.player-seek::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--gold);
+  border: 2px solid var(--cream);
+}
+
+/* Taken photos + clip thumbs under the highlight player. */
+.filmstrip {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--gold-strong) transparent;
+  -webkit-overflow-scrolling: touch;
+}
+
+.filmstrip[hidden] {
+  display: none;
+}
+
+.filmstrip-slide {
+  position: relative;
+  flex: 0 0 72px;
+  width: 72px;
+  height: 72px;
+  padding: 0;
+  border: 2px solid var(--thumb-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+  cursor: pointer;
+}
+
+.filmstrip-slide.active {
+  border-color: var(--cream);
+  box-shadow: 0 0 0 1px var(--gold);
+}
+
+.filmstrip-slide img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.filmstrip-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--control);
+  background: rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
 /* Grid preview: a live CSS grid of the individual captures. Rows are
  * computed inline (see app.js) so 2, 3, 4+ photos all lay out sensibly. */
 .stage-grid {

@@ -132,7 +132,7 @@ function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; ext: string } | n
     ? "mp4"
     : contentType.includes("webm")
       ? "webm"
-      : "webm";
+      : "mp4";
   const raw = isBase64 ? atob(payload) : payload;
   const bytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
@@ -1171,10 +1171,13 @@ async function saveComposite() {
         // shareComposite = single strip for 2×6 templates (cropped
         // above), full sheet otherwise — same image the QR gallery got.
         const compositePreview = await makePreviewDataUrl(shareComposite);
+        const stripPath = captureResults.find((r) => r.localPath)?.localPath
+          ?.replace(/photo-\d+\.[a-z0-9]+$/i, "strip.png");
         store.addRecentStrip({
           id: `strip_${sessionTs}_composite`,
           dataUrl: compositePreview,
           timestamp: new Date(),
+          path: stripPath,
           sessionId,
           templateId,
           sessionIndex: -1,

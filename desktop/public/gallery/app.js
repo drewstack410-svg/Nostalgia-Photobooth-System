@@ -58,6 +58,7 @@
 
   // ─── DOM refs ─────────────────────────────────────────────────────
   const titleEl = document.getElementById("title");
+  const stageEl = document.getElementById("stage");
   const stageInner = document.getElementById("stageInner");
   const loadingEl = document.getElementById("loading");
   const errorEl = document.getElementById("error");
@@ -68,6 +69,7 @@
   const individualToggle = document.getElementById("individualToggle");
   const individualPanel = document.getElementById("individualPanel");
   const footnoteEl = document.getElementById("footnote");
+  const filmstripEl = document.getElementById("filmstrip");
 
   titleEl.textContent = title;
   document.title = title;
@@ -214,7 +216,12 @@
       el.classList.toggle("active", isActive);
       el.setAttribute("aria-selected", isActive ? "true" : "false");
     });
-    renderStage(getView(key));
+    const view = getView(key);
+    const isHighlight = view && view.kind === "highlight";
+    stageEl.classList.toggle("is-video", !!isHighlight);
+    if (filmstripEl) filmstripEl.hidden = !isHighlight;
+    if (!isHighlight && filmstripEl) filmstripEl.innerHTML = "";
+    renderStage(view);
   }
 
   function renderStage(view) {
@@ -262,37 +269,7 @@
     }
 
     if (view.kind === "highlight") {
-      loadingEl.hidden = true;
-      updateSaveLabel(view);
-      if (!view.urls || view.urls.length === 0) {
-        errorEl.hidden = false;
-        return;
-      }
-      const video = document.createElement("video");
-      video.className = "stage-video";
-      video.setAttribute("playsinline", "");
-      video.setAttribute("webkit-playsinline", "");
-      video.muted = true;
-      video.autoplay = true;
-      video.controls = true;
-      video.preload = "auto";
-      let clipIndex = 0;
-      const playClip = (i) => {
-        clipIndex = i;
-        video.src = view.urls[i];
-        video.play().catch(() => {
-          /* autoplay may need a tap; controls are visible */
-        });
-      };
-      video.addEventListener("ended", () => {
-        playClip((clipIndex + 1) % view.urls.length);
-      });
-      video.addEventListener("error", () => {
-        if (activeKey !== view.key) return;
-        errorEl.hidden = false;
-      });
-      stageInner.appendChild(video);
-      playClip(0);
+      renderHighlight(view);
       return;
     }
 
@@ -321,6 +298,260 @@
     // build as saving it; keeping the share icon scoped to the
     // single-file Template view keeps this simple and fast.
     shareBtn.style.display = view.kind === "image" ? "flex" : "none";
+  }
+
+  function formatPlayerTime(secs) {
+    if (!isFinite(secs) || secs < 0) return "0:00";
+    const s = Math.floor(secs);
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  function renderHighlight(view) {
+    loadingEl.hidden = true;
+    updateSaveLabel(view);
+    if (!view.urls || view.urls.length === 0) {
+      errorEl.hidden = false;
+      return;
+    }
+
+    const player = document.createElement("div");
+    player.className = "player";
+
+    const video = document.createElement("video");
+    video.className = "stage-video";
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
+    video.muted = true;
+    video.preload = "auto";
+    video.setAttribute("controlslist", "nodownload");
+
+    const photoImg = document.createElement("img");
+    photoImg.className = "stage-img player-photo";
+    photoImg.hidden = true;
+
+    const prevBtn = document.createElement("button");
+    prevBtn.type = "button";
+    prevBtn.className = "player-nav player-prev";
+    prevBtn.setAttribute("aria-label", "Previous clip");
+    prevBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>';
+
+    const nextBtn = document.createElement("button");
+    nextBtn.type = "button";
+    nextBtn.className = "player-nav player-next";
+    nextBtn.setAttribute("aria-label", "Next clip");
+    nextBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+
+    const bar = document.createElement("div");
+    bar.className = "player-bar";
+
+    const playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.className = "player-btn";
+    playBtn.setAttribute("aria-label", "Play");
+
+    const muteBtn = document.createElement("button");
+    muteBtn.type = "button";
+    muteBtn.className = "player-btn";
+    muteBtn.setAttribute("aria-label", "Unmute");
+
+    const timeEl = document.createElement("span");
+    timeEl.className = "player-time";
+    timeEl.textContent = "0:00 / 0:00";
+
+    const seek = document.createElement("input");
+    seek.type = "range";
+    seek.className = "player-seek";
+    seek.min = "0";
+    seek.max = "1000";
+    seek.value = "0";
+    seek.setAttribute("aria-label", "Seek");
+
+    const fsBtn = document.createElement("button");
+    fsBtn.type = "button";
+    fsBtn.className = "player-btn";
+    fsBtn.setAttribute("aria-label", "Fullscreen");
+    fsBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>';
+
+    bar.appendChild(playBtn);
+    bar.appendChild(muteBtn);
+    bar.appendChild(timeEl);
+    bar.appendChild(seek);
+    bar.appendChild(fsBtn);
+
+    player.appendChild(video);
+    player.appendChild(photoImg);
+    player.appendChild(prevBtn);
+    player.appendChild(nextBtn);
+    player.appendChild(bar);
+    stageInner.appendChild(player);
+
+    let clipIndex = 0;
+    let photoIndex = -1;
+    let seeking = false;
+
+    const playIcon =
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>';
+    const pauseIcon =
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+    const muteIcon =
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
+    const unmuteIcon =
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19 5a8 8 0 0 1 0 14"/></svg>';
+
+    function setPlayUi() {
+      const paused = video.paused || photoIndex >= 0;
+      playBtn.innerHTML = paused ? playIcon : pauseIcon;
+      playBtn.setAttribute("aria-label", paused ? "Play" : "Pause");
+    }
+
+    function setMuteUi() {
+      muteBtn.innerHTML = video.muted ? muteIcon : unmuteIcon;
+      muteBtn.setAttribute("aria-label", video.muted ? "Unmute" : "Mute");
+    }
+
+    function updateTime() {
+      const dur = video.duration || 0;
+      timeEl.textContent =
+        formatPlayerTime(video.currentTime) + " / " + formatPlayerTime(dur);
+      if (!seeking && dur > 0) {
+        seek.value = String(Math.round((video.currentTime / dur) * 1000));
+      }
+      const pct = Number(seek.value) / 10;
+      seek.style.background =
+        "linear-gradient(90deg, #d2917a " +
+        pct +
+        "%, rgba(242, 212, 196, 0.28) " +
+        pct +
+        "%)";
+    }
+
+    function showVideo() {
+      photoIndex = -1;
+      photoImg.hidden = true;
+      video.hidden = false;
+      bar.hidden = false;
+      prevBtn.hidden = view.urls.length < 2;
+      nextBtn.hidden = view.urls.length < 2;
+      syncFilmstrip();
+    }
+
+    function showPhoto(i) {
+      if (!ids[i]) return;
+      photoIndex = i;
+      video.pause();
+      video.hidden = true;
+      bar.hidden = true;
+      prevBtn.hidden = true;
+      nextBtn.hidden = true;
+      photoImg.hidden = false;
+      photoImg.alt = "Capture " + (i + 1);
+      photoImg.src = imageUrl(ids[i]);
+      setPlayUi();
+      syncFilmstrip();
+    }
+
+    function playClip(i) {
+      showVideo();
+      clipIndex = ((i % view.urls.length) + view.urls.length) % view.urls.length;
+      video.src = view.urls[clipIndex];
+      video.play().catch(() => setPlayUi());
+      setPlayUi();
+    }
+
+    playBtn.addEventListener("click", () => {
+      if (photoIndex >= 0) {
+        playClip(clipIndex);
+        return;
+      }
+      if (video.paused) video.play().catch(() => {});
+      else video.pause();
+    });
+    muteBtn.addEventListener("click", () => {
+      video.muted = !video.muted;
+      setMuteUi();
+    });
+    prevBtn.addEventListener("click", () => playClip(clipIndex - 1));
+    nextBtn.addEventListener("click", () => playClip(clipIndex + 1));
+    video.addEventListener("ended", () => playClip(clipIndex + 1));
+    video.addEventListener("play", setPlayUi);
+    video.addEventListener("pause", setPlayUi);
+    video.addEventListener("timeupdate", updateTime);
+    video.addEventListener("loadedmetadata", updateTime);
+    video.addEventListener("error", () => {
+      if (activeKey !== view.key) return;
+      errorEl.hidden = false;
+    });
+    seek.addEventListener("input", () => {
+      seeking = true;
+      const dur = video.duration || 0;
+      if (dur) video.currentTime = (Number(seek.value) / 1000) * dur;
+    });
+    seek.addEventListener("change", () => {
+      seeking = false;
+    });
+    fsBtn.addEventListener("click", () => {
+      const root = player;
+      if (!document.fullscreenElement) {
+        (root.requestFullscreen || root.webkitRequestFullscreen)?.call(root);
+      } else {
+        document.exitFullscreen?.();
+      }
+    });
+
+    function syncFilmstrip() {
+      if (!filmstripEl) return;
+      Array.from(filmstripEl.children).forEach((el) => {
+        const kind = el.dataset.kind;
+        const i = Number(el.dataset.index);
+        const on =
+          kind === "clip"
+            ? photoIndex < 0
+            : kind === "photo" && i === photoIndex;
+        el.classList.toggle("active", on);
+      });
+    }
+
+    if (filmstripEl) {
+      filmstripEl.innerHTML = "";
+      const highlightBtn = document.createElement("button");
+      highlightBtn.type = "button";
+      highlightBtn.className = "filmstrip-slide";
+      highlightBtn.dataset.kind = "clip";
+      highlightBtn.dataset.index = "0";
+      highlightBtn.setAttribute("aria-label", "Play highlight");
+      const highlightThumb = document.createElement("img");
+      highlightThumb.alt = "";
+      highlightThumb.src = ids[0] ? imageUrl(ids[0]) : "";
+      highlightBtn.appendChild(highlightThumb);
+      const badge = document.createElement("span");
+      badge.className = "filmstrip-play";
+      badge.innerHTML = playIcon;
+      highlightBtn.appendChild(badge);
+      highlightBtn.addEventListener("click", () => playClip(clipIndex));
+      filmstripEl.appendChild(highlightBtn);
+
+      ids.forEach((id, i) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "filmstrip-slide";
+        btn.dataset.kind = "photo";
+        btn.dataset.index = String(i);
+        btn.setAttribute("aria-label", "Photo " + (i + 1));
+        const thumb = document.createElement("img");
+        thumb.alt = "Capture " + (i + 1);
+        thumb.src = imageUrl(id);
+        btn.appendChild(thumb);
+        btn.addEventListener("click", () => showPhoto(i));
+        filmstripEl.appendChild(btn);
+      });
+    }
+
+    setMuteUi();
+    setPlayUi();
+    playClip(0);
   }
 
   // Builds (once) and caches the client-side GIF Blob for a view, so
@@ -598,7 +829,7 @@
   function highlightDownloadName(idOrUrl, index) {
     const src = String(idOrUrl || "");
     const extMatch = src.match(/\.(mp4|webm|mov)(?:\?|$)/i);
-    const ext = extMatch ? extMatch[1].toLowerCase() : "webm";
+    const ext = extMatch ? extMatch[1].toLowerCase() : "mp4";
     const n = typeof index === "number" ? `_${index}` : "";
     return `nostalgia_highlight${n}.${ext}`;
   }
