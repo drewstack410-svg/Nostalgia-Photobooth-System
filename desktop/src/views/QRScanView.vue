@@ -184,8 +184,6 @@ onUnmounted(() => {
 
 <template>
   <div class="qr-scan-screen">
-    <button class="wood-btn done-btn" @click="returnToStart">Done</button>
-
     <div class="qr-content">
       <h1 class="qr-title">
         SCAN THIS QR CODE<br />
@@ -257,30 +255,6 @@ onUnmounted(() => {
   padding: 0;
   background-color: var(--color-cream);
   position: relative;
-}
-
-/* Done Button — appearance from shared .wood-btn; layout here.
-   Design: 184x89 border-box (172x77 gold fill + 6px wood edge), top
-   edge 75px below the panel top, right edge 72px in from the panel
-   right. It sat too low and too small before. */
-.done-btn {
-  position: absolute;
-  top: calc(var(--panel-h) * 0.0757); /* 75 / 991 */
-  right: calc(var(--panel-w) * 0.0405); /* 72 / 1778 */
-  /* Explicit box rather than padding-driven: .wood-btn's label font is
-     the display serif, which is much wider than the reference's
-     grotesque, so an auto width would overshoot the design's pill. */
-  width: calc(var(--panel-h) * 0.1857); /* 184 / 991 */
-  height: calc(var(--panel-h) * 0.0898); /* 89 / 991 */
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(var(--panel-h) * 0.038); /* 37.6 / 991 */
-  line-height: 1;
-  border-width: calc(var(--panel-h) * 0.0061); /* 6 / 991 */
-  border-radius: calc(var(--panel-h) * 0.0303); /* 30 / 991 */
-  z-index: 10;
 }
 
 .qr-content {

@@ -119,10 +119,31 @@ async function printSavedPhoto(filePath: string, copiesOverride?: number) {
 // landscape). The composite canvas sizes itself from
 // `getPaperSizePx(template.paperSize)` instead of measuring artwork.
 
+function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; ext: string } | null {
+  const match = /^data:([^,]+),(.*)$/s.exec(dataUrl);
+  if (!match) return null;
+  const meta = match[1];
+  const payload = match[2];
+  const isBase64 = /;base64$/i.test(meta);
+  const contentType = (
+    meta.replace(/;base64$/i, "").split(";")[0] || ""
+  ).toLowerCase();
+  const ext = contentType.includes("mp4")
+    ? "mp4"
+    : contentType.includes("webm")
+      ? "webm"
+      : "webm";
+  const raw = isBase64 ? atob(payload) : payload;
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return { bytes, ext };
+}
+
 // Build the URL of the public gallery page that the QR code points
-// at. The gallery is a static site hosted on Netlify (see
-// `gallery/README.md`); it reads the R2 public base + capture keys
-// from the query string and renders a phone-friendly carousel + GIF.
+// at. The gallery is a static site hosted on Vercel (see
+// `website/README.md`); it reads the Cloudflare R2 public base +
+// object keys from the query string and renders a phone-friendly
+// carousel + highlight video.
 //
 // Falls back to "" when R2 or the gallery base URL aren't
 // configured — QRScanView handles that case by showing a friendly
@@ -131,23 +152,18 @@ function buildGalleryUrl(
   publicIds: string[],
   sessionTag: string,
   printId?: string,
+  videoIds?: string[],
 ): string {
-  if (publicIds.length === 0 && !printId) return "";
+  if (publicIds.length === 0 && !printId && !(videoIds && videoIds.length)) return "";
   const r2Base = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
   if (!r2Base) {
     console.warn("[Gallery] No VITE_R2_PUBLIC_URL set");
     return "";
   }
-  // const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
-  // if (!cloudName) {
-  //   console.warn("[Gallery] No VITE_CLOUDINARY_CLOUD_NAME set");
-  //   return "";
-  // }
 
-  // Default to a relative `/gallery/` path so the dev environment
-  // serves the page from inside the Vite dev server when there's no
-  // hosted Netlify URL yet. In production, set VITE_GALLERY_BASE_URL
-  // to the *.netlify.app URL after the first Netlify deploy.
+  // Default to a relative `/gallery/` path so kiosk dev can still
+  // serve the page from Vite when VITE_GALLERY_BASE_URL is empty.
+  // In production set it to the Vercel URL after the first deploy.
   const base = (
     import.meta.env.VITE_GALLERY_BASE_URL ||
     `${window.location.origin}/gallery/`
@@ -160,6 +176,9 @@ function buildGalleryUrl(
   // The finished templated print (frame applied). The gallery shows it
   // as a distinct "Photo Strip" slide so it's downloadable too.
   if (printId) url.searchParams.set("print", printId);
+  if (videoIds && videoIds.length > 0) {
+    url.searchParams.set("vids", videoIds.join(","));
+  }
   url.searchParams.set("title", "Nostalgia Photobooth");
   return url.toString();
 }
@@ -954,6 +973,49 @@ async function saveComposite() {
         }
       })();
 
+      // Upload per-shot highlight clips (7.5s before shutter + 4s freeze)
+      // so the gallery Highlight tab can play them in order.
+      const highlightUploadPromise: Promise<string[]> = (async () => {
+        const clips = store.highlightClips.filter(Boolean);
+        if (!clips.length) return [];
+        const ids: string[] = [];
+        for (let i = 0; i < clips.length; i++) {
+          const clip = clips[i];
+          if (sessionFolder && window.electronAPI?.saveSessionBytes) {
+            try {
+              const parsed = dataUrlToBytes(clip);
+              if (parsed) {
+                await window.electronAPI.saveSessionBytes({
+                  bytes: parsed.bytes,
+                  filename: `${sessionFolder}/highlight-${i + 1}.${parsed.ext}`,
+                });
+              }
+            } catch (e) {
+              console.warn(`[Save] Highlight ${i} disk save failed:`, e);
+            }
+          }
+          try {
+            const publicId = `nostalgia_${sessionTs}_hl_${i}_${Math.random()
+              .toString(36)
+              .substring(2, 8)}`;
+            const cr = await uploadToR2(
+              clip,
+              "nostalgia-photobooth",
+              publicId,
+            );
+            if (cr.success && cr.publicId) {
+              ids.push(cr.publicId);
+              console.log(`[Save] Highlight ${i} uploaded:`, cr.url);
+            } else {
+              console.warn(`[Save] Highlight ${i} upload failed:`, cr.error);
+            }
+          } catch (e) {
+            console.error(`[Save] Highlight ${i} upload error:`, e);
+          }
+        }
+        return ids;
+      })();
+
       // Save+upload each capture in parallel, collect results so we
       // can synthesise the shareable QR URL once all uploads land.
       type CaptureResult = {
@@ -1033,16 +1095,20 @@ async function saveComposite() {
 
       // Build the QR's target: the public gallery page URL with the
       // per-capture R2 object keys. The gallery page (hosted on
-      // Netlify) reads `base` + `ids` and renders a carousel + GIF
-      // built client-side from those images.
+      // Vercel) reads `base` + `ids` + `vids` and renders a carousel
+      // plus the session highlight video.
       const successfulIds = captureResults
         .map((r) => r.cloudPublicId)
         .filter((id): id is string => !!id);
-      const compositePublicId = await compositeUploadPromise;
+      const [compositePublicId, videoIds] = await Promise.all([
+        compositeUploadPromise,
+        highlightUploadPromise,
+      ]);
       const sessionShareableUrl = buildGalleryUrl(
         successfulIds,
         `session_${sessionTs}`,
         compositePublicId,
+        videoIds,
       );
       if (sessionShareableUrl) {
         console.log("[Save] Gallery URL for QR:", sessionShareableUrl);

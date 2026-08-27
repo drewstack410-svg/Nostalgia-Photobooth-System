@@ -1,0 +1,5 @@
+{
+  "name": "nostalgia-photobooth-gallery",
+  "private": true,
+  "description": "Guest QR gallery. Static site; photos load from Cloudflare R2."
+}

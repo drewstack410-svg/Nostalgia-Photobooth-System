@@ -9,6 +9,7 @@ interface ImportMetaEnv {
   readonly VITE_CLOUDINARY_UPLOAD_PRESET?: string;
   readonly VITE_R2_PUBLIC_URL?: string;
   readonly VITE_R2_FOLDER?: string;
+  readonly VITE_GALLERY_BASE_URL?: string;
 }
 
 interface PhotoInfo {

@@ -113,19 +113,28 @@ function encodePath(p) {
 }
 
 function parseDataUrl(imageDataUrl) {
-  const match = /^data:([^;]+);base64,(.+)$/s.exec(imageDataUrl || "");
+  const match = /^data:([^,]+),(.*)$/s.exec(imageDataUrl || "");
   if (!match) {
     throw new Error("Expected a base64 data URL");
   }
-  const contentType = match[1] || "image/jpeg";
-  const body = Buffer.from(match[2], "base64");
-  const ext = contentType.includes("png")
-    ? "png"
-    : contentType.includes("gif")
-      ? "gif"
-      : contentType.includes("webp")
-        ? "webp"
-        : "jpg";
+  const meta = match[1];
+  const payload = match[2];
+  const isBase64 = /;base64$/i.test(meta);
+  const contentType = (meta.replace(/;base64$/i, "").split(";")[0] || "").trim()
+    || "image/jpeg";
+  const body = Buffer.from(payload, isBase64 ? "base64" : "utf8");
+  const type = contentType.toLowerCase();
+  const ext = type.includes("mp4")
+    ? "mp4"
+    : type.includes("webm")
+      ? "webm"
+      : type.includes("png")
+        ? "png"
+        : type.includes("gif")
+          ? "gif"
+          : type.includes("webp")
+            ? "webp"
+            : "jpg";
   return { contentType, body, ext };
 }
 

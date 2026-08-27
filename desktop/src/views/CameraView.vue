@@ -19,6 +19,15 @@ import {
 import type { CubePreview } from "@/utils/filterPreview";
 import { getPaperSizePx, occupancyFill } from "@/utils/printLayout";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
+import {
+  HIGHLIGHT_LEAD_MS,
+  HIGHLIGHT_PREVIEW_MS,
+  abortHighlightCapture,
+  freezeHighlightCapture,
+  isHighlightRecording,
+  startHighlightCapture,
+  stopHighlightCapture,
+} from "@/utils/highlightRecorder";
 
 const router = useRouter();
 const store = usePhotoboothStore();
@@ -74,7 +83,6 @@ const stream = ref<MediaStream | null>(null);
 const isCountingDown = ref(false);
 const isCapturing = ref(false);
 const isReviewing = ref(false);
-const reviewPhotoUrl = ref<string | null>(null);
 const countdownValue = ref(3);
 const showFlash = ref(false);
 const cameraReady = ref(false);
@@ -624,27 +632,102 @@ function cancelCountdownSleep() {
   }
 }
 
-const SHOT_REVIEW_MS = 4000;
+const SHOT_REVIEW_MS = 5000;
+let reviewSleepTimer: ReturnType<typeof setTimeout> | null = null;
+/** Canon EVF was up for this shot — restart it after the freeze, not during. */
+let restoreLiveViewAfterReview = false;
+let highlightLeadTimer: ReturnType<typeof setTimeout> | null = null;
 
+function cancelHighlightLead() {
+  if (highlightLeadTimer) {
+    clearTimeout(highlightLeadTimer);
+    highlightLeadTimer = null;
+  }
+}
+
+/** Start clip capture 7.5s before the shutter (or immediately if the posing timer is shorter). */
+function armHighlightRecording(countdownSeconds: number) {
+  cancelHighlightLead();
+  const delay = Math.max(0, countdownSeconds * 1000 - HIGHLIGHT_LEAD_MS);
+  const tryStart = () => {
+    highlightLeadTimer = null;
+    if (isUnmounted || isHighlightRecording()) return;
+    const ok = startHighlightCapture({
+      video: videoRef.value,
+      getStillUrl: () => liveViewFrame.value,
+      getMirror: () => store.mirrorMode,
+    });
+    if (!ok && !isUnmounted && isCountingDown.value) {
+      highlightLeadTimer = setTimeout(tryStart, 250);
+    }
+  };
+  highlightLeadTimer = setTimeout(tryStart, delay);
+}
+
+function sleepReview(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    reviewSleepTimer = setTimeout(() => {
+      reviewSleepTimer = null;
+      resolve();
+    }, ms);
+  });
+}
+
+function freezeLivePreview() {
+  videoRef.value?.pause();
+  videoBlurRef.value?.pause();
+  freezeHighlightCapture();
+}
+
+async function unfreezeLivePreview() {
+  if (restoreLiveViewAfterReview) {
+    restoreLiveViewAfterReview = false;
+    await startLiveView();
+    return;
+  }
+  try {
+    await videoRef.value?.play();
+  } catch {
+    /* play() rejects if the element was torn down */
+  }
+  try {
+    await videoBlurRef.value?.play();
+  } catch {
+    /* same */
+  }
+}
+
+/** Hold the viewfinder on the frame that was just taken, then continue. */
 async function showShotReview() {
-  const last = store.capturedPhotos[store.capturedPhotos.length - 1];
-  if (!last?.dataUrl) return;
-  reviewPhotoUrl.value = last.dataUrl;
   isReviewing.value = true;
-  await sleepCountdown(SHOT_REVIEW_MS);
+  freezeLivePreview();
+  // Keep recording the frozen preview for 4s, then stop the clip.
+  // The remaining freeze time is display-only so the booth still holds 5s.
+  const recordMs = Math.min(HIGHLIGHT_PREVIEW_MS, SHOT_REVIEW_MS);
+  await sleepReview(recordMs);
+  if (isHighlightRecording()) {
+    const clip = await stopHighlightCapture();
+    if (clip) store.addHighlightClip(clip);
+  }
+  const remaining = SHOT_REVIEW_MS - recordMs;
+  if (remaining > 0 && !isUnmounted) await sleepReview(remaining);
   isReviewing.value = false;
-  reviewPhotoUrl.value = null;
+  if (isUnmounted) return;
+  await unfreezeLivePreview();
 }
 
 async function runCountdownAndCapture() {
   if (isUnmounted) return;
 
   const isFirstShot = store.capturedPhotos.length === 0;
+  // Posing timer only. The freeze after a capture is extra and is
+  // awaited in showShotReview before this function runs again.
   const seconds = isFirstShot
     ? store.shootingFirstCountdownSeconds
     : store.shootingSubsequentCountdownSeconds;
 
   isCountingDown.value = true;
+  armHighlightRecording(seconds);
 
   for (let n = seconds; n >= 1; n--) {
     if (isUnmounted) return;
@@ -669,10 +752,15 @@ async function runCountdownAndCapture() {
 
   if (success && !isUnmounted) {
     await showShotReview();
+  } else {
+    cancelHighlightLead();
+    abortHighlightCapture();
   }
 
   if (isUnmounted) return;
   if (success && !store.hasAllPhotos) {
+    // Live feed is already unfrozen. Next posing countdown is a full
+    // 15s (or whatever admin set) — the freeze is not subtracted.
     await runCountdownAndCapture();
   } else {
     endSequence();
@@ -699,9 +787,9 @@ async function capturePhoto(): Promise<boolean> {
     return true;
   } catch (error) {
     console.error('[Camera] Capture failed, restoring live view:', error);
-    // Without this, a failed capture leaves the preview stopped (blank
-    // screen) with no live view and no feedback — the guest is stuck.
+    restoreLiveViewAfterReview = false;
     if (restoreLiveView) void startLiveView();
+    else void unfreezeLivePreview();
     cameraErrorMessage.value =
       error instanceof Error ? error.message : 'Failed to capture photo. Please try again.';
     cameraErrorIsConnection.value = false;
@@ -746,6 +834,10 @@ async function capturePhotoInner(hadLiveView: boolean) {
     console.log(
       `[Camera] Capturing webcam frame ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`,
     );
+    // Freeze the live preview on this frame so the guest sees the shot
+    // they just took — not a processed overlay, and not a moving feed.
+    sourceVideo.pause();
+    videoBlurRef.value?.pause();
   }
 
   try {
@@ -924,11 +1016,10 @@ async function capturePhotoInner(hadLiveView: boolean) {
         console.log(`[Camera] Image processed: ${Math.round(finalImageData.length / 1024)}KB (${canvas.width}x${canvas.height})`);
         store.addPhoto(finalImageData);
 
-        // Restart live view in the background so the next countdown can
-        // start as soon as the 4s review ends, instead of waiting ~1.5s
-        // for EVF after the guest has already seen the shot.
+        // Do not restart Canon EVF here — that would un-freeze the
+        // viewfinder. Restore after the 5s pause in showShotReview.
         if (hadLiveView && !store.hasAllPhotos) {
-          void startLiveView();
+          restoreLiveViewAfterReview = true;
         }
   } catch (error) {
     console.error("[Camera] Error processing capture:", error);
@@ -1175,6 +1266,12 @@ onUnmounted(() => {
   isUnmounted = true;
   sequenceActive = false;
   cancelCountdownSleep();
+  cancelHighlightLead();
+  abortHighlightCapture();
+  if (reviewSleepTimer) {
+    clearTimeout(reviewSleepTimer);
+    reviewSleepTimer = null;
+  }
   clearInactivityTimers();
   eventListeners.forEach(({ event, handler }) => {
     document.removeEventListener(event, handler);
@@ -1369,12 +1466,6 @@ onUnmounted(() => {
         <!-- Countdown Overlay -->
         <div v-if="isCountingDown" class="countdown-overlay">
           <div class="countdown-number">{{ countdownValue }}</div>
-        </div>
-
-        <!-- Freeze the just-taken shot so the guest can see it before
-             the next countdown (or printing) starts. -->
-        <div v-if="reviewPhotoUrl" class="shot-review">
-          <img class="shot-review-img" :src="reviewPhotoUrl" alt="" />
         </div>
         </div>
       </div>
@@ -1918,29 +2009,6 @@ onUnmounted(() => {
     transform: scale(1.1);
     opacity: 0.8;
   }
-}
-
-/* Last-shot freeze: sits in the viewfinder (inside the wooden padding)
-   so the guest sees the processed capture for SHOT_REVIEW_MS. */
-.shot-review {
-  position: absolute;
-  inset: 16px;
-  z-index: 3;
-  overflow: hidden;
-  background: #000;
-  pointer-events: none;
-}
-
-.camera-frame--none .shot-review {
-  inset: 0;
-}
-
-.shot-review-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
-  display: block;
 }
 
 /* Filter Controls: 4 buttons */

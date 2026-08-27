@@ -624,6 +624,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   const selectedTemplate = ref<Template | null>(null);
   const capturedPhotos = ref<CapturedPhoto[]>([]);
   const currentPhotoIndex = ref(0);
+  /** Per-shot highlight clips (data URLs) recorded around each shutter. */
+  const highlightClips = ref<string[]>([]);
 
   /**
    * Live copy of the selected template (cells, zoom, fitMode) from the
@@ -727,7 +729,10 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   // ---- Countdown timing (shooting / printing / QR) ----
   const shootingFirstCountdownSeconds = ref(15);
-  const shootingSubsequentCountdownSeconds = ref(10);
+  // Same posing window as the first shot. The 5s freeze after a capture
+  // is extra and must not shorten this. (Used to default to 10, which
+  // made shot 2 look like 15−5.)
+  const shootingSubsequentCountdownSeconds = ref(15);
   const printingCountdownSeconds = ref(20);
   const qrCountdownSeconds = ref(30);
   const qrAutoAdvanceEnabled = ref(true);
@@ -744,6 +749,16 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (subsequent !== null) {
       const n = parseInt(subsequent, 10);
       if (!isNaN(n)) shootingSubsequentCountdownSeconds.value = clamp(n, 1, 60);
+    }
+    // Old default was 10 while first-shot was 15. The freeze-after-shot
+    // is NOT part of the posing countdown — bump the legacy 10 so shot
+    // 2+ still get a full 15s timer unless the operator set something else.
+    if (
+      subsequent === "10" &&
+      shootingFirstCountdownSeconds.value === 15
+    ) {
+      shootingSubsequentCountdownSeconds.value = 15;
+      localStorage.setItem(STORAGE_KEY_SHOOTING_SUBSEQUENT_COUNTDOWN, "15");
     }
     const printing = localStorage.getItem(STORAGE_KEY_PRINTING_COUNTDOWN);
     if (printing !== null) {
@@ -1464,6 +1479,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     selectedTemplate.value =
       templates.value.find((t) => t.id === template.id) ?? template;
     capturedPhotos.value = [];
+    highlightClips.value = [];
     currentPhotoIndex.value = 0;
   }
 
@@ -1475,6 +1491,10 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     };
     capturedPhotos.value.push(photo);
     currentPhotoIndex.value = capturedPhotos.value.length;
+  }
+
+  function addHighlightClip(dataUrl: string) {
+    if (dataUrl) highlightClips.value.push(dataUrl);
   }
 
   /**
@@ -1496,6 +1516,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   function resetSession() {
     capturedPhotos.value = [];
+    highlightClips.value = [];
     currentPhotoIndex.value = 0;
     selectedTemplate.value = null;
     // Critical: clearing this is what stops the next guest inheriting this
@@ -1700,6 +1721,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // Camera Options & Session
     // -----------------------------
     capturedPhotos,
+    highlightClips,
     mirrorMode,
     cameraDetectionEnabled,
     setCameraDetectionEnabled,
@@ -1748,6 +1770,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // Session Actions
     // -----------------------------
     addPhoto,
+    addHighlightClip,
     resetSession,
     setMirror,
 
