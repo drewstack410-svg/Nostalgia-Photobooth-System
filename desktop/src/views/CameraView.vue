@@ -21,7 +21,6 @@ import { getPaperSizePx, occupancyFill } from "@/utils/printLayout";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
 import {
   HIGHLIGHT_LEAD_MS,
-  HIGHLIGHT_PREVIEW_MS,
   abortHighlightCapture,
   freezeHighlightCapture,
   isHighlightRecording,
@@ -83,6 +82,7 @@ const stream = ref<MediaStream | null>(null);
 const isCountingDown = ref(false);
 const isCapturing = ref(false);
 const isReviewing = ref(false);
+const highlightRecording = ref(false);
 const countdownValue = ref(3);
 const showFlash = ref(false);
 const cameraReady = ref(false);
@@ -122,6 +122,19 @@ const capturedPhotoUrls = computed(() =>
 
 const currentPhotoNumber = computed(() => store.capturedPhotos.length + 1);
 const totalPhotos = computed(() => store.requiredPhotos);
+
+const previewHasFeed = computed(
+  () => !!stream.value || !!liveViewFrame.value,
+);
+const nextCountdownSeconds = computed(() =>
+  store.capturedPhotos.length === 0
+    ? store.shootingFirstCountdownSeconds
+    : store.shootingSubsequentCountdownSeconds,
+);
+/** Bottom-of-preview timer: ticks during a shot, otherwise shows the next posing length. */
+const previewCountdown = computed(() =>
+  isCountingDown.value ? countdownValue.value : nextCountdownSeconds.value,
+);
 
 const activeFilterOptions = computed(() => store.activeFilters);
 
@@ -645,20 +658,30 @@ function cancelHighlightLead() {
   }
 }
 
-/** Start clip capture 7.5s before the shutter (or immediately if the posing timer is shorter). */
+/** Start streaming the live camera 10s before each shutter. */
 function armHighlightRecording(countdownSeconds: number) {
   cancelHighlightLead();
   const delay = Math.max(0, countdownSeconds * 1000 - HIGHLIGHT_LEAD_MS);
   const tryStart = () => {
     highlightLeadTimer = null;
     if (isUnmounted || isHighlightRecording()) return;
-    const ok = startHighlightCapture({
-      video: videoRef.value,
-      getStillUrl: () => liveViewFrame.value,
-      getMirror: () => store.mirrorMode,
-    });
-    if (!ok && !isUnmounted && isCountingDown.value) {
-      highlightLeadTimer = setTimeout(tryStart, 250);
+    let ok = false;
+    try {
+      ok = startHighlightCapture({
+        stream: stream.value,
+        video: videoRef.value,
+        getStillUrl: () => liveViewFrame.value,
+        getMirror: () => store.mirrorMode,
+      });
+    } catch (e) {
+      console.warn("[Highlight] Start failed:", e);
+    }
+    if (ok) {
+      highlightRecording.value = true;
+      return;
+    }
+    if (!isUnmounted && isCountingDown.value) {
+      highlightLeadTimer = setTimeout(tryStart, 200);
     }
   };
   highlightLeadTimer = setTimeout(tryStart, delay);
@@ -697,20 +720,74 @@ async function unfreezeLivePreview() {
   }
 }
 
-/** Hold the viewfinder on the frame that was just taken, then continue. */
+async function finishHighlightClip() {
+  if (!isHighlightRecording()) {
+    highlightRecording.value = false;
+    return;
+  }
+  try {
+    const clip = await stopHighlightCapture();
+    highlightRecording.value = false;
+    if (!clip) {
+      console.warn("[Highlight] Stop returned no clip");
+      return;
+    }
+    store.addHighlightClip(clip);
+    await saveHighlightLocally(clip, store.capturedPhotos.length + 1);
+  } catch (e) {
+    highlightRecording.value = false;
+    console.warn("[Highlight] Stop failed:", e);
+    abortHighlightCapture();
+  }
+}
+
+function highlightDataUrlToBytes(
+  dataUrl: string,
+): { bytes: Uint8Array; ext: string } | null {
+  const match = /^data:([^,]+),(.*)$/s.exec(dataUrl);
+  if (!match) return null;
+  const meta = match[1];
+  const payload = match[2];
+  const isBase64 = /;base64$/i.test(meta);
+  const contentType = (
+    meta.replace(/;base64$/i, "").split(";")[0] || ""
+  ).toLowerCase();
+  const ext = contentType.includes("mp4") ? "mp4" : "webm";
+  const raw = isBase64 ? atob(payload) : payload;
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return { bytes, ext };
+}
+
+async function saveHighlightLocally(dataUrl: string, shot: number) {
+  const api = window.electronAPI;
+  if (!api?.saveHighlightVideo) {
+    console.warn("[Highlight] saveHighlightVideo is not available — restart Electron");
+    return;
+  }
+  const parsed = highlightDataUrlToBytes(dataUrl);
+  if (!parsed) return;
+  const now = new Date();
+  const stamp = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getFullYear()).slice(-2)}`;
+  const time = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+  const filename = `${stamp}/highlight-${shot}-${time}.${parsed.ext}`;
+  try {
+    const r = await api.saveHighlightVideo({
+      bytes: parsed.bytes,
+      filename,
+    });
+    if (r.success) console.log("[Highlight] Saved locally:", r.path);
+    else console.warn("[Highlight] Local save failed:", r.error);
+  } catch (e) {
+    console.warn("[Highlight] Local save error:", e);
+  }
+}
+
+/** Hold the last shutter frame on screen, then continue. */
 async function showShotReview() {
   isReviewing.value = true;
   freezeLivePreview();
-  // Keep recording the frozen preview for 4s, then stop the clip.
-  // The remaining freeze time is display-only so the booth still holds 5s.
-  const recordMs = Math.min(HIGHLIGHT_PREVIEW_MS, SHOT_REVIEW_MS);
-  await sleepReview(recordMs);
-  if (isHighlightRecording()) {
-    const clip = await stopHighlightCapture();
-    if (clip) store.addHighlightClip(clip);
-  }
-  const remaining = SHOT_REVIEW_MS - recordMs;
-  if (remaining > 0 && !isUnmounted) await sleepReview(remaining);
+  await sleepReview(SHOT_REVIEW_MS);
   isReviewing.value = false;
   if (isUnmounted) return;
   await unfreezeLivePreview();
@@ -732,21 +809,19 @@ async function runCountdownAndCapture() {
   for (let n = seconds; n >= 1; n--) {
     if (isUnmounted) return;
     countdownValue.value = n;
-    // Tear EVF down during the last on-screen second so the shutter at
-    // "0" isn't blocked on live-view stop + the main-process settle.
+    // Keep live view running through the last second so the highlight
+    // file gets a full 10s of motion. capturePhoto() still stops EVF
+    // right before the shutter.
     if (n === 1 && liveViewActive.value) {
       restoreLiveViewAfterShot = true;
-      const stopping = stopLiveView();
-      await sleepCountdown(1000);
-      await stopping;
-    } else {
-      await sleepCountdown(1000);
     }
+    await sleepCountdown(1000);
   }
 
   if (isUnmounted) return;
   isCountingDown.value = false;
   isCapturing.value = true;
+  await finishHighlightClip();
   const success = await capturePhoto();
   isCapturing.value = false;
 
@@ -755,6 +830,7 @@ async function runCountdownAndCapture() {
   } else {
     cancelHighlightLead();
     abortHighlightCapture();
+    highlightRecording.value = false;
   }
 
   if (isUnmounted) return;
@@ -834,10 +910,11 @@ async function capturePhotoInner(hadLiveView: boolean) {
     console.log(
       `[Camera] Capturing webcam frame ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`,
     );
-    // Freeze the live preview on this frame so the guest sees the shot
-    // they just took — not a processed overlay, and not a moving feed.
+    // Freeze the viewfinder on this last live frame (the guest preview).
+    // Highlight recording locks to the same frame for its 4s tail.
     sourceVideo.pause();
     videoBlurRef.value?.pause();
+    freezeHighlightCapture();
   }
 
   try {
@@ -1268,6 +1345,7 @@ onUnmounted(() => {
   cancelCountdownSleep();
   cancelHighlightLead();
   abortHighlightCapture();
+  highlightRecording.value = false;
   if (reviewSleepTimer) {
     clearTimeout(reviewSleepTimer);
     reviewSleepTimer = null;
@@ -1463,9 +1541,21 @@ onUnmounted(() => {
         <!-- Flash Effect -->
         <div v-if="showFlash" class="flash-overlay"></div>
 
-        <!-- Countdown Overlay -->
-        <div v-if="isCountingDown" class="countdown-overlay">
-          <div class="countdown-number">{{ countdownValue }}</div>
+        <div
+          v-if="highlightRecording"
+          class="rec-indicator"
+          aria-live="polite"
+        >
+          <span class="rec-dot"></span>
+          REC
+        </div>
+
+        <div
+          v-if="previewHasFeed"
+          class="preview-countdown"
+          :class="{ ticking: isCountingDown }"
+        >
+          {{ previewCountdown }}
         </div>
         </div>
       </div>
@@ -1979,23 +2069,67 @@ onUnmounted(() => {
   }
 }
 
-/* Countdown */
-.countdown-overlay {
+.rec-indicator {
   position: absolute;
-  inset: 0;
-  z-index: 2;
+  top: 14px;
+  left: 14px;
+  z-index: 3;
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
+  gap: 0.45rem;
+  padding: 0.4rem 0.8rem 0.4rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(20, 10, 8, 0.78);
+  color: #fff8ee;
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  pointer-events: none;
 }
 
-.countdown-number {
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e23d3d;
+  box-shadow: 0 0 8px rgba(226, 61, 61, 0.9);
+  animation: recPulse 1s ease-in-out infinite;
+}
+
+@keyframes recPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.86);
+  }
+}
+
+/* Countdown sits at the bottom of the live preview whenever the feed is up. */
+.preview-countdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  z-index: 3;
+  margin: 0;
+  text-align: center;
   font-family: var(--font-display);
-  font-size: 12rem;
+  font-size: 4.5rem;
   font-weight: 700;
+  line-height: 1;
   color: white;
-  text-shadow: 0 0 60px rgba(201, 162, 39, 0.8);
+  text-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.85),
+    0 0 28px rgba(201, 162, 39, 0.55);
+  pointer-events: none;
+}
+
+.preview-countdown.ticking {
   animation: countPulse 1s ease-in-out infinite;
 }
 
@@ -2006,8 +2140,8 @@ onUnmounted(() => {
     opacity: 1;
   }
   50% {
-    transform: scale(1.1);
-    opacity: 0.8;
+    transform: scale(1.08);
+    opacity: 0.85;
   }
 }
 

@@ -1118,6 +1118,32 @@ ipcMain.handle("save-session-bytes", async (event, { bytes, filename }) => {
   }
 });
 
+// Highlight clips live under Videos/NostalgiaPhotobooth so they are
+// not mixed into the Pictures photo dumps.
+ipcMain.handle("save-highlight-video", async (_event, { bytes, filename }) => {
+  try {
+    if (!bytes || !filename) {
+      return { success: false, error: "Missing bytes or filename" };
+    }
+    const videosDir = path.join(app.getPath("videos"), "NostalgiaPhotobooth");
+    const safeRel = String(filename).replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!safeRel || safeRel.includes("..")) {
+      return { success: false, error: "Invalid filename" };
+    }
+    const filePath = path.resolve(videosDir, safeRel);
+    if (!filePath.startsWith(videosDir + path.sep)) {
+      return { success: false, error: "Invalid filename" };
+    }
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, Buffer.from(bytes));
+    console.log(`[Highlight] Saved local video: ${filePath} (${bytes.length} bytes)`);
+    return { success: true, path: filePath };
+  } catch (error) {
+    console.error("[Highlight] Error saving local video:", error);
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle("list-saved-photos", async () => {
   try {
     const photosDir = path.join(app.getPath("pictures"), "NostalgiaPhotobooth");

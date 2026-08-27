@@ -203,6 +203,11 @@ interface ElectronAPI {
     bytes: Uint8Array;
     filename: string;
   }) => Promise<SaveResult>;
+  /** Writes a highlight clip under Videos/NostalgiaPhotobooth. */
+  saveHighlightVideo: (opts: {
+    bytes: Uint8Array;
+    filename: string;
+  }) => Promise<SaveResult>;
   getPhotosDirectory: () => Promise<string>;
   listSavedPhotos: () => Promise<PhotoInfo[]>;
   readPhoto: (filePath: string) => Promise<string | null>;

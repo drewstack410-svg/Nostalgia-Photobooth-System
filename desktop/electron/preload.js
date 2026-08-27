@@ -53,6 +53,11 @@ try {
       return ipcRenderer.invoke('save-session-bytes', { bytes, filename });
     },
 
+    saveHighlightVideo: ({ bytes, filename }) => {
+      console.log(`[Preload] saveHighlightVideo (${filename}, ${bytes?.length} bytes)`);
+      return ipcRenderer.invoke('save-highlight-video', { bytes, filename });
+    },
+
     getPhotosDirectory: () => {
       console.log('[Preload] getPhotosDirectory called');
       return ipcRenderer.invoke('get-photos-directory');

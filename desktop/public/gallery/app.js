@@ -389,7 +389,6 @@
     stageInner.appendChild(player);
 
     let clipIndex = 0;
-    let photoIndex = -1;
     let seeking = false;
 
     const playIcon =
@@ -402,7 +401,7 @@
       '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19 5a8 8 0 0 1 0 14"/></svg>';
 
     function setPlayUi() {
-      const paused = video.paused || photoIndex >= 0;
+      const paused = video.paused;
       playBtn.innerHTML = paused ? playIcon : pauseIcon;
       playBtn.setAttribute("aria-label", paused ? "Play" : "Pause");
     }
@@ -429,27 +428,11 @@
     }
 
     function showVideo() {
-      photoIndex = -1;
       photoImg.hidden = true;
       video.hidden = false;
       bar.hidden = false;
       prevBtn.hidden = view.urls.length < 2;
       nextBtn.hidden = view.urls.length < 2;
-      syncFilmstrip();
-    }
-
-    function showPhoto(i) {
-      if (!ids[i]) return;
-      photoIndex = i;
-      video.pause();
-      video.hidden = true;
-      bar.hidden = true;
-      prevBtn.hidden = true;
-      nextBtn.hidden = true;
-      photoImg.hidden = false;
-      photoImg.alt = "Capture " + (i + 1);
-      photoImg.src = imageUrl(ids[i]);
-      setPlayUi();
       syncFilmstrip();
     }
 
@@ -459,13 +442,10 @@
       video.src = view.urls[clipIndex];
       video.play().catch(() => setPlayUi());
       setPlayUi();
+      syncFilmstrip();
     }
 
     playBtn.addEventListener("click", () => {
-      if (photoIndex >= 0) {
-        playClip(clipIndex);
-        return;
-      }
       if (video.paused) video.play().catch(() => {});
       else video.pause();
     });
@@ -504,47 +484,27 @@
     function syncFilmstrip() {
       if (!filmstripEl) return;
       Array.from(filmstripEl.children).forEach((el) => {
-        const kind = el.dataset.kind;
-        const i = Number(el.dataset.index);
-        const on =
-          kind === "clip"
-            ? photoIndex < 0
-            : kind === "photo" && i === photoIndex;
-        el.classList.toggle("active", on);
+        el.classList.toggle("active", Number(el.dataset.index) === clipIndex);
       });
     }
 
     if (filmstripEl) {
       filmstripEl.innerHTML = "";
-      const highlightBtn = document.createElement("button");
-      highlightBtn.type = "button";
-      highlightBtn.className = "filmstrip-slide";
-      highlightBtn.dataset.kind = "clip";
-      highlightBtn.dataset.index = "0";
-      highlightBtn.setAttribute("aria-label", "Play highlight");
-      const highlightThumb = document.createElement("img");
-      highlightThumb.alt = "";
-      highlightThumb.src = ids[0] ? imageUrl(ids[0]) : "";
-      highlightBtn.appendChild(highlightThumb);
-      const badge = document.createElement("span");
-      badge.className = "filmstrip-play";
-      badge.innerHTML = playIcon;
-      highlightBtn.appendChild(badge);
-      highlightBtn.addEventListener("click", () => playClip(clipIndex));
-      filmstripEl.appendChild(highlightBtn);
-
-      ids.forEach((id, i) => {
+      view.urls.forEach((_, i) => {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "filmstrip-slide";
-        btn.dataset.kind = "photo";
         btn.dataset.index = String(i);
-        btn.setAttribute("aria-label", "Photo " + (i + 1));
+        btn.setAttribute("aria-label", "Clip " + (i + 1));
         const thumb = document.createElement("img");
-        thumb.alt = "Capture " + (i + 1);
-        thumb.src = imageUrl(id);
+        thumb.alt = "";
+        thumb.src = ids[i] ? imageUrl(ids[i]) : "";
         btn.appendChild(thumb);
-        btn.addEventListener("click", () => showPhoto(i));
+        const badge = document.createElement("span");
+        badge.className = "filmstrip-play";
+        badge.innerHTML = playIcon;
+        btn.appendChild(badge);
+        btn.addEventListener("click", () => playClip(i));
         filmstripEl.appendChild(btn);
       });
     }

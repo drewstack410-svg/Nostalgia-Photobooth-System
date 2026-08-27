@@ -973,8 +973,9 @@ async function saveComposite() {
         }
       })();
 
-      // Upload per-shot highlight clips (7.5s before shutter + 4s freeze)
-      // so the gallery Highlight tab can play them in order.
+      // Upload per-shot highlight clips (last 10s before shutter).
+      // Clips are also written to Videos/NostalgiaPhotobooth at capture
+      // time; this copies them into the Pictures session folder too.
       const highlightUploadPromise: Promise<string[]> = (async () => {
         const clips = store.highlightClips.filter(Boolean);
         if (!clips.length) return [];
