@@ -7,8 +7,8 @@
 //                         printed QR codes still open.
 //   &ids=<id1,id2,...>    (required) comma-separated object keys /
 //                         public IDs of the individual captures.
-//                         Order is preserved. Also powers the "GIF"
-//                         view (built client-side, see below).
+//                         Order is preserved. Also listed individually
+//                         under “save individual photos”.
 //   &tag=<session_tag>    (optional, unused by GIF anymore) kept for
 //                         backward compatibility with older printed
 //                         QR codes; harmless if present.
@@ -16,26 +16,22 @@
 //                         TEMPLATED print (frame applied) — shown as
 //                         the "Template" view. This is what actually
 //                         printed, not a raw stack of captures.
+//   &vids=<key1,key2,..>  (optional) R2 object keys of per-shot
+//                         highlight clips (posing + 4s freeze). Played
+//                         in order as the Highlight tab.
 //   &title=<text>         (optional) overrides the page title.
 //                         Defaults to "Nostalgia Photobooth".
 //
 // Example: gallery/?cloud=uprdu3kg&print=abc&ids=foo:bar,foo:baz
 //
-// UI is three tabs — Template / Grid / GIF — with one big
+// UI is three tabs — Template / Grid / Highlight — with one big
 // "Save to Camera Roll" action for whichever is showing, plus a
 // secondary link to save captures one at a time. Built deliberately
 // tiny — the page should load fast on a phone over a venue's wifi
 // after someone scans the QR code.
 //
-// The GIF tab used to point at Cloudinary's `multi` endpoint, which
-// stitches same-tagged uploads into an animated GIF server-side. That
-// requires the "Multi" delivery type to be enabled on the Cloudinary
-// account, and some accounts (incl. free-tier signups) have it
-// restricted with no way to toggle it from the dashboard — the GIF
-// tab would just error out with no fix available on our end. Instead
-// the GIF is now built entirely client-side (in the guest's browser,
-// via the bundled gif.js) from the same capture images the Grid tab
-// already uses — no Cloudinary feature dependency at all.
+// The GIF tab used to stitch captures client-side via gif.js. It is
+// parked in favour of a real highlight video recorded at the booth.
 
 (function () {
   "use strict";
@@ -47,9 +43,15 @@
   const tag = (params.get("tag") || "").trim();
   const idsRaw = (params.get("ids") || "").trim();
   const printId = (params.get("print") || "").trim();
+  const vidsRaw = (params.get("vids") || "").trim();
   const title = (params.get("title") || "Nostalgia Photobooth").trim();
 
   const ids = idsRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const vids = vidsRaw
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -71,7 +73,7 @@
   document.title = title;
 
   // ─── Sanity checks ────────────────────────────────────────────────
-  if ((!r2Base && !cloud) || (ids.length === 0 && !printId)) {
+  if ((!r2Base && !cloud) || (ids.length === 0 && !printId && vids.length === 0)) {
     showFatal(
       "This link is missing photo references. Try scanning the QR code from your printed strip again.",
     );
@@ -107,13 +109,24 @@
     });
   }
 
-  if (ids.length > 0) {
+  // GIF tab parked — highlight video from the booth replaces it.
+  // if (ids.length > 0) {
+  //   views.push({
+  //     key: "gif",
+  //     label: "GIF",
+  //     kind: "gif",
+  //     ids,
+  //     downloadName: "nostalgia.gif",
+  //   });
+  // }
+
+  if (vids.length > 0) {
     views.push({
-      key: "gif",
-      label: "GIF",
-      kind: "gif",
-      ids,
-      downloadName: "nostalgia.gif",
+      key: "highlight",
+      label: "Highlight",
+      kind: "highlight",
+      urls: vids.map((id) => imageUrl(id)),
+      downloadName: highlightDownloadName(vids[0]),
     });
   }
 
@@ -248,6 +261,41 @@
       return;
     }
 
+    if (view.kind === "highlight") {
+      loadingEl.hidden = true;
+      updateSaveLabel(view);
+      if (!view.urls || view.urls.length === 0) {
+        errorEl.hidden = false;
+        return;
+      }
+      const video = document.createElement("video");
+      video.className = "stage-video";
+      video.setAttribute("playsinline", "");
+      video.setAttribute("webkit-playsinline", "");
+      video.muted = true;
+      video.autoplay = true;
+      video.controls = true;
+      video.preload = "auto";
+      let clipIndex = 0;
+      const playClip = (i) => {
+        clipIndex = i;
+        video.src = view.urls[i];
+        video.play().catch(() => {
+          /* autoplay may need a tap; controls are visible */
+        });
+      };
+      video.addEventListener("ended", () => {
+        playClip((clipIndex + 1) % view.urls.length);
+      });
+      video.addEventListener("error", () => {
+        if (activeKey !== view.key) return;
+        errorEl.hidden = false;
+      });
+      stageInner.appendChild(video);
+      playClip(0);
+      return;
+    }
+
     // image (Template): single <img>, preload so we can show a loading state
     loadingEl.hidden = false;
     const img = document.createElement("img");
@@ -295,6 +343,15 @@
       } else if (view.kind === "gif") {
         const blob = await getGifBlob(view);
         await saveBlob(blob, view.downloadName, "image/gif");
+      } else if (view.kind === "highlight") {
+        for (let i = 0; i < view.urls.length; i++) {
+          const url = view.urls[i];
+          const name =
+            view.urls.length === 1
+              ? view.downloadName
+              : highlightDownloadName(url, i + 1);
+          await saveByUrl(url, name);
+        }
       } else {
         await saveByUrl(view.downloadUrl, view.downloadName);
       }
@@ -536,6 +593,14 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
+  }
+
+  function highlightDownloadName(idOrUrl, index) {
+    const src = String(idOrUrl || "");
+    const extMatch = src.match(/\.(mp4|webm|mov)(?:\?|$)/i);
+    const ext = extMatch ? extMatch[1].toLowerCase() : "webm";
+    const n = typeof index === "number" ? `_${index}` : "";
+    return `nostalgia_highlight${n}.${ext}`;
   }
 
   // Public image URL. New sessions use Cloudflare R2 (`base`).

@@ -4,7 +4,7 @@
  * (people land here from a QR code on their phone) but scales up
  * cleanly on desktop. Warm, bold Nostalgia palette (espresso +
  * cream + gold) — a big centered title, a borderless preview
- * "stage" with Template / Grid / GIF tabs, and one obvious primary
+ * "stage" with Template / Grid / Highlight tabs, and one obvious primary
  * action (Save to Camera Roll). */
 
 :root {
@@ -166,6 +166,16 @@ body {
   display: block;
 }
 
+.stage-video {
+  max-width: 100%;
+  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #000;
+}
+
 /* Grid preview: a live CSS grid of the individual captures. Rows are
  * computed inline (see app.js) so 2, 3, 4+ photos all lay out sensibly. */
 .stage-grid {
@@ -208,7 +218,7 @@ body {
   margin: 0;
 }
 
-/* ── Tabs: Template / Grid / GIF segmented pill control ─────────── */
+/* ── Tabs: Template / Grid / Highlight segmented pill control ───── */
 /* Labels are set in app.js in mixed case; the uppercasing is presentation
    only, so the JS and the accessible name stay readable. */
 .tabs {
