@@ -84,6 +84,9 @@ const isCapturing = ref(false);
 const isReviewing = ref(false);
 const highlightRecording = ref(false);
 const countdownValue = ref(3);
+/** Last-frame freeze after each shot (display-only, not in the highlight file). */
+const SHOT_REVIEW_SECONDS = 5;
+const freezeCountdown = ref(SHOT_REVIEW_SECONDS);
 const showFlash = ref(false);
 const cameraReady = ref(false);
 const showInactivityWarning = ref(false);
@@ -125,15 +128,6 @@ const totalPhotos = computed(() => store.requiredPhotos);
 
 const previewHasFeed = computed(
   () => !!stream.value || !!liveViewFrame.value,
-);
-const nextCountdownSeconds = computed(() =>
-  store.capturedPhotos.length === 0
-    ? store.shootingFirstCountdownSeconds
-    : store.shootingSubsequentCountdownSeconds,
-);
-/** Bottom-of-preview timer: ticks during a shot, otherwise shows the next posing length. */
-const previewCountdown = computed(() =>
-  isCountingDown.value ? countdownValue.value : nextCountdownSeconds.value,
 );
 
 const activeFilterOptions = computed(() => store.activeFilters);
@@ -645,7 +639,6 @@ function cancelCountdownSleep() {
   }
 }
 
-const SHOT_REVIEW_MS = 5000;
 let reviewSleepTimer: ReturnType<typeof setTimeout> | null = null;
 /** Canon EVF was up for this shot — restart it after the freeze, not during. */
 let restoreLiveViewAfterReview = false;
@@ -787,7 +780,12 @@ async function saveHighlightLocally(dataUrl: string, shot: number) {
 async function showShotReview() {
   isReviewing.value = true;
   freezeLivePreview();
-  await sleepReview(SHOT_REVIEW_MS);
+  for (let n = SHOT_REVIEW_SECONDS; n >= 1; n--) {
+    if (isUnmounted) return;
+    freezeCountdown.value = n;
+    await sleepReview(1000);
+  }
+  freezeCountdown.value = SHOT_REVIEW_SECONDS;
   isReviewing.value = false;
   if (isUnmounted) return;
   await unfreezeLivePreview();
@@ -1550,12 +1548,16 @@ onUnmounted(() => {
           REC
         </div>
 
+        <div v-if="isCountingDown" class="countdown-overlay">
+          <div class="countdown-number">{{ countdownValue }}</div>
+        </div>
+
         <div
-          v-if="previewHasFeed"
+          v-if="previewHasFeed || isReviewing"
           class="preview-countdown"
-          :class="{ ticking: isCountingDown }"
+          :class="{ ticking: isReviewing }"
         >
-          {{ previewCountdown }}
+          {{ freezeCountdown }}
         </div>
         </div>
       </div>
@@ -2109,7 +2111,40 @@ onUnmounted(() => {
   }
 }
 
-/* Countdown sits at the bottom of the live preview whenever the feed is up. */
+/* Posing countdown — original centered overlay, number only. */
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.countdown-number {
+  font-family: var(--font-display);
+  font-size: 12rem;
+  font-weight: 700;
+  color: white;
+  text-shadow: 0 0 60px rgba(201, 162, 39, 0.8);
+  animation: countPulse 1s ease-in-out infinite;
+}
+
+@keyframes countPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 0.8;
+  }
+}
+
+/* Last-frame freeze timer — separate, at the bottom of the live preview. */
 .preview-countdown {
   position: absolute;
   left: 0;
@@ -2119,7 +2154,7 @@ onUnmounted(() => {
   margin: 0;
   text-align: center;
   font-family: var(--font-display);
-  font-size: 4.5rem;
+  font-size: 3.25rem;
   font-weight: 700;
   line-height: 1;
   color: white;
@@ -2131,18 +2166,6 @@ onUnmounted(() => {
 
 .preview-countdown.ticking {
   animation: countPulse 1s ease-in-out infinite;
-}
-
-@keyframes countPulse {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.08);
-    opacity: 0.85;
-  }
 }
 
 /* Filter Controls: 4 buttons */
