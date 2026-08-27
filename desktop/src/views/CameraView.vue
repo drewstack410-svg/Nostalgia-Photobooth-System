@@ -5,6 +5,8 @@ import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import type { CameraFilter } from "@/stores/photobooth";
 import { loadLut, applyLutToImageData } from "@/utils/lut";
+import type { ParsedLut } from "@/utils/lut";
+import { applyCaptureLook } from "@/utils/applyCaptureLook";
 import {
   BW_MATRIX,
   FUJIFILM_MATRIX,
@@ -21,11 +23,13 @@ import { getPaperSizePx, occupancyFill } from "@/utils/printLayout";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
 import {
   HIGHLIGHT_LEAD_MS,
+  HIGHLIGHT_PREVIEW_MS,
   abortHighlightCapture,
   freezeHighlightCapture,
   isHighlightRecording,
   startHighlightCapture,
   stopHighlightCapture,
+  waitForHighlightLead,
 } from "@/utils/highlightRecorder";
 
 const router = useRouter();
@@ -84,8 +88,8 @@ const isCapturing = ref(false);
 const isReviewing = ref(false);
 const highlightRecording = ref(false);
 const countdownValue = ref(3);
-/** Last-frame freeze after each shot (display-only, not in the highlight file). */
-const SHOT_REVIEW_SECONDS = 5;
+/** Last-frame freeze after each shot — also encoded as the last 5s of the highlight. */
+const SHOT_REVIEW_SECONDS = Math.round(HIGHLIGHT_PREVIEW_MS / 1000);
 const freezeCountdown = ref(SHOT_REVIEW_SECONDS);
 const showFlash = ref(false);
 const cameraReady = ref(false);
@@ -125,9 +129,8 @@ const capturedPhotoUrls = computed(() =>
 
 const currentPhotoNumber = computed(() => store.capturedPhotos.length + 1);
 const totalPhotos = computed(() => store.requiredPhotos);
-
-const previewHasFeed = computed(
-  () => !!stream.value || !!liveViewFrame.value,
+const freezeNextLabel = computed(() =>
+  store.hasAllPhotos ? "Ending in.." : "Next shoot will start in",
 );
 
 const activeFilterOptions = computed(() => store.activeFilters);
@@ -176,6 +179,7 @@ const selectedFilter = computed<CameraFilter | undefined>(
  */
 const PREVIEW_FILTER_ID = "nostalgia-preview-filter";
 const cubeCurves = ref<CubePreview | null>(null);
+const highlightLut = ref<ParsedLut | null>(null);
 
 const matrixFor = (kind?: string) => {
   if (kind === "sepia") return SEPIA_MATRIX;
@@ -232,10 +236,12 @@ watch(
   async (f) => {
     if (!f || f.effectType !== "cube" || !f.cubeData) {
       cubeCurves.value = null;
+      highlightLut.value = null;
       return;
     }
     try {
       const lut = await loadLut(f.cubeData);
+      highlightLut.value = lut;
       const preview = buildCubePreview(lut, f.baseFilter);
       cubeCurves.value = preview;
       if (preview.residual > 8) {
@@ -249,6 +255,7 @@ watch(
     } catch (e) {
       console.warn("[Camera] Could not build LUT preview, falling back:", e);
       cubeCurves.value = null;
+      highlightLut.value = null;
     }
   },
   { immediate: true },
@@ -651,6 +658,24 @@ function cancelHighlightLead() {
   }
 }
 
+function applyHighlightLook(ctx: CanvasRenderingContext2D) {
+  const f = selectedFilter.value;
+  applyCaptureLook(ctx, {
+    effectType: f?.effectType ?? "original",
+    baseFilter: f?.baseFilter,
+    lut: highlightLut.value,
+    overlay:
+      f?.overlay && f.overlay.opacity > 0
+        ? {
+            color: f.overlay.color,
+            blendMode: f.overlay.blendMode,
+            opacity: f.overlay.opacity,
+          }
+        : null,
+    adjustments: f ? store.resolvedAdjustments(f) : null,
+  });
+}
+
 /** Start streaming the live camera 10s before each shutter. */
 function armHighlightRecording(countdownSeconds: number) {
   cancelHighlightLead();
@@ -665,6 +690,8 @@ function armHighlightRecording(countdownSeconds: number) {
         video: videoRef.value,
         getStillUrl: () => liveViewFrame.value,
         getMirror: () => store.mirrorMode,
+        getCropBarPercent: () => cropBarPercent.value,
+        applyLook: applyHighlightLook,
       });
     } catch (e) {
       console.warn("[Highlight] Start failed:", e);
@@ -713,7 +740,7 @@ async function unfreezeLivePreview() {
   }
 }
 
-async function finishHighlightClip() {
+async function finishHighlightClip(shotNumber: number) {
   if (!isHighlightRecording()) {
     highlightRecording.value = false;
     return;
@@ -726,7 +753,7 @@ async function finishHighlightClip() {
       return;
     }
     store.addHighlightClip(clip);
-    await saveHighlightLocally(clip, store.capturedPhotos.length + 1);
+    await saveHighlightLocally(clip, shotNumber);
   } catch (e) {
     highlightRecording.value = false;
     console.warn("[Highlight] Stop failed:", e);
@@ -779,7 +806,6 @@ async function saveHighlightLocally(dataUrl: string, shot: number) {
 /** Hold the last shutter frame on screen, then continue. */
 async function showShotReview() {
   isReviewing.value = true;
-  freezeLivePreview();
   for (let n = SHOT_REVIEW_SECONDS; n >= 1; n--) {
     if (isUnmounted) return;
     freezeCountdown.value = n;
@@ -787,8 +813,6 @@ async function showShotReview() {
   }
   freezeCountdown.value = SHOT_REVIEW_SECONDS;
   isReviewing.value = false;
-  if (isUnmounted) return;
-  await unfreezeLivePreview();
 }
 
 async function runCountdownAndCapture() {
@@ -819,16 +843,23 @@ async function runCountdownAndCapture() {
   if (isUnmounted) return;
   isCountingDown.value = false;
   isCapturing.value = true;
-  await finishHighlightClip();
+  const shotNumber = store.capturedPhotos.length + 1;
+  if (isHighlightRecording()) {
+    await waitForHighlightLead();
+    freezeLivePreview();
+  }
   const success = await capturePhoto();
   isCapturing.value = false;
 
   if (success && !isUnmounted) {
     await showShotReview();
+    await finishHighlightClip(shotNumber);
+    if (!isUnmounted) await unfreezeLivePreview();
   } else {
     cancelHighlightLead();
     abortHighlightCapture();
     highlightRecording.value = false;
+    if (!isUnmounted) await unfreezeLivePreview();
   }
 
   if (isUnmounted) return;
@@ -909,7 +940,7 @@ async function capturePhotoInner(hadLiveView: boolean) {
       `[Camera] Capturing webcam frame ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`,
     );
     // Freeze the viewfinder on this last live frame (the guest preview).
-    // Highlight recording locks to the same frame for its 4s tail.
+    // Highlight recording stays on this frame for the 5s tail.
     sourceVideo.pause();
     videoBlurRef.value?.pause();
     freezeHighlightCapture();
@@ -1552,12 +1583,9 @@ onUnmounted(() => {
           <div class="countdown-number">{{ countdownValue }}</div>
         </div>
 
-        <div
-          v-if="previewHasFeed || isReviewing"
-          class="preview-countdown"
-          :class="{ ticking: isReviewing }"
-        >
-          {{ freezeCountdown }}
+        <div v-if="isReviewing" class="preview-countdown">
+          <p class="preview-countdown-label">{{ freezeNextLabel }}</p>
+          <div class="preview-countdown-number">{{ freezeCountdown }}</div>
         </div>
         </div>
       </div>
@@ -2144,15 +2172,31 @@ onUnmounted(() => {
   }
 }
 
-/* Last-frame freeze timer — separate, at the bottom of the live preview. */
+/* Last-frame freeze — only while the snapshot is held on screen. */
 .preview-countdown {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 18px;
   z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  pointer-events: none;
+}
+
+.preview-countdown-label {
   margin: 0;
-  text-align: center;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #f4e6c3;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
+}
+
+.preview-countdown-number {
   font-family: var(--font-display);
   font-size: 3.25rem;
   font-weight: 700;
@@ -2161,10 +2205,6 @@ onUnmounted(() => {
   text-shadow:
     0 2px 10px rgba(0, 0, 0, 0.85),
     0 0 28px rgba(201, 162, 39, 0.55);
-  pointer-events: none;
-}
-
-.preview-countdown.ticking {
   animation: countPulse 1s ease-in-out infinite;
 }
 

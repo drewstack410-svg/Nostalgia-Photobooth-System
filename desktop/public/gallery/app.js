@@ -1,19 +1,19 @@
-// Nostalgia Photobooth — public gallery viewer
+﻿// Nostalgia Photobooth â€” public gallery viewer
 // ---------------------------------------------
 // Vanilla JS, no framework, no build step. Reads URL params:
 //   ?base=<public_url>    (required for R2) Cloudflare R2 public base,
-//                         e.g. https://pub-xxxx.r2.dev — no trailing slash.
+//                         e.g. https://pub-xxxx.r2.dev â€” no trailing slash.
 //   ?cloud=<cloud_name>   (legacy) Cloudinary cloud name, kept so old
 //                         printed QR codes still open.
 //   &ids=<id1,id2,...>    (required) comma-separated object keys /
 //                         public IDs of the individual captures.
 //                         Order is preserved. Also listed individually
-//                         under “save individual photos”.
+//                         under â€œsave individual photosâ€.
 //   &tag=<session_tag>    (optional, unused by GIF anymore) kept for
 //                         backward compatibility with older printed
 //                         QR codes; harmless if present.
 //   &print=<publicId>    (optional) public ID of the finished
-//                         TEMPLATED print (frame applied) — shown as
+//                         TEMPLATED print (frame applied) â€” shown as
 //                         the "Template" view. This is what actually
 //                         printed, not a raw stack of captures.
 //   &vids=<key1,key2,..>  (optional) R2 object keys of per-shot
@@ -24,10 +24,10 @@
 //
 // Example: gallery/?cloud=uprdu3kg&print=abc&ids=foo:bar,foo:baz
 //
-// UI is three tabs — Template / Grid / Highlight — with one big
+// UI is three tabs â€” Template / Grid / Highlight â€” with one big
 // "Save to Camera Roll" action for whichever is showing, plus a
 // secondary link to save captures one at a time. Built deliberately
-// tiny — the page should load fast on a phone over a venue's wifi
+// tiny â€” the page should load fast on a phone over a venue's wifi
 // after someone scans the QR code.
 //
 // The GIF tab used to stitch captures client-side via gif.js. It is
@@ -36,7 +36,7 @@
 (function () {
   "use strict";
 
-  // ─── URL param parsing ────────────────────────────────────────────
+  // â”€â”€â”€ URL param parsing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const params = new URLSearchParams(window.location.search);
   const r2Base = (params.get("base") || "").trim().replace(/\/+$/, "");
   const cloud = (params.get("cloud") || "").trim();
@@ -44,6 +44,8 @@
   const idsRaw = (params.get("ids") || "").trim();
   const printId = (params.get("print") || "").trim();
   const vidsRaw = (params.get("vids") || "").trim();
+  const slotsRaw = (params.get("slots") || "").trim();
+  const parRaw = (params.get("par") || "").trim();
   const title = (params.get("title") || "Nostalgia Photobooth").trim();
 
   const ids = idsRaw
@@ -56,7 +58,10 @@
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // ─── DOM refs ─────────────────────────────────────────────────────
+  const layoutSlots = parseSlots(slotsRaw);
+  const printAspect = parsePrintAspect(parRaw);
+
+  // â”€â”€â”€ DOM refs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const titleEl = document.getElementById("title");
   const stageEl = document.getElementById("stage");
   const stageInner = document.getElementById("stageInner");
@@ -70,11 +75,15 @@
   const individualPanel = document.getElementById("individualPanel");
   const footnoteEl = document.getElementById("footnote");
   const filmstripEl = document.getElementById("filmstrip");
+  const lightboxEl = document.getElementById("hlLightbox");
+  const lightboxStage = document.getElementById("hlLightboxStage");
+  const lightboxClose = document.getElementById("hlLightboxClose");
+  let lightboxCleanup = null;
 
   titleEl.textContent = title;
   document.title = title;
 
-  // ─── Sanity checks ────────────────────────────────────────────────
+  // â”€â”€â”€ Sanity checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if ((!r2Base && !cloud) || (ids.length === 0 && !printId && vids.length === 0)) {
     showFatal(
       "This link is missing photo references. Try scanning the QR code from your printed strip again.",
@@ -82,7 +91,7 @@
     return;
   }
 
-  // ─── Build the view list ──────────────────────────────────────────
+  // â”€â”€â”€ Build the view list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Each view: { key, label, kind: 'image' | 'grid' | 'gif', ... }
   // Order sets tab order AND which one is active by default.
   const views = [];
@@ -111,7 +120,7 @@
     });
   }
 
-  // GIF tab parked — highlight video from the booth replaces it.
+  // GIF tab parked â€” highlight video from the booth replaces it.
   // if (ids.length > 0) {
   //   views.push({
   //     key: "gif",
@@ -137,10 +146,10 @@
     return;
   }
 
-  // ─── State ────────────────────────────────────────────────────────
+  // â”€â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   let activeKey = views[0].key;
 
-  // ─── Render tabs (hidden entirely if there's only one view) ──────
+  // â”€â”€â”€ Render tabs (hidden entirely if there's only one view) â”€â”€â”€â”€â”€â”€
   if (views.length > 1) {
     views.forEach((view) => {
       const btn = document.createElement("button");
@@ -154,7 +163,7 @@
     });
   }
 
-  // ─── Individual-photos panel (revealed on demand) ────────────────
+  // â”€â”€â”€ Individual-photos panel (revealed on demand) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   let individualPanelBuilt = false;
   individualToggle.addEventListener("click", () => {
     const willShow = individualPanel.hidden;
@@ -198,13 +207,13 @@
     });
   }
 
-  // ─── Footnote ─────────────────────────────────────────────────────
+  // â”€â”€â”€ Footnote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   footnoteEl.textContent = `${ids.length} ${ids.length === 1 ? "memory" : "memories"} from your session`;
 
-  // ─── Initial render ──────────────────────────────────────────────
+  // â”€â”€â”€ Initial render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   setActive(activeKey);
 
-  // ─── Functions ────────────────────────────────────────────────────
+  // â”€â”€â”€ Functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function getView(key) {
     return views.find((v) => v.key === key);
   }
@@ -218,9 +227,19 @@
     });
     const view = getView(key);
     const isHighlight = view && view.kind === "highlight";
-    stageEl.classList.toggle("is-video", !!isHighlight);
-    if (filmstripEl) filmstripEl.hidden = !isHighlight;
-    if (!isHighlight && filmstripEl) filmstripEl.innerHTML = "";
+    stageEl.classList.toggle("is-video", false);
+    stageEl.classList.toggle("is-highlight-strip", !!isHighlight);
+    if (printAspect && isHighlight) {
+      stageEl.style.setProperty(
+        "--strip-ar",
+        printAspect.w + " / " + printAspect.h,
+      );
+    } else {
+      stageEl.style.removeProperty("--strip-ar");
+    }
+    if (filmstripEl) filmstripEl.hidden = true;
+    if (filmstripEl) filmstripEl.innerHTML = "";
+    closeHighlightLightbox();
     renderStage(view);
   }
 
@@ -300,10 +319,95 @@
     shareBtn.style.display = view.kind === "image" ? "flex" : "none";
   }
 
+  function parseSlots(raw) {
+    if (!raw) return [];
+    return raw
+      .split(",")
+      .map((part) => {
+        const n = part.split("_").map(Number);
+        if (n.length < 4 || n.some((v) => !isFinite(v))) return null;
+        return { x: n[0], y: n[1], w: n[2], h: n[3] };
+      })
+      .filter(Boolean);
+  }
+
+  function parsePrintAspect(raw) {
+    const m = String(raw || "").match(/^(\d+)x(\d+)$/i);
+    if (!m) return null;
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (w < 1 || h < 1) return null;
+    return { w, h };
+  }
+
+  function defaultSlots(n, portrait) {
+    const count = Math.max(1, n);
+    if (portrait || count >= 3) {
+      const pad = 0.07;
+      const gap = 0.016;
+      const inner = 1 - pad * 2;
+      const h = (inner - gap * (count - 1)) / count;
+      const w = 0.78;
+      const x = (1 - w) / 2;
+      return Array.from({ length: count }, (_, i) => ({
+        x,
+        y: pad + i * (h + gap),
+        w,
+        h,
+      }));
+    }
+    const cols = count === 2 ? 2 : 2;
+    const rows = Math.ceil(count / cols);
+    const pad = 0.06;
+    const gap = 0.02;
+    const cw = (1 - pad * 2 - gap * (cols - 1)) / cols;
+    const ch = (1 - pad * 2 - gap * (rows - 1)) / rows;
+    return Array.from({ length: count }, (_, i) => {
+      const c = i % cols;
+      const r = Math.floor(i / cols);
+      return {
+        x: pad + c * (cw + gap),
+        y: pad + r * (ch + gap),
+        w: cw,
+        h: ch,
+      };
+    });
+  }
+
   function formatPlayerTime(secs) {
     if (!isFinite(secs) || secs < 0) return "0:00";
     const s = Math.floor(secs);
     return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  function closeHighlightLightbox() {
+    if (lightboxCleanup) {
+      lightboxCleanup();
+      lightboxCleanup = null;
+    }
+    if (lightboxStage) lightboxStage.innerHTML = "";
+    if (lightboxEl) lightboxEl.hidden = true;
+    document.body.classList.remove("hl-lightbox-open");
+  }
+
+  if (lightboxClose) {
+    lightboxClose.addEventListener("click", closeHighlightLightbox);
+  }
+  if (lightboxEl) {
+    lightboxEl.addEventListener("click", (e) => {
+      if (e.target === lightboxEl) closeHighlightLightbox();
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeHighlightLightbox();
+  });
+
+  function openHighlightLightbox(urls, startIndex) {
+    closeHighlightLightbox();
+    if (!lightboxEl || !lightboxStage || !urls.length) return;
+    lightboxEl.hidden = false;
+    document.body.classList.add("hl-lightbox-open");
+    lightboxCleanup = mountHighlightPlayer(lightboxStage, urls, startIndex);
   }
 
   function renderHighlight(view) {
@@ -314,20 +418,80 @@
       return;
     }
 
+    const n = view.urls.length;
+    const portrait = printAspect ? printAspect.h >= printAspect.w : n >= 3;
+    const slots =
+      layoutSlots.length >= n ? layoutSlots.slice(0, n) : defaultSlots(n, portrait);
+
+    const strip = document.createElement("div");
+    strip.className = "highlight-strip";
+    if (printAspect) {
+      strip.style.aspectRatio = printAspect.w + " / " + printAspect.h;
+    } else {
+      strip.style.aspectRatio = portrait ? "2 / 3" : "3 / 2";
+    }
+
+    if (printId) {
+      const frame = document.createElement("img");
+      frame.className = "highlight-strip-frame";
+      frame.alt = "Template";
+      frame.src = imageUrl(printId);
+      strip.appendChild(frame);
+    }
+
+    view.urls.forEach((url, i) => {
+      const slot = slots[i] || defaultSlots(n, portrait)[i];
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "highlight-slot";
+      btn.style.left = slot.x * 100 + "%";
+      btn.style.top = slot.y * 100 + "%";
+      btn.style.width = slot.w * 100 + "%";
+      btn.style.height = slot.h * 100 + "%";
+      btn.setAttribute("aria-label", "Play highlight " + (i + 1));
+
+      const vid = document.createElement("video");
+      vid.src = url;
+      vid.muted = true;
+      vid.loop = true;
+      vid.playsInline = true;
+      vid.setAttribute("playsinline", "");
+      vid.setAttribute("webkit-playsinline", "");
+      vid.preload = "metadata";
+      vid.setAttribute("controlslist", "nodownload");
+      btn.appendChild(vid);
+
+      const badge = document.createElement("span");
+      badge.className = "highlight-slot-play";
+      badge.innerHTML =
+        '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>';
+      btn.appendChild(badge);
+
+      btn.addEventListener("click", () => {
+        Array.from(strip.querySelectorAll("video")).forEach((v) => v.pause());
+        openHighlightLightbox(view.urls, i);
+      });
+      vid.addEventListener("loadeddata", () => {
+        vid.play().catch(() => {});
+      });
+
+      strip.appendChild(btn);
+    });
+
+    stageInner.appendChild(strip);
+  }
+
+  function mountHighlightPlayer(host, urls, startIndex) {
     const player = document.createElement("div");
-    player.className = "player";
+    player.className = "player player-lightbox";
 
     const video = document.createElement("video");
     video.className = "stage-video";
     video.setAttribute("playsinline", "");
     video.setAttribute("webkit-playsinline", "");
-    video.muted = true;
+    video.muted = false;
     video.preload = "auto";
     video.setAttribute("controlslist", "nodownload");
-
-    const photoImg = document.createElement("img");
-    photoImg.className = "stage-img player-photo";
-    photoImg.hidden = true;
 
     const prevBtn = document.createElement("button");
     prevBtn.type = "button";
@@ -354,7 +518,7 @@
     const muteBtn = document.createElement("button");
     muteBtn.type = "button";
     muteBtn.className = "player-btn";
-    muteBtn.setAttribute("aria-label", "Unmute");
+    muteBtn.setAttribute("aria-label", "Mute");
 
     const timeEl = document.createElement("span");
     timeEl.className = "player-time";
@@ -368,29 +532,19 @@
     seek.value = "0";
     seek.setAttribute("aria-label", "Seek");
 
-    const fsBtn = document.createElement("button");
-    fsBtn.type = "button";
-    fsBtn.className = "player-btn";
-    fsBtn.setAttribute("aria-label", "Fullscreen");
-    fsBtn.innerHTML =
-      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>';
-
     bar.appendChild(playBtn);
     bar.appendChild(muteBtn);
     bar.appendChild(timeEl);
     bar.appendChild(seek);
-    bar.appendChild(fsBtn);
 
     player.appendChild(video);
-    player.appendChild(photoImg);
     player.appendChild(prevBtn);
     player.appendChild(nextBtn);
     player.appendChild(bar);
-    stageInner.appendChild(player);
+    host.appendChild(player);
 
-    let clipIndex = 0;
+    let clipIndex = startIndex || 0;
     let seeking = false;
-
     const playIcon =
       '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>';
     const pauseIcon =
@@ -405,12 +559,10 @@
       playBtn.innerHTML = paused ? playIcon : pauseIcon;
       playBtn.setAttribute("aria-label", paused ? "Play" : "Pause");
     }
-
     function setMuteUi() {
       muteBtn.innerHTML = video.muted ? muteIcon : unmuteIcon;
       muteBtn.setAttribute("aria-label", video.muted ? "Unmute" : "Mute");
     }
-
     function updateTime() {
       const dur = video.duration || 0;
       timeEl.textContent =
@@ -426,23 +578,13 @@
         pct +
         "%)";
     }
-
-    function showVideo() {
-      photoImg.hidden = true;
-      video.hidden = false;
-      bar.hidden = false;
-      prevBtn.hidden = view.urls.length < 2;
-      nextBtn.hidden = view.urls.length < 2;
-      syncFilmstrip();
-    }
-
     function playClip(i) {
-      showVideo();
-      clipIndex = ((i % view.urls.length) + view.urls.length) % view.urls.length;
-      video.src = view.urls[clipIndex];
+      clipIndex = ((i % urls.length) + urls.length) % urls.length;
+      video.src = urls[clipIndex];
       video.play().catch(() => setPlayUi());
       setPlayUi();
-      syncFilmstrip();
+      prevBtn.hidden = urls.length < 2;
+      nextBtn.hidden = urls.length < 2;
     }
 
     playBtn.addEventListener("click", () => {
@@ -460,10 +602,6 @@
     video.addEventListener("pause", setPlayUi);
     video.addEventListener("timeupdate", updateTime);
     video.addEventListener("loadedmetadata", updateTime);
-    video.addEventListener("error", () => {
-      if (activeKey !== view.key) return;
-      errorEl.hidden = false;
-    });
     seek.addEventListener("input", () => {
       seeking = true;
       const dur = video.duration || 0;
@@ -472,46 +610,16 @@
     seek.addEventListener("change", () => {
       seeking = false;
     });
-    fsBtn.addEventListener("click", () => {
-      const root = player;
-      if (!document.fullscreenElement) {
-        (root.requestFullscreen || root.webkitRequestFullscreen)?.call(root);
-      } else {
-        document.exitFullscreen?.();
-      }
-    });
-
-    function syncFilmstrip() {
-      if (!filmstripEl) return;
-      Array.from(filmstripEl.children).forEach((el) => {
-        el.classList.toggle("active", Number(el.dataset.index) === clipIndex);
-      });
-    }
-
-    if (filmstripEl) {
-      filmstripEl.innerHTML = "";
-      view.urls.forEach((_, i) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "filmstrip-slide";
-        btn.dataset.index = String(i);
-        btn.setAttribute("aria-label", "Clip " + (i + 1));
-        const thumb = document.createElement("img");
-        thumb.alt = "";
-        thumb.src = ids[i] ? imageUrl(ids[i]) : "";
-        btn.appendChild(thumb);
-        const badge = document.createElement("span");
-        badge.className = "filmstrip-play";
-        badge.innerHTML = playIcon;
-        btn.appendChild(badge);
-        btn.addEventListener("click", () => playClip(i));
-        filmstripEl.appendChild(btn);
-      });
-    }
 
     setMuteUi();
     setPlayUi();
-    playClip(0);
+    playClip(clipIndex);
+
+    return function cleanup() {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    };
   }
 
   // Builds (once) and caches the client-side GIF Blob for a view, so
@@ -548,7 +656,7 @@
       }
     } catch (err) {
       alert(
-        "Couldn't save that — check your connection and try again, or use “save individual photos” below.",
+        "Couldn't save that â€” check your connection and try again, or use â€œsave individual photosâ€ below.",
       );
     } finally {
       setSaveBusy(false);
@@ -572,18 +680,18 @@
       }
       await navigator.share({ url: view.url, title });
     } catch (err) {
-      // User cancelled or the platform blocked — silent.
+      // User cancelled or the platform blocked â€” silent.
     }
   }
 
   function setSaveBusy(busy) {
     saveBtn.disabled = busy;
-    saveBtnLabel.textContent = busy ? "Preparing…" : "Save to Camera Roll";
+    saveBtnLabel.textContent = busy ? "Preparingâ€¦" : "Save to Camera Roll";
   }
 
   // Detect iOS (incl. iPadOS, which reports as "MacIntel" with touch).
   // On iOS the ONLY way to land an image in the Photos library is the
-  // share sheet — a normal download drops it into Files instead.
+  // share sheet â€” a normal download drops it into Files instead.
   function isIOS() {
     const ua = navigator.userAgent || "";
     return (
@@ -592,7 +700,7 @@
     );
   }
 
-  // Save a hosted asset by URL — Template / individual captures.
+  // Save a hosted asset by URL â€” Template / individual captures.
   // R2 has no attachment transform, so we fetch as a blob when CORS
   // allows (required for the gallery Grid/GIF canvas too).
   async function saveByUrl(url, filename) {
@@ -621,7 +729,7 @@
   }
 
   // Save a blob we already built client-side (the composited Grid
-  // image) — no fetch needed, just route to share-sheet or download.
+  // image) â€” no fetch needed, just route to share-sheet or download.
   async function saveBlob(blob, filename, mimeType) {
     if (isIOS() && navigator.share && navigator.canShare && typeof File !== "undefined") {
       const shared = await trySaveBlobViaShare(blob, filename, mimeType);
@@ -648,7 +756,7 @@
         return true;
       }
     } catch (err) {
-      if (err && err.name === "AbortError") return true; // user cancelled — don't fall through to a second prompt
+      if (err && err.name === "AbortError") return true; // user cancelled â€” don't fall through to a second prompt
     }
     return false;
   }
@@ -694,7 +802,7 @@
   }
 
   // Build an animated GIF client-side from every capture, using the
-  // bundled gif.js (vendored locally as gif.js / gif.worker.js — no
+  // bundled gif.js (vendored locally as gif.js / gif.worker.js â€” no
   // CDN dependency, works offline once the page itself has loaded).
   // Frames are downscaled to keep encode time and file size
   // reasonable on a phone's CPU/data plan.
@@ -747,7 +855,7 @@
     return new Promise((resolve, reject) => {
       const img = new Image();
       // R2 public URLs need bucket CORS (GET from the gallery origin)
-      // so this doesn't taint the canvas — required for toBlob().
+      // so this doesn't taint the canvas â€” required for toBlob().
       img.crossOrigin = "anonymous";
       img.onload = () => resolve(img);
       img.onerror = reject;

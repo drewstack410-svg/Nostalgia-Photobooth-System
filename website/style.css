@@ -176,8 +176,106 @@ body {
   background: #000;
 }
 
-.stage.is-video {
-  aspect-ratio: 3 / 2;
+.stage.is-highlight-strip {
+  aspect-ratio: var(--strip-ar, 2 / 3);
+}
+
+.highlight-strip {
+  position: relative;
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+  aspect-ratio: inherit;
+  margin: 0 auto;
+}
+
+.stage.is-highlight-strip .highlight-strip {
+  aspect-ratio: var(--strip-ar, 2 / 3);
+}
+
+.highlight-strip-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  display: block;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.highlight-slot {
+  position: absolute;
+  z-index: 2;
+  padding: 0;
+  border: none;
+  overflow: hidden;
+  background: #111;
+  cursor: pointer;
+}
+
+.highlight-slot video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.highlight-slot-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+}
+
+.hl-lightbox[hidden] {
+  display: none !important;
+}
+
+.hl-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(8, 12, 6, 0.94);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 12px 12px;
+}
+
+body.hl-lightbox-open {
+  overflow: hidden;
+}
+
+.hl-lightbox-close {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  right: 12px;
+  z-index: 5;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(242, 212, 196, 0.16);
+  color: var(--cream);
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hl-lightbox-stage {
+  position: relative;
+  width: min(100%, 920px);
+  height: min(86vh, 720px);
+}
+
+.player-lightbox {
+  position: absolute;
+  inset: 0;
 }
 
 /* Custom highlight player — cream/gold controls instead of the

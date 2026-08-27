@@ -148,6 +148,49 @@ function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; ext: string } | n
 // Falls back to "" when R2 or the gallery base URL aren't
 // configured — QRScanView handles that case by showing a friendly
 // "cloud upload didn't complete" message instead of a dead QR.
+function galleryLayoutParam(): { slots: string; par: string } | null {
+  const t = store.sessionTemplate ?? store.selectedTemplate;
+  if (!t) return null;
+  const sheet = getPaperSizePx(t.paperSize);
+  const par = `${Math.round(sheet.width)}x${Math.round(sheet.height)}`;
+  let rects: { x: number; y: number; w: number; h: number }[] = [];
+  if (t.cells?.length) {
+    rects = t.cells.map((c) => ({ x: c.x, y: c.y, w: c.w, h: c.h }));
+  } else {
+    const cols = Math.max(1, t.frameCols ?? 1);
+    const rows = Math.max(1, t.frameRows ?? 1);
+    const margin = t.cellMargin ?? 24;
+    const gap = t.cellGap ?? 24;
+    const cellW =
+      (sheet.width - margin * 2 - gap * (cols - 1)) / cols / sheet.width;
+    const cellH =
+      (sheet.height - margin * 2 - gap * (rows - 1)) / rows / sheet.height;
+    const mx = margin / sheet.width;
+    const my = margin / sheet.height;
+    const gx = gap / sheet.width;
+    const gy = gap / sheet.height;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        rects.push({
+          x: mx + c * (cellW + gx),
+          y: my + r * (cellH + gy),
+          w: cellW,
+          h: cellH,
+        });
+      }
+    }
+  }
+  const n = Math.max(1, store.requiredPhotos || rects.length);
+  rects = rects.slice(0, n);
+  if (!rects.length) return null;
+  const slots = rects
+    .map((c) =>
+      [c.x, c.y, c.w, c.h].map((v) => Number(v).toFixed(4)).join("_"),
+    )
+    .join(",");
+  return { slots, par };
+}
+
 function buildGalleryUrl(
   publicIds: string[],
   sessionTag: string,
@@ -161,23 +204,23 @@ function buildGalleryUrl(
     return "";
   }
 
-  // Default to a relative `/gallery/` path so kiosk dev can still
-  // serve the page from Vite when VITE_GALLERY_BASE_URL is empty.
-  // In production set it to the Vercel URL after the first deploy.
   const base = (
     import.meta.env.VITE_GALLERY_BASE_URL ||
     `${window.location.origin}/gallery/`
-  ).replace(/\/+$/, "/"); // ensure single trailing slash
+  ).replace(/\/+$/, "/");
 
   const url = new URL(base);
   url.searchParams.set("base", r2Base);
   url.searchParams.set("ids", publicIds.join(","));
   if (sessionTag) url.searchParams.set("tag", sessionTag);
-  // The finished templated print (frame applied). The gallery shows it
-  // as a distinct "Photo Strip" slide so it's downloadable too.
   if (printId) url.searchParams.set("print", printId);
   if (videoIds && videoIds.length > 0) {
     url.searchParams.set("vids", videoIds.join(","));
+  }
+  const layout = galleryLayoutParam();
+  if (layout) {
+    url.searchParams.set("slots", layout.slots);
+    url.searchParams.set("par", layout.par);
   }
   url.searchParams.set("title", "Nostalgia Photobooth");
   return url.toString();
@@ -973,9 +1016,7 @@ async function saveComposite() {
         }
       })();
 
-      // Upload per-shot highlight clips (last 10s before shutter).
-      // Clips are also written to Videos/NostalgiaPhotobooth at capture
-      // time; this copies them into the Pictures session folder too.
+      // Upload per-shot highlight clips (10s live + 5s freeze = 15s).
       const highlightUploadPromise: Promise<string[]> = (async () => {
         const clips = store.highlightClips.filter(Boolean);
         if (!clips.length) return [];
