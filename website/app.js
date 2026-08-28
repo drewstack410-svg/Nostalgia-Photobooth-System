@@ -16,24 +16,23 @@
 //                         TEMPLATED print (frame applied) â€” shown as
 //                         the "Template" view. This is what actually
 //                         printed, not a raw stack of captures.
-//   &vids=<key1,key2,..>  (optional) R2 object keys of per-shot
-//                         highlight clips (posing + 4s freeze). A play
-//                         button on the Template view plays them in
-//                         the photo windows.
+//   &vids=<key1,key2,..>  (optional) R2 object keys of highlight
+//                         video. Prefer a single framed strip
+//                         (highlight-strip). Shown on the GIF tab.
 //   &title=<text>         (optional) overrides the page title.
 //                         Defaults to "Nostalgia Photobooth".
 //
 // Example: gallery/?cloud=uprdu3kg&print=abc&ids=foo:bar,foo:baz
 //
-// UI is Template / Grid tabs, with a centered play control on the
-// printed strip when highlight clips are present. One big
+// UI is Template / Grid / GIF tabs. Template is the printed still,
+// GIF plays the framed strip video on a loop. One big
 // "Save to Camera Roll" action for whichever is showing, plus a
 // secondary link to save captures one at a time. Built deliberately
 // tiny â€” the page should load fast on a phone over a venue's wifi
 // after someone scans the QR code.
 //
-// The GIF tab used to stitch captures client-side via gif.js. It is
-// parked in favour of highlight clips played on the template.
+// The GIF tab used to stitch captures client-side via gif.js. It now
+// plays the booth-composited strip video instead.
 
 (function () {
   "use strict";
@@ -132,16 +131,17 @@
     return "";
   }
 
-  // GIF tab parked â€” highlight clips play on the Template view instead.
-  // if (ids.length > 0) {
-  //   views.push({
-  //     key: "gif",
-  //     label: "GIF",
-  //     kind: "gif",
-  //     ids,
-  //     downloadName: "nostalgia.gif",
-  //   });
-  // }
+  // GIF tab — same button as before, now plays the framed strip video.
+  const gifVideoUrl = framedStripUrl() || highlightUrls[0] || "";
+  if (gifVideoUrl) {
+    views.push({
+      key: "gif",
+      label: "GIF",
+      kind: "gif",
+      url: gifVideoUrl,
+      downloadName: "nostalgia_strip.mp4",
+    });
+  }
 
   if (views.length === 0 && highlightUrls.length > 0) {
     views.push({
@@ -280,10 +280,9 @@
       el.setAttribute("aria-selected", isActive ? "true" : "false");
     });
     const view = getView(key);
-    const liveOnTemplate =
-      view && view.kind === "image" && highlightUrls.length > 0;
-    stageEl.classList.toggle("is-video", false);
-    stageEl.classList.toggle("is-highlight-strip", !!liveOnTemplate);
+    const isGifVideo = view && view.kind === "gif";
+    stageEl.classList.toggle("is-video", !!isGifVideo);
+    stageEl.classList.toggle("is-highlight-strip", false);
     stageEl.style.removeProperty("--strip-ar");
     if (stripResizeCleanup) {
       stripResizeCleanup();
@@ -318,29 +317,7 @@
     }
 
     if (view.kind === "gif") {
-      loadingEl.hidden = false;
-      updateSaveLabel(view);
-      getGifBlob(view)
-        .then((blob) => {
-          if (activeKey !== view.key) return; // guest already switched tabs
-          const img = document.createElement("img");
-          img.className = "stage-img";
-          img.alt = view.label;
-          img.src = URL.createObjectURL(blob);
-          stageInner.appendChild(img);
-          loadingEl.hidden = true;
-        })
-        .catch((err) => {
-          if (activeKey !== view.key) return;
-          console.error("[Gallery] Failed to build GIF:", err);
-          loadingEl.hidden = true;
-          errorEl.hidden = false;
-        });
-      return;
-    }
-
-    if (view.kind === "image" && highlightUrls.length > 0) {
-      renderTemplateWithPlay(view);
+      renderGifVideo(view);
       return;
     }
 
@@ -363,12 +340,54 @@
     updateSaveLabel(view);
   }
 
+  function renderGifVideo(view) {
+    loadingEl.hidden = false;
+    updateSaveLabel(view);
+    const url = view.url || framedStripUrl() || highlightUrls[0];
+    if (!url) {
+      loadingEl.hidden = true;
+      errorEl.hidden = false;
+      return;
+    }
+
+    const video = document.createElement("video");
+    video.className = "stage-img stage-video-gif";
+    video.src = url;
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
+    video.preload = "auto";
+    video.setAttribute("controlslist", "nodownload");
+    video.setAttribute("aria-label", "Strip video");
+
+    video.addEventListener("loadeddata", () => {
+      if (activeKey !== view.key) return;
+      loadingEl.hidden = true;
+      video.play().catch(() => {});
+    });
+    video.addEventListener("error", () => {
+      if (activeKey !== view.key) return;
+      loadingEl.hidden = true;
+      errorEl.hidden = false;
+    });
+    video.addEventListener("click", () => {
+      if (video.paused) video.play().catch(() => {});
+      else video.pause();
+    });
+
+    stageInner.appendChild(video);
+  }
+
   function updateSaveLabel(view) {
     saveBtnLabel.textContent = "Save to Camera Roll";
     // Sharing a freshly-composited Grid/GIF would need the same async
     // build as saving it; keeping the share icon scoped to the
     // single-file Template view keeps this simple and fast.
-    shareBtn.style.display = view.kind === "image" ? "flex" : "none";
+    shareBtn.style.display =
+      view.kind === "image" || view.kind === "gif" ? "flex" : "none";
   }
 
   function parseSlots(raw) {
@@ -929,12 +948,28 @@
           await saveByUrl(framedStripUrl(), "nostalgia_strip.mp4");
         }
       }
-      if (view.kind === "grid") {
+      if (view.kind === "gif") {
+        const url = view.url || framedStripUrl();
+        const already = files.some((f) => /\.mp4$/i.test(f.name));
+        if (url && !already) {
+          try {
+            const strip = await fetchAsFile(
+              url,
+              view.downloadName || "nostalgia_strip.mp4",
+              "video/mp4",
+            );
+            files.push(
+              new File([strip], view.downloadName || "nostalgia_strip.mp4", {
+                type: "video/mp4",
+              }),
+            );
+          } catch (_) {
+            await saveByUrl(url, view.downloadName || "nostalgia_strip.mp4");
+          }
+        }
+      } else if (view.kind === "grid") {
         const blob = await buildGridBlob(view.ids);
         files.push(new File([blob], view.downloadName, { type: "image/jpeg" }));
-      } else if (view.kind === "gif") {
-        const blob = await getGifBlob(view);
-        files.push(new File([blob], view.downloadName, { type: "image/gif" }));
       } else if (view.downloadUrl) {
         try {
           files.push(
@@ -963,7 +998,25 @@
     if (!navigator.share || view.kind === "grid") return;
     try {
       const files = [];
-      if (view.url) {
+      if (view.kind === "gif") {
+        const url = view.url || framedStripUrl();
+        if (url) {
+          try {
+            const strip = await fetchAsFile(
+              url,
+              view.downloadName || "nostalgia_strip.mp4",
+              "video/mp4",
+            );
+            files.push(
+              new File([strip], view.downloadName || "nostalgia_strip.mp4", {
+                type: "video/mp4",
+              }),
+            );
+          } catch (_) {
+            /* fall through to URL share */
+          }
+        }
+      } else if (view.url) {
         try {
           files.push(
             await fetchAsFile(

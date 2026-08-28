@@ -4,9 +4,8 @@
  * (people land here from a QR code on their phone) but scales up
  * cleanly on desktop. Warm, bold Nostalgia palette (espresso +
  * cream + gold) — a big centered title, a borderless preview
- * "stage" with Template / Grid tabs, a play button on the printed
- * strip when highlight clips exist, and one obvious primary
- * action (Save to Camera Roll). */
+ * "stage" with Template / Grid / GIF tabs. GIF plays the framed
+ * strip video. One obvious primary action (Save to Camera Roll). */
 
 :root {
   /* Brand backdrop: the deep green from the Nostalgia logo artwork
@@ -175,6 +174,11 @@ body {
   object-fit: contain;
   display: block;
   background: #000;
+}
+
+.stage-video-gif {
+  cursor: pointer;
+  background: transparent;
 }
 
 .stage.is-highlight-strip {
