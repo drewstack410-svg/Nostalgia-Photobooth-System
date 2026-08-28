@@ -125,6 +125,13 @@
 
   const highlightUrls = vids.map((id) => imageUrl(id));
 
+  function framedStripUrl() {
+    const named = highlightUrls.find((u) => /highlight-strip/i.test(u));
+    if (named) return named;
+    if (highlightUrls.length === 1) return highlightUrls[0];
+    return "";
+  }
+
   // GIF tab parked â€” highlight clips play on the Template view instead.
   // if (ids.length > 0) {
   //   views.push({
@@ -216,7 +223,10 @@
     });
 
     highlightUrls.forEach((url, i) => {
-      const downloadName = highlightDownloadName(url, highlightUrls.length === 1 ? undefined : i + 1);
+      const isStrip = /highlight-strip/i.test(url) || highlightUrls.length === 1;
+      const downloadName = isStrip
+        ? "nostalgia_strip.mp4"
+        : highlightDownloadName(url, i + 1);
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "individual-thumb is-video";
@@ -828,11 +838,10 @@
   async function saveFiles(files) {
     const list = files.filter(Boolean);
     if (!list.length) return;
-    if (
-      navigator.share &&
-      navigator.canShare &&
-      typeof File !== "undefined"
-    ) {
+    const hasVideo = list.some((f) => String(f.type || "").startsWith("video/"));
+    const hasImage = list.some((f) => String(f.type || "").startsWith("image/"));
+    // iOS Photos drops the video when image+video go in one share sheet.
+    if (!(isIOS() && hasVideo && hasImage) && navigator.share && navigator.canShare && typeof File !== "undefined") {
       try {
         if (navigator.canShare({ files: list })) {
           await navigator.share({ files: list, title });
@@ -845,21 +854,35 @@
     for (let i = 0; i < list.length; i++) {
       await saveBlob(list[i], list[i].name, list[i].type);
       if (i < list.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 280));
+        await new Promise((resolve) => setTimeout(resolve, 400));
       }
     }
   }
 
+  async function fetchStripVideoFile() {
+    const url = framedStripUrl();
+    if (!url) return null;
+    const raw = await fetchAsFile(url, "nostalgia_strip.mp4", "video/mp4");
+    return new File([raw], "nostalgia_strip.mp4", { type: "video/mp4" });
+  }
+
   async function highlightFiles() {
     const files = [];
-    for (let i = 0; i < highlightUrls.length; i++) {
-      const url = highlightUrls[i];
-      const name = highlightDownloadName(
-        url,
-        highlightUrls.length === 1 ? undefined : i + 1,
-      );
+    const stripUrl = framedStripUrl();
+    const urls = stripUrl ? [stripUrl] : highlightUrls;
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      const name =
+        stripUrl && url === stripUrl
+          ? "nostalgia_strip.mp4"
+          : highlightDownloadName(url, urls.length === 1 ? undefined : i + 1);
       try {
-        files.push(await fetchAsFile(url, name, "video/mp4"));
+        const file = await fetchAsFile(url, name, "video/mp4");
+        files.push(
+          new File([file], name, {
+            type: name.endsWith(".mp4") ? "video/mp4" : file.type || "video/mp4",
+          }),
+        );
       } catch (_) {
         await saveByUrl(url, name);
       }
@@ -897,20 +920,38 @@
     const view = getView(activeKey);
     setSaveBusy(true);
     try {
+      const files = [];
+      if (framedStripUrl()) {
+        try {
+          const strip = await fetchStripVideoFile();
+          if (strip) files.push(strip);
+        } catch (_) {
+          await saveByUrl(framedStripUrl(), "nostalgia_strip.mp4");
+        }
+      }
       if (view.kind === "grid") {
         const blob = await buildGridBlob(view.ids);
-        await saveBlob(blob, view.downloadName, "image/jpeg");
+        files.push(new File([blob], view.downloadName, { type: "image/jpeg" }));
       } else if (view.kind === "gif") {
         const blob = await getGifBlob(view);
-        await saveBlob(blob, view.downloadName, "image/gif");
-      } else if (view.kind === "highlight") {
-        await saveHighlightClips();
-      } else {
-        await saveStripAndHighlights(view);
+        files.push(new File([blob], view.downloadName, { type: "image/gif" }));
+      } else if (view.downloadUrl) {
+        try {
+          files.push(
+            await fetchAsFile(
+              view.downloadUrl,
+              view.downloadName || "nostalgia_template.png",
+              "image/png",
+            ),
+          );
+        } catch (_) {
+          await saveByUrl(view.downloadUrl, view.downloadName);
+        }
       }
+      if (files.length) await saveFiles(files);
     } catch (err) {
       alert(
-        "Couldn't save that â€” check your connection and try again, or use â€œsave individual photosâ€ below.",
+        "Couldn't save that — check your connection and try again, or use “save individual photos” below.",
       );
     } finally {
       setSaveBusy(false);
@@ -935,8 +976,13 @@
           /* skip strip if CORS blocks it */
         }
       }
-      if (view.kind === "image" && highlightUrls.length) {
-        files.push(...(await highlightFiles()));
+      if (view.kind === "image" && framedStripUrl()) {
+        try {
+          const strip = await fetchStripVideoFile();
+          if (strip) files.unshift(strip);
+        } catch (_) {
+          /* image-only share still works */
+        }
       }
       if (files.length && navigator.canShare && navigator.canShare({ files })) {
         await navigator.share({ files, title });

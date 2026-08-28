@@ -27,6 +27,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function errText(e: unknown): string {
+  if (e instanceof Error) return `${e.name}: ${e.message}`;
+  return String(e);
+}
+
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -52,7 +57,12 @@ function loadVideo(src: string): Promise<HTMLVideoElement> {
 
 function drawCover(
   ctx: CanvasRenderingContext2D,
-  media: CanvasImageSource & { videoWidth?: number; videoHeight?: number; naturalWidth?: number; naturalHeight?: number },
+  media: CanvasImageSource & {
+    videoWidth?: number;
+    videoHeight?: number;
+    naturalWidth?: number;
+    naturalHeight?: number;
+  },
   x: number,
   y: number,
   w: number,
@@ -87,9 +97,52 @@ function blobToDataUrl(blob: Blob): Promise<string | null> {
   });
 }
 
+function pickRecorderMime(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const types = [
+    "video/mp4;codecs=avc1.42E01E",
+    "video/mp4;codecs=avc1.4D401F",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+  return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+}
+
+async function pickAvcCodec(
+  width: number,
+  height: number,
+): Promise<string | null> {
+  if (typeof VideoEncoder === "undefined") return null;
+  const codecs = [
+    "avc1.4D401F",
+    "avc1.42001F",
+    "avc1.64001F",
+    "avc1.640028",
+    "avc1.42001E",
+  ];
+  for (const codec of codecs) {
+    try {
+      const probe = await VideoEncoder.isConfigSupported({
+        codec,
+        width,
+        height,
+        bitrate: 3_500_000,
+        framerate: FPS,
+        avc: { format: "avc" },
+      });
+      if (probe.supported) return codec;
+    } catch {
+      /* try next */
+    }
+  }
+  return codecs[0];
+}
+
 /**
  * Encode a full-strip highlight: printed template with clips playing
- * in every photo window. Returns a `data:video/mp4` URL, or null.
+ * in every photo window. Returns a `data:video/mp4` (or webm) URL.
  */
 export async function composeStripVideo(opts: {
   frameDataUrl: string;
@@ -97,9 +150,12 @@ export async function composeStripVideo(opts: {
   slots: StripSlot[];
 }): Promise<string | null> {
   const clips = opts.clipDataUrls.filter(Boolean);
-  if (!opts.frameDataUrl || !clips.length || !opts.slots.length) return null;
-  if (typeof VideoEncoder === "undefined") {
-    console.warn("[StripVideo] VideoEncoder unavailable");
+  if (!opts.frameDataUrl || !clips.length) {
+    console.warn("[StripVideo] Missing frame or clips");
+    return null;
+  }
+  if (!opts.slots.length) {
+    console.warn("[StripVideo] No layout slots — cannot place clips on the strip");
     return null;
   }
 
@@ -122,7 +178,11 @@ export async function composeStripVideo(opts: {
   canvas.width = width;
   canvas.height = height;
   host.appendChild(canvas);
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", {
+    alpha: false,
+    colorSpace: "srgb",
+    willReadFrequently: true,
+  });
   if (!ctx) {
     host.remove();
     return null;
@@ -132,7 +192,7 @@ export async function composeStripVideo(opts: {
   try {
     videos = await Promise.all(clips.map(loadVideo));
   } catch (e) {
-    console.warn("[StripVideo] Clip load failed:", e);
+    console.warn("[StripVideo] Clip load failed:", errText(e));
     host.remove();
     return null;
   }
@@ -175,6 +235,55 @@ export async function composeStripVideo(opts: {
     ),
   );
 
+  await Promise.all(
+    videos.map((v) => {
+      try {
+        v.currentTime = 0;
+      } catch {
+        /* ignore */
+      }
+      return v.play().catch(() => {});
+    }),
+  );
+
+  console.log(
+    `[StripVideo] Encoding ${width}x${height} for ~${Math.round(durationMs)}ms, ${slots.length} slot(s)`,
+  );
+
+  let dataUrl: string | null = null;
+  try {
+    dataUrl = await encodeWithVideoEncoder(canvas, paint, width, height, durationMs);
+  } catch (e) {
+    console.warn("[StripVideo] VideoEncoder path failed:", errText(e));
+  }
+  if (!dataUrl) {
+    try {
+      dataUrl = await encodeWithMediaRecorder(canvas, paint, durationMs);
+    } catch (e) {
+      console.warn("[StripVideo] MediaRecorder path failed:", errText(e));
+    }
+  }
+
+  videos.forEach((v) => {
+    v.pause();
+    v.removeAttribute("src");
+    v.load();
+  });
+  host.remove();
+  return dataUrl;
+}
+
+async function encodeWithVideoEncoder(
+  canvas: HTMLCanvasElement,
+  paint: () => void,
+  width: number,
+  height: number,
+  durationMs: number,
+): Promise<string | null> {
+  if (typeof VideoEncoder === "undefined") return null;
+  const codec = await pickAvcCodec(width, height);
+  if (!codec) return null;
+
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({
     target,
@@ -191,18 +300,18 @@ export async function composeStripVideo(opts: {
       try {
         muxer.addVideoChunk(chunk, meta);
       } catch (e) {
-        console.warn("[StripVideo] Mux chunk failed:", e);
+        console.warn("[StripVideo] Mux chunk failed:", errText(e));
       }
     },
     error: (e) => {
-      encodeError = e.message;
-      console.warn("[StripVideo] VideoEncoder error:", e);
+      encodeError = errText(e);
+      console.warn("[StripVideo] VideoEncoder error:", encodeError);
     },
   });
 
   try {
     encoder.configure({
-      codec: "avc1.42001E",
+      codec,
       width,
       height,
       bitrate: 3_500_000,
@@ -210,32 +319,19 @@ export async function composeStripVideo(opts: {
       avc: { format: "avc" },
     });
   } catch (e) {
-    console.warn("[StripVideo] VideoEncoder configure failed:", e);
+    console.warn("[StripVideo] VideoEncoder configure failed:", errText(e));
     try {
       encoder.close();
     } catch {
       /* ignore */
     }
-    host.remove();
     return null;
   }
-
-  await Promise.all(
-    videos.map((v) => {
-      try {
-        v.currentTime = 0;
-      } catch {
-        /* ignore */
-      }
-      return v.play().catch(() => {});
-    }),
-  );
+  console.log(`[StripVideo] VideoEncoder ${codec} ${width}x${height}`);
 
   const startedAt = performance.now();
-  console.log(`[StripVideo] Encoding ${width}x${height} for ~${Math.round(durationMs)}ms`);
-
   while (performance.now() - startedAt < durationMs) {
-    if (encodeError) break;
+    if (encodeError || encoder.state !== "configured") break;
     while (encoder.encodeQueueSize > 12) await sleep(8);
     paint();
     const ts = Math.max(0, Math.round((performance.now() - startedAt) * 1000));
@@ -246,48 +342,104 @@ export async function composeStripVideo(opts: {
           : Math.round(FRAME_MS * 1000);
       const keyFrame = lastKeyframeUs < 0 || ts - lastKeyframeUs >= 1_000_000;
       try {
-        const vf = new VideoFrame(canvas, { timestamp: ts, duration });
+        const bmp = await createImageBitmap(canvas);
+        const vf = new VideoFrame(bmp, { timestamp: ts, duration });
+        bmp.close();
         encoder.encode(vf, { keyFrame });
         vf.close();
         lastTimestampUs = ts;
         if (keyFrame) lastKeyframeUs = ts;
       } catch (e) {
-        encodeError = e instanceof Error ? e.message : String(e);
-        console.warn("[StripVideo] Encode frame failed:", e);
+        encodeError = errText(e);
+        console.warn("[StripVideo] Encode frame failed:", encodeError);
         break;
       }
     }
     await sleep(FRAME_MS);
   }
 
-  videos.forEach((v) => {
-    v.pause();
-    v.removeAttribute("src");
-    v.load();
-  });
-  host.remove();
-
   try {
-    await encoder.flush();
+    if (encoder.state === "configured") await encoder.flush();
   } catch (e) {
-    console.warn("[StripVideo] Flush failed:", e);
+    console.warn("[StripVideo] Flush failed:", errText(e));
   }
   try {
     if (encoder.state !== "closed") encoder.close();
   } catch {
     /* ignore */
   }
-  muxer.finalize();
+  try {
+    muxer.finalize();
+  } catch (e) {
+    console.warn("[StripVideo] Mux finalize failed:", errText(e));
+    return null;
+  }
 
   const bytes = target.buffer;
-  if (!bytes || bytes.byteLength < 100) {
+  if (!bytes || bytes.byteLength < 1000) {
     console.warn("[StripVideo] Empty mux output");
     return null;
   }
   const blob = new Blob([bytes], { type: "video/mp4" });
   const dataUrl = await blobToDataUrl(blob);
+  console.log(`[StripVideo] Ready ${Math.round(blob.size / 1024)}KB video/mp4`);
+  return dataUrl;
+}
+
+async function encodeWithMediaRecorder(
+  canvas: HTMLCanvasElement,
+  paint: () => void,
+  durationMs: number,
+): Promise<string | null> {
+  const mime = pickRecorderMime();
+  if (!mime || typeof canvas.captureStream !== "function") return null;
+
+  paint();
+  const stream = canvas.captureStream(FPS);
+  const rec = new MediaRecorder(stream, {
+    mimeType: mime,
+    videoBitsPerSecond: 3_500_000,
+  });
+  const chunks: Blob[] = [];
+  rec.ondataavailable = (e) => {
+    if (e.data && e.data.size) chunks.push(e.data);
+  };
+
+  console.log(`[StripVideo] MediaRecorder fallback ${mime}`);
+  rec.start(200);
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < durationMs) {
+    paint();
+    const track = stream.getVideoTracks()[0] as MediaStreamTrack & {
+      requestFrame?: () => void;
+    };
+    try {
+      track.requestFrame?.();
+    } catch {
+      /* ignore */
+    }
+    await sleep(FRAME_MS);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    rec.onerror = () => reject(new Error("MediaRecorder error"));
+    rec.onstop = () => resolve();
+    try {
+      rec.stop();
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  });
+  stream.getTracks().forEach((t) => t.stop());
+
+  if (!chunks.length) {
+    console.warn("[StripVideo] MediaRecorder produced no data");
+    return null;
+  }
+  const blob = new Blob(chunks, { type: mime });
+  const dataUrl = await blobToDataUrl(blob);
   console.log(
-    `[StripVideo] Ready ${Math.round(blob.size / 1024)}KB video/mp4`,
+    `[StripVideo] Ready ${Math.round(blob.size / 1024)}KB ${mime}`,
   );
   return dataUrl;
 }
