@@ -82,6 +82,8 @@
   const lightboxClose = document.getElementById("hlLightboxClose");
   let lightboxCleanup = null;
   let stripResizeCleanup = null;
+  let framedStripCache = null;
+  let framedStripPending = null;
 
   titleEl.textContent = title;
   document.title = title;
@@ -931,8 +933,214 @@
     if (files.length) await saveFiles(files);
   }
 
+  function pickRecorderMime() {
+    if (typeof MediaRecorder === "undefined") return "";
+    const types = [
+      "video/mp4;codecs=avc1.42E01E",
+      "video/mp4",
+      "video/webm;codecs=vp9",
+      "video/webm;codecs=vp8",
+      "video/webm",
+    ];
+    return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  }
+
+  function loadHighlightVideo(url) {
+    return new Promise((resolve, reject) => {
+      const v = document.createElement("video");
+      v.crossOrigin = "anonymous";
+      v.muted = true;
+      v.loop = true;
+      v.playsInline = true;
+      v.setAttribute("playsinline", "");
+      v.setAttribute("webkit-playsinline", "");
+      v.preload = "auto";
+      v.src = url;
+      v.onloadeddata = () => resolve(v);
+      v.onerror = () => reject(new Error("video failed to load"));
+    });
+  }
+
+  function slotsForFrame(frameImg, videoCount) {
+    const portrait = frameImg
+      ? frameImg.naturalHeight >= frameImg.naturalWidth
+      : videoCount >= 3;
+    if (layoutSlots.length) return layoutSlots;
+    if (frameImg) {
+      const detected = detectSlotsFromPrint(frameImg);
+      if (detected.length >= Math.min(2, videoCount)) return detected;
+    }
+    return defaultSlots(videoCount, portrait);
+  }
+
+  async function buildFramedStripVideo(frameUrl) {
+    const mime = pickRecorderMime();
+    if (!mime) throw new Error("this browser cannot record video");
+    if (!frameUrl || !highlightUrls.length) throw new Error("missing strip");
+    if (!HTMLCanvasElement.prototype.captureStream) {
+      throw new Error("canvas capture is unavailable");
+    }
+
+    const frame = await loadCorsImage(frameUrl);
+    const slots = slotsForFrame(frame, highlightUrls.length);
+    const videos = await Promise.all(highlightUrls.map(loadHighlightVideo));
+
+    const srcW = frame.naturalWidth;
+    const srcH = frame.naturalHeight;
+    const maxEdge = 1080;
+    const scale = Math.min(1, maxEdge / Math.max(srcW, srcH));
+    const W = Math.max(2, Math.round(srcW * scale));
+    const H = Math.max(2, Math.round(srcH * scale));
+
+    const host = document.createElement("div");
+    host.setAttribute("aria-hidden", "true");
+    host.style.cssText =
+      "position:fixed;left:0;bottom:0;width:8px;height:8px;overflow:hidden;opacity:0.04;pointer-events:none;z-index:-1";
+    const canvas = document.createElement("canvas");
+    canvas.width = W;
+    canvas.height = H;
+    host.appendChild(canvas);
+    videos.forEach((v) => {
+      v.width = 8;
+      v.height = 8;
+      host.appendChild(v);
+    });
+    document.body.appendChild(host);
+
+    const ctx = canvas.getContext("2d");
+    function paint() {
+      ctx.drawImage(frame, 0, 0, W, H);
+      slots.forEach((slot, i) => {
+        const v = videos[i % videos.length];
+        const x = slot.x * W;
+        const y = slot.y * H;
+        const w = slot.w * W;
+        const h = slot.h * H;
+        ctx.save();
+        if (slot.r) {
+          ctx.translate(x + w / 2, y + h / 2);
+          ctx.rotate((slot.r * Math.PI) / 180);
+          ctx.translate(-(x + w / 2), -(y + h / 2));
+        }
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.clip();
+        drawCoverFit(ctx, v, x, y, w, h);
+        ctx.restore();
+      });
+    }
+
+    const duration = Math.min(
+      16,
+      Math.max(
+        4,
+        ...videos.map((v) =>
+          isFinite(v.duration) && v.duration > 0 ? v.duration : 15,
+        ),
+      ),
+    );
+
+    await Promise.all(
+      videos.map((v) => {
+        try {
+          v.currentTime = 0;
+        } catch (_) {
+          /* ignore */
+        }
+        return v.play().catch(() => {});
+      }),
+    );
+    paint();
+
+    const stream = canvas.captureStream(30);
+    const rec = new MediaRecorder(stream, {
+      mimeType: mime,
+      videoBitsPerSecond: 3500000,
+    });
+    const chunks = [];
+    rec.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunks.push(e.data);
+    };
+
+    return new Promise((resolve, reject) => {
+      let raf = 0;
+      const started = performance.now();
+      function tick() {
+        paint();
+        if ((performance.now() - started) / 1000 >= duration) {
+          try {
+            rec.stop();
+          } catch (_) {
+            /* ignore */
+          }
+          return;
+        }
+        raf = requestAnimationFrame(tick);
+      }
+      function cleanup() {
+        cancelAnimationFrame(raf);
+        videos.forEach((v) => {
+          v.pause();
+          v.removeAttribute("src");
+          v.load();
+        });
+        host.remove();
+      }
+      rec.onerror = () => {
+        cleanup();
+        reject(new Error("recording failed"));
+      };
+      rec.onstop = () => {
+        cleanup();
+        if (!chunks.length) {
+          reject(new Error("empty recording"));
+          return;
+        }
+        resolve(new Blob(chunks, { type: mime }));
+      };
+      try {
+        rec.start(200);
+        raf = requestAnimationFrame(tick);
+      } catch (err) {
+        cleanup();
+        reject(err);
+      }
+    });
+  }
+
+  async function getFramedStripFile(frameUrl) {
+    if (framedStripCache) return framedStripCache;
+    if (!framedStripPending) {
+      framedStripPending = buildFramedStripVideo(frameUrl)
+        .then((blob) => {
+          const ext = /mp4/i.test(blob.type) ? "mp4" : "webm";
+          framedStripCache = new File([blob], "nostalgia_strip." + ext, {
+            type: blob.type || (ext === "mp4" ? "video/mp4" : "video/webm"),
+          });
+          return framedStripCache;
+        })
+        .finally(() => {
+          framedStripPending = null;
+        });
+    }
+    return framedStripPending;
+  }
+
   async function saveStripAndHighlights(view) {
     const files = [];
+    const frameUrl = view.url || view.downloadUrl || "";
+    if (frameUrl && highlightUrls.length) {
+      try {
+        setSaveBusy(true, "Rendering video…");
+        files.push(await getFramedStripFile(frameUrl));
+      } catch (err) {
+        console.warn("[Gallery] Framed strip video failed:", err);
+        framedStripCache = null;
+        files.push(...(await highlightFiles()));
+      }
+    } else if (highlightUrls.length) {
+      files.push(...(await highlightFiles()));
+    }
     if (view.downloadUrl) {
       try {
         files.push(
@@ -946,8 +1154,6 @@
         await saveByUrl(view.downloadUrl, view.downloadName);
       }
     }
-    const clips = await highlightFiles();
-    files.push(...clips);
     if (files.length) await saveFiles(files);
   }
 
@@ -993,8 +1199,12 @@
           /* skip strip if CORS blocks it */
         }
       }
-      if (view.kind === "image" && highlightUrls.length) {
-        files.push(...(await highlightFiles()));
+      if (view.kind === "image" && highlightUrls.length && view.url) {
+        try {
+          files.unshift(await getFramedStripFile(view.url));
+        } catch (_) {
+          files.push(...(await highlightFiles()));
+        }
       }
       if (files.length && navigator.canShare && navigator.canShare({ files })) {
         await navigator.share({ files, title });
@@ -1006,9 +1216,11 @@
     }
   }
 
-  function setSaveBusy(busy) {
+  function setSaveBusy(busy, message) {
     saveBtn.disabled = busy;
-    saveBtnLabel.textContent = busy ? "Preparingâ€¦" : "Save to Camera Roll";
+    saveBtnLabel.textContent = busy
+      ? message || "Preparing…"
+      : "Save to Camera Roll";
   }
 
   // Detect iOS (incl. iPadOS, which reports as "MacIntel" with touch).
@@ -1186,8 +1398,9 @@
   }
 
   function drawCoverFit(ctx, img, x, y, w, h) {
-    const iw = img.naturalWidth;
-    const ih = img.naturalHeight;
+    const iw = img.naturalWidth || img.videoWidth || 0;
+    const ih = img.naturalHeight || img.videoHeight || 0;
+    if (!iw || !ih || w <= 0 || h <= 0) return;
     const imgAspect = iw / ih;
     const cellAspect = w / h;
     let sx = 0,
