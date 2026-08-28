@@ -82,8 +82,6 @@
   const lightboxClose = document.getElementById("hlLightboxClose");
   let lightboxCleanup = null;
   let stripResizeCleanup = null;
-  let framedStripCache = null;
-  let framedStripPending = null;
 
   titleEl.textContent = title;
   document.title = title;
@@ -568,8 +566,6 @@
       return;
     }
 
-    const n = urls.length;
-    const portrait = printAspect ? printAspect.h >= printAspect.w : n >= 3;
     const strip = document.createElement("div");
     strip.className = "highlight-strip";
 
@@ -584,107 +580,51 @@
     playBtn.setAttribute("aria-label", "Play highlights");
     playBtn.innerHTML = playSvg;
 
+    const vid = document.createElement("video");
+    vid.className = "highlight-strip-video";
+    vid.src = urls[0];
+    vid.muted = true;
+    vid.loop = true;
+    vid.playsInline = true;
+    vid.setAttribute("playsinline", "");
+    vid.setAttribute("webkit-playsinline", "");
+    vid.preload = "auto";
+    vid.setAttribute("controlslist", "nodownload");
+    vid.hidden = true;
+
     let playing = false;
-    let slotsReady = false;
-
-    function mountSlots(slots) {
-      Array.from(strip.querySelectorAll(".highlight-slot")).forEach((el) =>
-        el.remove(),
-      );
-      slots.forEach((slot, i) => {
-        const url = urls[i % n];
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "highlight-slot";
-        btn.hidden = !playing;
-        btn.style.left = slot.x * 100 + "%";
-        btn.style.top = slot.y * 100 + "%";
-        btn.style.width = slot.w * 100 + "%";
-        btn.style.height = slot.h * 100 + "%";
-        if (slot.r) {
-          btn.style.transform = "rotate(" + slot.r + "deg)";
-        }
-        btn.setAttribute("aria-label", "Open highlight " + ((i % n) + 1));
-
-        const vid = document.createElement("video");
-        vid.src = url;
-        vid.muted = true;
-        vid.loop = true;
-        vid.playsInline = true;
-        vid.setAttribute("playsinline", "");
-        vid.setAttribute("webkit-playsinline", "");
-        vid.preload = "auto";
-        vid.setAttribute("controlslist", "nodownload");
-        btn.appendChild(vid);
-
-        btn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (!playing) return;
-          setPlaying(false);
-          openHighlightLightbox(urls, i % n);
-        });
-
-        strip.appendChild(btn);
-      });
-      strip.appendChild(playBtn);
-      slotsReady = true;
-      if (playing) playSlots();
-    }
-
-    function playSlots() {
-      Array.from(strip.querySelectorAll(".highlight-slot")).forEach((el) => {
-        el.hidden = false;
-      });
-      Array.from(strip.querySelectorAll("video")).forEach((v) => {
-        v.currentTime = 0;
-        v.play().catch(() => {});
-      });
-    }
-
-    function stopSlots() {
-      Array.from(strip.querySelectorAll("video")).forEach((v) => {
-        v.pause();
-        try {
-          v.currentTime = 0;
-        } catch (_) {
-          /* ignore */
-        }
-      });
-      Array.from(strip.querySelectorAll(".highlight-slot")).forEach((el) => {
-        el.hidden = true;
-      });
-    }
 
     function setPlaying(on) {
       playing = on;
       strip.classList.toggle("is-playing", on);
       playBtn.innerHTML = on ? pauseSvg : playSvg;
       playBtn.setAttribute("aria-label", on ? "Pause" : "Play highlights");
-      if (on) playSlots();
-      else stopSlots();
+      vid.hidden = !on;
+      if (on) {
+        try {
+          vid.currentTime = 0;
+        } catch (_) {
+          /* ignore */
+        }
+        vid.play().catch(() => {});
+      } else {
+        vid.pause();
+        try {
+          vid.currentTime = 0;
+        } catch (_) {
+          /* ignore */
+        }
+      }
     }
 
     playBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (!slotsReady) return;
       setPlaying(!playing);
     });
-
-    function applySlots(count, isPortrait, frameImg) {
-      if (layoutSlots.length) {
-        mountSlots(layoutSlots);
-        return;
-      }
-      mountSlots(defaultSlots(count, isPortrait));
-      if (!frameImg || !frameImg.src) return;
-      const probe = new Image();
-      probe.crossOrigin = "anonymous";
-      probe.onload = () => {
-        const detected = detectSlotsFromPrint(probe);
-        if (detected.length >= Math.min(2, count)) mountSlots(detected);
-      };
-      probe.src = frameImg.src;
-    }
+    vid.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (playing) setPlaying(false);
+    });
 
     function watchStripSize(nw, nh) {
       sizeHighlightStrip(strip, nw, nh);
@@ -693,7 +633,7 @@
       ro.observe(stageInner);
       stripResizeCleanup = () => {
         ro.disconnect();
-        stopSlots();
+        setPlaying(false);
       };
     }
 
@@ -706,22 +646,21 @@
       frame.onload = () => {
         loadingEl.hidden = true;
         watchStripSize(frame.naturalWidth, frame.naturalHeight);
-        applySlots(n, frame.naturalHeight >= frame.naturalWidth, frame);
       };
       frame.onerror = () => {
         loadingEl.hidden = true;
-        const ar = printAspect || { w: portrait ? 2 : 3, h: portrait ? 3 : 2 };
+        const ar = printAspect || { w: 2, h: 3 };
         watchStripSize(ar.w, ar.h);
-        applySlots(n, ar.h >= ar.w);
       };
       frame.src = frameUrl;
       strip.appendChild(frame);
     } else {
-      const ar = printAspect || { w: portrait ? 2 : 3, h: portrait ? 3 : 2 };
-      watchStripSize(ar.w, ar.h);
-      applySlots(n, ar.h >= ar.w);
+      vid.addEventListener("loadedmetadata", () => {
+        watchStripSize(vid.videoWidth || 2, vid.videoHeight || 3);
+      });
     }
 
+    strip.appendChild(vid);
     strip.appendChild(playBtn);
     stageInner.appendChild(strip);
   }
@@ -933,212 +872,9 @@
     if (files.length) await saveFiles(files);
   }
 
-  function pickRecorderMime() {
-    if (typeof MediaRecorder === "undefined") return "";
-    const types = [
-      "video/mp4;codecs=avc1.42E01E",
-      "video/mp4",
-      "video/webm;codecs=vp9",
-      "video/webm;codecs=vp8",
-      "video/webm",
-    ];
-    return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
-  }
-
-  function loadHighlightVideo(url) {
-    return new Promise((resolve, reject) => {
-      const v = document.createElement("video");
-      v.crossOrigin = "anonymous";
-      v.muted = true;
-      v.loop = true;
-      v.playsInline = true;
-      v.setAttribute("playsinline", "");
-      v.setAttribute("webkit-playsinline", "");
-      v.preload = "auto";
-      v.src = url;
-      v.onloadeddata = () => resolve(v);
-      v.onerror = () => reject(new Error("video failed to load"));
-    });
-  }
-
-  function slotsForFrame(frameImg, videoCount) {
-    const portrait = frameImg
-      ? frameImg.naturalHeight >= frameImg.naturalWidth
-      : videoCount >= 3;
-    if (layoutSlots.length) return layoutSlots;
-    if (frameImg) {
-      const detected = detectSlotsFromPrint(frameImg);
-      if (detected.length >= Math.min(2, videoCount)) return detected;
-    }
-    return defaultSlots(videoCount, portrait);
-  }
-
-  async function buildFramedStripVideo(frameUrl) {
-    const mime = pickRecorderMime();
-    if (!mime) throw new Error("this browser cannot record video");
-    if (!frameUrl || !highlightUrls.length) throw new Error("missing strip");
-    if (!HTMLCanvasElement.prototype.captureStream) {
-      throw new Error("canvas capture is unavailable");
-    }
-
-    const frame = await loadCorsImage(frameUrl);
-    const slots = slotsForFrame(frame, highlightUrls.length);
-    const videos = await Promise.all(highlightUrls.map(loadHighlightVideo));
-
-    const srcW = frame.naturalWidth;
-    const srcH = frame.naturalHeight;
-    const maxEdge = 1080;
-    const scale = Math.min(1, maxEdge / Math.max(srcW, srcH));
-    const W = Math.max(2, Math.round(srcW * scale));
-    const H = Math.max(2, Math.round(srcH * scale));
-
-    const host = document.createElement("div");
-    host.setAttribute("aria-hidden", "true");
-    host.style.cssText =
-      "position:fixed;left:0;bottom:0;width:8px;height:8px;overflow:hidden;opacity:0.04;pointer-events:none;z-index:-1";
-    const canvas = document.createElement("canvas");
-    canvas.width = W;
-    canvas.height = H;
-    host.appendChild(canvas);
-    videos.forEach((v) => {
-      v.width = 8;
-      v.height = 8;
-      host.appendChild(v);
-    });
-    document.body.appendChild(host);
-
-    const ctx = canvas.getContext("2d");
-    function paint() {
-      ctx.drawImage(frame, 0, 0, W, H);
-      slots.forEach((slot, i) => {
-        const v = videos[i % videos.length];
-        const x = slot.x * W;
-        const y = slot.y * H;
-        const w = slot.w * W;
-        const h = slot.h * H;
-        ctx.save();
-        if (slot.r) {
-          ctx.translate(x + w / 2, y + h / 2);
-          ctx.rotate((slot.r * Math.PI) / 180);
-          ctx.translate(-(x + w / 2), -(y + h / 2));
-        }
-        ctx.beginPath();
-        ctx.rect(x, y, w, h);
-        ctx.clip();
-        drawCoverFit(ctx, v, x, y, w, h);
-        ctx.restore();
-      });
-    }
-
-    const duration = Math.min(
-      16,
-      Math.max(
-        4,
-        ...videos.map((v) =>
-          isFinite(v.duration) && v.duration > 0 ? v.duration : 15,
-        ),
-      ),
-    );
-
-    await Promise.all(
-      videos.map((v) => {
-        try {
-          v.currentTime = 0;
-        } catch (_) {
-          /* ignore */
-        }
-        return v.play().catch(() => {});
-      }),
-    );
-    paint();
-
-    const stream = canvas.captureStream(30);
-    const rec = new MediaRecorder(stream, {
-      mimeType: mime,
-      videoBitsPerSecond: 3500000,
-    });
-    const chunks = [];
-    rec.ondataavailable = (e) => {
-      if (e.data && e.data.size) chunks.push(e.data);
-    };
-
-    return new Promise((resolve, reject) => {
-      let raf = 0;
-      const started = performance.now();
-      function tick() {
-        paint();
-        if ((performance.now() - started) / 1000 >= duration) {
-          try {
-            rec.stop();
-          } catch (_) {
-            /* ignore */
-          }
-          return;
-        }
-        raf = requestAnimationFrame(tick);
-      }
-      function cleanup() {
-        cancelAnimationFrame(raf);
-        videos.forEach((v) => {
-          v.pause();
-          v.removeAttribute("src");
-          v.load();
-        });
-        host.remove();
-      }
-      rec.onerror = () => {
-        cleanup();
-        reject(new Error("recording failed"));
-      };
-      rec.onstop = () => {
-        cleanup();
-        if (!chunks.length) {
-          reject(new Error("empty recording"));
-          return;
-        }
-        resolve(new Blob(chunks, { type: mime }));
-      };
-      try {
-        rec.start(200);
-        raf = requestAnimationFrame(tick);
-      } catch (err) {
-        cleanup();
-        reject(err);
-      }
-    });
-  }
-
-  async function getFramedStripFile(frameUrl) {
-    if (framedStripCache) return framedStripCache;
-    if (!framedStripPending) {
-      framedStripPending = buildFramedStripVideo(frameUrl)
-        .then((blob) => {
-          const ext = /mp4/i.test(blob.type) ? "mp4" : "webm";
-          framedStripCache = new File([blob], "nostalgia_strip." + ext, {
-            type: blob.type || (ext === "mp4" ? "video/mp4" : "video/webm"),
-          });
-          return framedStripCache;
-        })
-        .finally(() => {
-          framedStripPending = null;
-        });
-    }
-    return framedStripPending;
-  }
-
   async function saveStripAndHighlights(view) {
     const files = [];
-    const frameUrl = view.url || view.downloadUrl || "";
-    if (frameUrl && highlightUrls.length) {
-      try {
-        setSaveBusy(true, "Rendering video…");
-        files.push(await getFramedStripFile(frameUrl));
-      } catch (err) {
-        console.warn("[Gallery] Framed strip video failed:", err);
-        framedStripCache = null;
-        files.push(...(await highlightFiles()));
-      }
-    } else if (highlightUrls.length) {
+    if (highlightUrls.length) {
       files.push(...(await highlightFiles()));
     }
     if (view.downloadUrl) {
@@ -1199,12 +935,8 @@
           /* skip strip if CORS blocks it */
         }
       }
-      if (view.kind === "image" && highlightUrls.length && view.url) {
-        try {
-          files.unshift(await getFramedStripFile(view.url));
-        } catch (_) {
-          files.push(...(await highlightFiles()));
-        }
+      if (view.kind === "image" && highlightUrls.length) {
+        files.push(...(await highlightFiles()));
       }
       if (files.length && navigator.canShare && navigator.canShare({ files })) {
         await navigator.share({ files, title });

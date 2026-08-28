@@ -11,6 +11,7 @@ import { getFrameWindows, scaleWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { buildSessionGif } from "@/utils/sessionGif";
+import { composeStripVideo } from "@/utils/composeStripVideo";
 
 const router = useRouter();
 const store = usePhotoboothStore();
@@ -269,11 +270,6 @@ async function buildGalleryUrl(
   if (printId) url.searchParams.set("print", printId);
   if (videoIds && videoIds.length > 0) {
     url.searchParams.set("vids", videoIds.join(","));
-  }
-  const layout = await galleryLayoutParam();
-  if (layout) {
-    url.searchParams.set("slots", layout.slots);
-    url.searchParams.set("par", layout.par);
   }
   url.searchParams.set("title", "Nostalgia Photobooth");
   return url.toString();
@@ -1069,43 +1065,108 @@ async function saveComposite() {
         }
       })();
 
-      // Upload per-shot highlight clips (10s live + 5s freeze = 15s).
+      // Bake clips into the printed strip (full frame), save locally,
+      // and upload that one video for the gallery. Per-shot crops still
+      // land in Videos/ from CameraView; the QR gets the framed strip.
       const highlightUploadPromise: Promise<string[]> = (async () => {
         const clips = store.highlightClips.filter(Boolean);
-        if (!clips.length) return [];
-        const ids: string[] = [];
-        for (let i = 0; i < clips.length; i++) {
-          const clip = clips[i];
+        if (!clips.length || !shareComposite) return [];
+        let stripDataUrl: string | null = null;
+        try {
+          const layout = await galleryLayoutParam();
+          const slots = layout
+            ? layout.slots
+                .split(",")
+                .map((part) => {
+                  const n = part.split("_").map(Number);
+                  return {
+                    x: n[0],
+                    y: n[1],
+                    w: n[2],
+                    h: n[3],
+                    rotation: n.length >= 5 ? n[4] : 0,
+                  };
+                })
+                .filter(
+                  (s) =>
+                    isFinite(s.x) &&
+                    isFinite(s.y) &&
+                    isFinite(s.w) &&
+                    isFinite(s.h) &&
+                    s.w > 0 &&
+                    s.h > 0,
+                )
+            : [];
+          stripDataUrl = await composeStripVideo({
+            frameDataUrl: shareComposite,
+            clipDataUrls: clips,
+            slots,
+          });
+        } catch (e) {
+          console.warn("[Save] Strip video compose failed:", e);
+        }
+
+        const toSave = stripDataUrl
+          ? [{ dataUrl: stripDataUrl, name: "highlight-strip" }]
+          : clips.map((dataUrl, i) => ({
+              dataUrl,
+              name: `highlight-${i + 1}`,
+            }));
+
+        for (const item of toSave) {
           if (sessionFolder && window.electronAPI?.saveSessionBytes) {
             try {
-              const parsed = dataUrlToBytes(clip);
+              const parsed = dataUrlToBytes(item.dataUrl);
               if (parsed) {
                 await window.electronAPI.saveSessionBytes({
                   bytes: parsed.bytes,
-                  filename: `${sessionFolder}/highlight-${i + 1}.${parsed.ext}`,
+                  filename: `${sessionFolder}/${item.name}.${parsed.ext}`,
                 });
               }
             } catch (e) {
-              console.warn(`[Save] Highlight ${i} disk save failed:`, e);
+              console.warn(`[Save] ${item.name} session save failed:`, e);
             }
           }
+          if (stripDataUrl && window.electronAPI?.saveHighlightVideo) {
+            try {
+              const parsed = dataUrlToBytes(item.dataUrl);
+              if (parsed) {
+                const now = new Date();
+                const stamp = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getFullYear()).slice(-2)}`;
+                const time = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+                const r = await window.electronAPI.saveHighlightVideo({
+                  bytes: parsed.bytes,
+                  filename: `${stamp}/highlight-strip-${time}.${parsed.ext}`,
+                });
+                if (r.success) console.log("[Save] Strip video saved locally:", r.path);
+                else console.warn("[Save] Strip video local save failed:", r.error);
+              }
+            } catch (e) {
+              console.warn("[Save] Strip video local save error:", e);
+            }
+          }
+        }
+
+        const ids: string[] = [];
+        for (let i = 0; i < toSave.length; i++) {
+          const item = toSave[i];
           try {
-            const publicId = `nostalgia_${sessionTs}_hl_${i}_${Math.random()
+            const publicId = `nostalgia_${sessionTs}_${item.name}_${Math.random()
               .toString(36)
               .substring(2, 8)}`;
             const cr = await uploadToR2(
-              clip,
+              item.dataUrl,
               "nostalgia-photobooth",
               publicId,
             );
             if (cr.success && cr.publicId) {
               ids.push(cr.publicId);
-              console.log(`[Save] Highlight ${i} uploaded:`, cr.url);
+              console.log(`[Save] ${item.name} uploaded:`, cr.url);
             } else {
-              console.warn(`[Save] Highlight ${i} upload failed:`, cr.error);
+              console.warn(`[Save] ${item.name} upload failed:`, cr.error);
             }
           } catch (e) {
-            console.error(`[Save] Highlight ${i} upload error:`, e);
+            console.error(`[Save] ${item.name} upload error:`, e);
           }
         }
         return ids;
