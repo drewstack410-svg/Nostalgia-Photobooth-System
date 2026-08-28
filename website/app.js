@@ -17,21 +17,23 @@
 //                         the "Template" view. This is what actually
 //                         printed, not a raw stack of captures.
 //   &vids=<key1,key2,..>  (optional) R2 object keys of per-shot
-//                         highlight clips (posing + 4s freeze). Played
-//                         in order as the Highlight tab.
+//                         highlight clips (posing + 4s freeze). A play
+//                         button on the Template view plays them in
+//                         the photo windows.
 //   &title=<text>         (optional) overrides the page title.
 //                         Defaults to "Nostalgia Photobooth".
 //
 // Example: gallery/?cloud=uprdu3kg&print=abc&ids=foo:bar,foo:baz
 //
-// UI is three tabs â€” Template / Grid / Highlight â€” with one big
+// UI is Template / Grid tabs, with a centered play control on the
+// printed strip when highlight clips are present. One big
 // "Save to Camera Roll" action for whichever is showing, plus a
 // secondary link to save captures one at a time. Built deliberately
 // tiny â€” the page should load fast on a phone over a venue's wifi
 // after someone scans the QR code.
 //
 // The GIF tab used to stitch captures client-side via gif.js. It is
-// parked in favour of a real highlight video recorded at the booth.
+// parked in favour of highlight clips played on the template.
 
 (function () {
   "use strict";
@@ -121,7 +123,9 @@
     });
   }
 
-  // GIF tab parked â€” highlight video from the booth replaces it.
+  const highlightUrls = vids.map((id) => imageUrl(id));
+
+  // GIF tab parked â€” highlight clips play on the Template view instead.
   // if (ids.length > 0) {
   //   views.push({
   //     key: "gif",
@@ -132,12 +136,13 @@
   //   });
   // }
 
-  if (vids.length > 0) {
+  if (views.length === 0 && highlightUrls.length > 0) {
     views.push({
-      key: "highlight",
-      label: "Highlight",
-      kind: "highlight",
-      urls: vids.map((id) => imageUrl(id)),
+      key: "template",
+      label: "Template",
+      kind: "image",
+      url: "",
+      downloadUrl: highlightUrls[0],
       downloadName: highlightDownloadName(vids[0]),
     });
   }
@@ -164,7 +169,10 @@
     });
   }
 
-  // â”€â”€â”€ Individual-photos panel (revealed on demand) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  if (highlightUrls.length) {
+    individualToggle.innerHTML =
+      '<span aria-hidden="true">✂</span> save photos & videos';
+  }
   let individualPanelBuilt = false;
   individualToggle.addEventListener("click", () => {
     const willShow = individualPanel.hidden;
@@ -206,6 +214,41 @@
 
       individualPanel.appendChild(btn);
     });
+
+    highlightUrls.forEach((url, i) => {
+      const downloadName = highlightDownloadName(url, highlightUrls.length === 1 ? undefined : i + 1);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "individual-thumb is-video";
+      btn.setAttribute("aria-label", "Save highlight " + (i + 1));
+
+      const vid = document.createElement("video");
+      vid.src = url;
+      vid.muted = true;
+      vid.playsInline = true;
+      vid.setAttribute("playsinline", "");
+      vid.preload = "metadata";
+      btn.appendChild(vid);
+
+      const badge = document.createElement("span");
+      badge.className = "individual-thumb-play";
+      badge.setAttribute("aria-hidden", "true");
+      badge.innerHTML =
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><polygon points="7,4 21,12 7,20"/></svg>';
+      btn.appendChild(badge);
+
+      const check = document.createElement("span");
+      check.className = "individual-thumb-check";
+      check.textContent = "Saved";
+      btn.appendChild(check);
+
+      btn.addEventListener("click", async () => {
+        await saveByUrl(url, downloadName);
+        btn.classList.add("saved");
+      });
+
+      individualPanel.appendChild(btn);
+    });
   }
 
   // â”€â”€â”€ Footnote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -227,9 +270,10 @@
       el.setAttribute("aria-selected", isActive ? "true" : "false");
     });
     const view = getView(key);
-    const isHighlight = view && view.kind === "highlight";
+    const liveOnTemplate =
+      view && view.kind === "image" && highlightUrls.length > 0;
     stageEl.classList.toggle("is-video", false);
-    stageEl.classList.toggle("is-highlight-strip", !!isHighlight);
+    stageEl.classList.toggle("is-highlight-strip", !!liveOnTemplate);
     stageEl.style.removeProperty("--strip-ar");
     if (stripResizeCleanup) {
       stripResizeCleanup();
@@ -285,8 +329,8 @@
       return;
     }
 
-    if (view.kind === "highlight") {
-      renderHighlight(view);
+    if (view.kind === "image" && highlightUrls.length > 0) {
+      renderTemplateWithPlay(view);
       return;
     }
 
@@ -513,28 +557,44 @@
     strip.style.aspectRatio = nw + " / " + nh;
   }
 
-  function renderHighlight(view) {
+  function renderTemplateWithPlay(view) {
     loadingEl.hidden = true;
     updateSaveLabel(view);
-    if (!view.urls || view.urls.length === 0) {
+    const urls = highlightUrls;
+    if (!urls.length) {
       errorEl.hidden = false;
       return;
     }
 
-    const n = view.urls.length;
+    const n = urls.length;
     const portrait = printAspect ? printAspect.h >= printAspect.w : n >= 3;
     const strip = document.createElement("div");
     strip.className = "highlight-strip";
+
+    const playSvg =
+      '<svg viewBox="0 0 24 24" width="36" height="36" fill="currentColor"><polygon points="7,4 21,12 7,20"/></svg>';
+    const pauseSvg =
+      '<svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+
+    const playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.className = "template-play-btn";
+    playBtn.setAttribute("aria-label", "Play highlights");
+    playBtn.innerHTML = playSvg;
+
+    let playing = false;
+    let slotsReady = false;
 
     function mountSlots(slots) {
       Array.from(strip.querySelectorAll(".highlight-slot")).forEach((el) =>
         el.remove(),
       );
       slots.forEach((slot, i) => {
-        const url = view.urls[i % n];
+        const url = urls[i % n];
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "highlight-slot";
+        btn.hidden = !playing;
         btn.style.left = slot.x * 100 + "%";
         btn.style.top = slot.y * 100 + "%";
         btn.style.width = slot.w * 100 + "%";
@@ -542,7 +602,7 @@
         if (slot.r) {
           btn.style.transform = "rotate(" + slot.r + "deg)";
         }
-        btn.setAttribute("aria-label", "Play highlight " + ((i % n) + 1));
+        btn.setAttribute("aria-label", "Open highlight " + ((i % n) + 1));
 
         const vid = document.createElement("video");
         vid.src = url;
@@ -551,27 +611,62 @@
         vid.playsInline = true;
         vid.setAttribute("playsinline", "");
         vid.setAttribute("webkit-playsinline", "");
-        vid.preload = "metadata";
+        vid.preload = "auto";
         vid.setAttribute("controlslist", "nodownload");
         btn.appendChild(vid);
 
-        const badge = document.createElement("span");
-        badge.className = "highlight-slot-play";
-        badge.innerHTML =
-          '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>';
-        btn.appendChild(badge);
-
-        btn.addEventListener("click", () => {
-          Array.from(strip.querySelectorAll("video")).forEach((v) => v.pause());
-          openHighlightLightbox(view.urls, i % n);
-        });
-        vid.addEventListener("loadeddata", () => {
-          vid.play().catch(() => {});
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!playing) return;
+          setPlaying(false);
+          openHighlightLightbox(urls, i % n);
         });
 
         strip.appendChild(btn);
       });
+      strip.appendChild(playBtn);
+      slotsReady = true;
+      if (playing) playSlots();
     }
+
+    function playSlots() {
+      Array.from(strip.querySelectorAll(".highlight-slot")).forEach((el) => {
+        el.hidden = false;
+      });
+      Array.from(strip.querySelectorAll("video")).forEach((v) => {
+        v.currentTime = 0;
+        v.play().catch(() => {});
+      });
+    }
+
+    function stopSlots() {
+      Array.from(strip.querySelectorAll("video")).forEach((v) => {
+        v.pause();
+        try {
+          v.currentTime = 0;
+        } catch (_) {
+          /* ignore */
+        }
+      });
+      Array.from(strip.querySelectorAll(".highlight-slot")).forEach((el) => {
+        el.hidden = true;
+      });
+    }
+
+    function setPlaying(on) {
+      playing = on;
+      strip.classList.toggle("is-playing", on);
+      playBtn.innerHTML = on ? pauseSvg : playSvg;
+      playBtn.setAttribute("aria-label", on ? "Pause" : "Play highlights");
+      if (on) playSlots();
+      else stopSlots();
+    }
+
+    playBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!slotsReady) return;
+      setPlaying(!playing);
+    });
 
     function applySlots(count, isPortrait, frameImg) {
       if (layoutSlots.length) {
@@ -594,14 +689,18 @@
       if (typeof ResizeObserver === "undefined") return;
       const ro = new ResizeObserver(() => sizeHighlightStrip(strip, nw, nh));
       ro.observe(stageInner);
-      stripResizeCleanup = () => ro.disconnect();
+      stripResizeCleanup = () => {
+        ro.disconnect();
+        stopSlots();
+      };
     }
 
-    if (printId) {
+    const frameUrl = view.url || (printId ? imageUrl(printId) : "");
+    if (frameUrl) {
       loadingEl.hidden = false;
       const frame = document.createElement("img");
       frame.className = "highlight-strip-frame";
-      frame.alt = "Template";
+      frame.alt = view.label || "Template";
       frame.onload = () => {
         loadingEl.hidden = true;
         watchStripSize(frame.naturalWidth, frame.naturalHeight);
@@ -613,7 +712,7 @@
         watchStripSize(ar.w, ar.h);
         applySlots(n, ar.h >= ar.w);
       };
-      frame.src = imageUrl(printId);
+      frame.src = frameUrl;
       strip.appendChild(frame);
     } else {
       const ar = printAspect || { w: portrait ? 2 : 3, h: portrait ? 3 : 2 };
@@ -621,6 +720,7 @@
       applySlots(n, ar.h >= ar.w);
     }
 
+    strip.appendChild(playBtn);
     stageInner.appendChild(strip);
   }
 
@@ -775,6 +875,82 @@
   saveBtn.addEventListener("click", () => saveActiveView());
   shareBtn.addEventListener("click", () => shareActiveView());
 
+  async function fetchAsFile(url, filename, fallbackType) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("fetch failed");
+    const blob = await res.blob();
+    return new File([blob], filename, {
+      type: blob.type || fallbackType || "application/octet-stream",
+    });
+  }
+
+  async function saveFiles(files) {
+    const list = files.filter(Boolean);
+    if (!list.length) return;
+    if (
+      navigator.share &&
+      navigator.canShare &&
+      typeof File !== "undefined"
+    ) {
+      try {
+        if (navigator.canShare({ files: list })) {
+          await navigator.share({ files: list, title });
+          return;
+        }
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+      }
+    }
+    for (let i = 0; i < list.length; i++) {
+      await saveBlob(list[i], list[i].name, list[i].type);
+      if (i < list.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 280));
+      }
+    }
+  }
+
+  async function highlightFiles() {
+    const files = [];
+    for (let i = 0; i < highlightUrls.length; i++) {
+      const url = highlightUrls[i];
+      const name = highlightDownloadName(
+        url,
+        highlightUrls.length === 1 ? undefined : i + 1,
+      );
+      try {
+        files.push(await fetchAsFile(url, name, "video/mp4"));
+      } catch (_) {
+        await saveByUrl(url, name);
+      }
+    }
+    return files;
+  }
+
+  async function saveHighlightClips() {
+    const files = await highlightFiles();
+    if (files.length) await saveFiles(files);
+  }
+
+  async function saveStripAndHighlights(view) {
+    const files = [];
+    if (view.downloadUrl) {
+      try {
+        files.push(
+          await fetchAsFile(
+            view.downloadUrl,
+            view.downloadName || "nostalgia_template.png",
+            "image/png",
+          ),
+        );
+      } catch (_) {
+        await saveByUrl(view.downloadUrl, view.downloadName);
+      }
+    }
+    const clips = await highlightFiles();
+    files.push(...clips);
+    if (files.length) await saveFiles(files);
+  }
+
   async function saveActiveView() {
     const view = getView(activeKey);
     setSaveBusy(true);
@@ -786,16 +962,9 @@
         const blob = await getGifBlob(view);
         await saveBlob(blob, view.downloadName, "image/gif");
       } else if (view.kind === "highlight") {
-        for (let i = 0; i < view.urls.length; i++) {
-          const url = view.urls[i];
-          const name =
-            view.urls.length === 1
-              ? view.downloadName
-              : highlightDownloadName(url, i + 1);
-          await saveByUrl(url, name);
-        }
+        await saveHighlightClips();
       } else {
-        await saveByUrl(view.downloadUrl, view.downloadName);
+        await saveStripAndHighlights(view);
       }
     } catch (err) {
       alert(
@@ -810,20 +979,30 @@
     const view = getView(activeKey);
     if (!navigator.share || view.kind === "grid") return;
     try {
-      try {
-        const res = await fetch(view.url);
-        const blob = await res.blob();
-        const file = new File([blob], view.downloadName, { type: blob.type });
-        if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title });
-          return;
+      const files = [];
+      if (view.url) {
+        try {
+          files.push(
+            await fetchAsFile(
+              view.url,
+              view.downloadName || "nostalgia_template.png",
+              "image/png",
+            ),
+          );
+        } catch (_) {
+          /* skip strip if CORS blocks it */
         }
-      } catch (_) {
-        /* fall through to url share */
       }
-      await navigator.share({ url: view.url, title });
+      if (view.kind === "image" && highlightUrls.length) {
+        files.push(...(await highlightFiles()));
+      }
+      if (files.length && navigator.canShare && navigator.canShare({ files })) {
+        await navigator.share({ files, title });
+        return;
+      }
+      if (view.url) await navigator.share({ url: view.url, title });
     } catch (err) {
-      // User cancelled or the platform blocked â€” silent.
+      // User cancelled or the platform blocked.
     }
   }
 

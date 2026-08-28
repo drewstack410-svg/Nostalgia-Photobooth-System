@@ -4,7 +4,8 @@
  * (people land here from a QR code on their phone) but scales up
  * cleanly on desktop. Warm, bold Nostalgia palette (espresso +
  * cream + gold) — a big centered title, a borderless preview
- * "stage" with Template / Grid / Highlight tabs, and one obvious primary
+ * "stage" with Template / Grid tabs, a play button on the printed
+ * strip when highlight clips exist, and one obvious primary
  * action (Save to Camera Roll). */
 
 :root {
@@ -215,19 +216,46 @@ body {
   display: block;
 }
 
-.highlight-slot-play {
+.highlight-slot[hidden] {
+  display: none !important;
+}
+
+.template-play-btn {
   position: absolute;
-  right: 6px;
-  bottom: 6px;
-  width: 28px;
-  height: 28px;
+  left: 50%;
+  top: 50%;
+  z-index: 5;
+  width: 76px;
+  height: 76px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  background: rgba(0, 0, 0, 0.45);
-  border-radius: 50%;
-  pointer-events: none;
+  background: rgba(22, 32, 15, 0.62);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.template-play-btn svg {
+  display: block;
+  margin-left: 3px;
+}
+
+.highlight-strip.is-playing .template-play-btn {
+  background: rgba(22, 32, 15, 0.48);
+}
+
+.highlight-strip.is-playing .template-play-btn svg {
+  margin-left: 0;
+}
+
+.template-play-btn:active {
+  transform: translate(-50%, -50%) scale(0.96);
 }
 
 .hl-lightbox[hidden] {
@@ -619,11 +647,33 @@ body.hl-lightbox-open {
   transform: scale(0.96);
 }
 
-.individual-thumb img {
+.individual-thumb img,
+.individual-thumb video {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.individual-thumb-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.individual-thumb-play svg {
+  margin-left: 2px;
 }
 
 .individual-thumb-check {
