@@ -2,7 +2,7 @@
 
 Static HTML/CSS/JS that shows a session’s photos on the guest’s phone after they scan the printed QR. Three tabs: **Template** (framed print), **Grid** (captures), **Highlight** (booth-recorded video).
 
-Photos are **not** stored on Netlify. Uploads go to **Cloudflare R2**. The QR link is only a short session code (`?s=xxxxxx`); this page fetches a JSON manifest from R2, then loads photos and video from that file.
+Photos are **not** stored on Vercel. Uploads go to **Cloudflare R2**. The QR link is only a short session code (`?s=xxxxxx`); this page fetches a JSON manifest from R2, then loads photos and video from that file.
 
 ## Files
 
@@ -17,7 +17,7 @@ Photos are **not** stored on Netlify. Uploads go to **Cloudflare R2**. The QR li
 New sessions:
 
 ```
-https://nostalgia-qr.netlify.app/?s=n7k2mx
+https://nostalgia-photobooth-system-qr.vercel.app/?s=n7k2mx
 ```
 
 The page reads `config.js` for the R2 public URL, then fetches:
@@ -46,7 +46,7 @@ After changing `config.js` (R2 public URL / folder), redeploy this site.
 1. Push this repo to GitHub (if it is not already).
 2. [Vercel](https://vercel.com/new) → Import the repo.
 3. Leave **Root Directory** empty (the repo-root `vercel.json` publishes the `website/` folder). Framework: Other. Leave **Build Command** empty.
-4. Deploy. Copy the URL, e.g. `https://nostalgia-photobooth-gallery.vercel.app`.
+4. Deploy. Copy the URL, e.g. `https://nostalgia-photobooth-system-qr.vercel.app`.
 5. In `desktop/.env` set:
 
 ```

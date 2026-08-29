@@ -41,10 +41,13 @@
 
   if (loadingEl) loadingEl.hidden = false;
 
-  const session = await resolveGallerySession(params);
+  const shortCode = resolveShortCode(params);
+  const session = await resolveGallerySession(params, shortCode);
   if (!session) {
     showFatal(
-      "Couldn't find this session. Try scanning the QR code from your printed strip again.",
+      shortCode
+        ? "Couldn't load this session. Check your connection and try scanning again."
+        : "Scan the QR code on your printed strip to open your photos.",
     );
     return;
   }
@@ -1272,8 +1275,8 @@
       .filter(Boolean);
   }
 
-  async function resolveGallerySession(searchParams) {
-    const shortCode = resolveShortCode(searchParams);
+  async function resolveGallerySession(searchParams, code) {
+    const shortCode = code || resolveShortCode(searchParams);
     if (shortCode) return loadManifestSession(shortCode);
     return loadLegacySession(searchParams);
   }
@@ -1283,34 +1286,40 @@
     const base = String(cfg.r2Base || "").trim().replace(/\/+$/, "");
     const folder = String(cfg.r2Folder || "nostalgia-photobooth")
       .replace(/^\/+|\/+$/g, "");
-    if (!base) return null;
-    try {
-      const res = await fetch(`${base}/${folder}/s/${code}.json`, {
-        cache: "no-cache",
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      const sessionIds = [].concat(data.ids || []).map(String).filter(Boolean);
-      const sessionVids = [].concat(data.vids || []).map(String).filter(Boolean);
-      const sessionPrint = String(data.print || "").trim();
-      if (!sessionIds.length && !sessionPrint && !sessionVids.length) {
-        return null;
+    const urls = [
+      // Same-origin Vercel/Vite proxy — avoids R2 CORS on phones.
+      `/session/${encodeURIComponent(code)}.json`,
+      base && folder ? `${base}/${folder}/s/${encodeURIComponent(code)}.json` : "",
+    ].filter(Boolean);
+    if (!urls.length) return null;
+
+    for (let i = 0; i < urls.length; i++) {
+      try {
+        const res = await fetch(urls[i], { cache: "no-cache" });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const sessionIds = [].concat(data.ids || []).map(String).filter(Boolean);
+        const sessionVids = [].concat(data.vids || []).map(String).filter(Boolean);
+        const sessionPrint = String(data.print || "").trim();
+        if (!sessionIds.length && !sessionPrint && !sessionVids.length) {
+          continue;
+        }
+        return {
+          r2Base: base,
+          cloud: "",
+          tag: code,
+          ids: sessionIds,
+          printId: sessionPrint,
+          vids: sessionVids,
+          layoutSlots: parseSlots(String(data.slots || "")),
+          printAspect: parsePrintAspect(String(data.par || "")),
+          title: String(data.title || "Nostalgia Photobooth").trim(),
+        };
+      } catch (err) {
+        console.warn("[Gallery] Manifest fetch failed:", urls[i], err);
       }
-      return {
-        r2Base: base,
-        cloud: "",
-        tag: code,
-        ids: sessionIds,
-        printId: sessionPrint,
-        vids: sessionVids,
-        layoutSlots: parseSlots(String(data.slots || "")),
-        printAspect: parsePrintAspect(String(data.par || "")),
-        title: String(data.title || "Nostalgia Photobooth").trim(),
-      };
-    } catch (err) {
-      console.warn("[Gallery] Manifest fetch failed:", err);
-      return null;
     }
+    return null;
   }
 
   function loadLegacySession(searchParams) {

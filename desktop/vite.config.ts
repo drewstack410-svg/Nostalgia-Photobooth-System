@@ -82,6 +82,33 @@ function r2DevProxy() {
             })
           return
         }
+        const sessionMatch = url.match(/^\/session\/([a-zA-Z0-9]+)\.json$/)
+        if (sessionMatch && req.method === 'GET') {
+          const r2 = loadR2()
+          const cfg = r2.getR2Config()
+          const target = `${cfg.publicUrl}/${cfg.folder}/s/${sessionMatch[1]}.json`
+          void fetch(target)
+            .then(async (up) => {
+              const buf = Buffer.from(await up.arrayBuffer())
+              res.statusCode = up.status
+              res.setHeader(
+                'Content-Type',
+                up.headers.get('content-type') || 'application/json',
+              )
+              res.setHeader('Cache-Control', 'no-cache')
+              res.end(buf)
+            })
+            .catch((err: unknown) => {
+              res.statusCode = 502
+              res.setHeader('Content-Type', 'application/json')
+              res.end(
+                JSON.stringify({
+                  error: err instanceof Error ? err.message : String(err),
+                }),
+              )
+            })
+          return
+        }
         if (url === '/api/r2-upload' && req.method === 'POST') {
           const chunks: Buffer[] = []
           req.on('data', (c: Buffer) => chunks.push(c))

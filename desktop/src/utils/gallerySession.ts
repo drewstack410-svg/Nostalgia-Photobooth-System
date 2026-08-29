@@ -12,15 +12,19 @@ export function makeGalleryShortCode(length = 6): string {
   return out;
 }
 
-/** QR target: gallery page + `?s=` only — no photo/video keys in the link. */
+/** QR target: gallery page + short code only — no photo/video keys. */
 export function buildShortGalleryUrl(shortCode: string): string {
-  const base = (
+  const raw = (
     import.meta.env.VITE_GALLERY_BASE_URL ||
     `${window.location.origin}/gallery/`
-  ).replace(/\/+$/, "/");
-  const url = new URL(base);
-  url.searchParams.set("s", shortCode);
-  return url.toString();
+  ).replace(/\/+$/, "");
+  // Local kiosk gallery is /gallery/index.html (relative assets), so
+  // keep the code in the query. The Vercel site is the domain root and
+  // can use a short path the phone's address bar will actually show.
+  if (/\/gallery$/i.test(raw) || /localhost|127\.0\.0\.1/i.test(raw)) {
+    return `${raw}/?s=${encodeURIComponent(shortCode)}`;
+  }
+  return `${raw}/s/${encodeURIComponent(shortCode)}`;
 }
 
 export type GalleryManifest = {
