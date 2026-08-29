@@ -1020,6 +1020,32 @@ function templatesFile() {
   return path.join(app.getPath("userData"), "templates.json");
 }
 
+/**
+ * Crash-safe JSON write. Write a sibling .tmp, then replace the real
+ * file. On Windows `rename` often fails with EPERM/EEXIST when the
+ * destination already exists or is briefly locked, so fall back to
+ * copy-over + unlink — otherwise layout saves look successful in the
+ * UI and then vanish on the next launch.
+ */
+function writeJsonAtomic(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value), "utf8");
+  try {
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    fs.copyFileSync(tmp, file);
+    try {
+      fs.unlinkSync(tmp);
+    } catch (_) {
+      /* leftover .tmp is harmless */
+    }
+    if (error) {
+      console.warn("[Templates] rename-over failed, copied instead:", error.message);
+    }
+  }
+}
+
 ipcMain.handle("templates:load", async () => {
   try {
     const file = templatesFile();
@@ -1035,14 +1061,7 @@ ipcMain.handle("templates:load", async () => {
 ipcMain.handle("templates:save", async (event, data) => {
   try {
     const file = templatesFile();
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    // Write-then-rename: this is a kiosk that gets switched off at the wall,
-    // and a half-written templates.json would lose every layout the operator
-    // has built. Rename is atomic, so the file is either the old one or the
-    // complete new one, never a truncated mix.
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data), "utf8");
-    fs.renameSync(tmp, file);
+    writeJsonAtomic(file, data);
     const count = Array.isArray(data?.customTemplates)
       ? data.customTemplates.length
       : 0;

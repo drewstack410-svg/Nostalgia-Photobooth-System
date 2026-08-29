@@ -3,7 +3,7 @@
  *
  * Sections:
  * - Templates: User-added photo-strip templates. Add, remove, toggle active,
- *   delete. Persisted to localStorage.
+ *   delete. Persisted to userData/templates.json (localStorage is a mirror).
  * - Session: Selected template, captured photos, required/remaining count.
  * - Camera options: mirrorMode (preview/capture flip).
  * - Recent strips: Saved strips for title-screen film roll and reprint.
@@ -420,64 +420,58 @@ export function isDefaultFilter(id: string): boolean {
 export const usePhotoboothStore = defineStore("photobooth", () => {
   // ---- Templates (state & persistence) ----
   const customTemplates = ref<Template[]>([]);
+  // BUILTIN_TEMPLATES is a hardcoded module-level array (not per-instance
+  // state), so a built-in's active status / layout cells are tracked
+  // separately here and merged in via `templates` below.
+  const builtinTemplateOverrides = ref<
+    Record<string, { isActive?: boolean; cells?: TemplateCell[] }>
+  >({});
 
-  function loadCustomTemplates() {
-    const raw = localStorage.getItem(CUSTOM_TEMPLATES_KEY);
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as Template[];
-        // Ensure isActive defaults to true for existing templates
-        customTemplates.value = parsed.map((t) => ({
-          ...t,
-          isActive: t.isActive !== false,
-        }));
+  type BuiltinOverrideMap = Record<
+    string,
+    { isActive?: boolean; cells?: TemplateCell[] }
+  >;
 
-        // One-time migration: drop any custom template that exactly
-        // duplicates a now-correct built-in (same layout + dimensions).
-        // This cleans up the legacy `3x1` custom template that some
-        // operators added back when the built-in Horizontal Strip was
-        // mistakenly defined as 4×1. Now that the built-in is the
-        // proper 3×1, that custom is just a visual duplicate.
-        const isDuplicateOfBuiltin = (t: Template) =>
-          BUILTIN_TEMPLATES.some(
-            (b) =>
-              b.layout === t.layout &&
-              (b.frameRows ?? -1) === (t.frameRows ?? -2) &&
-              (b.frameCols ?? -1) === (t.frameCols ?? -2),
-          );
-        const before = customTemplates.value.length;
-        customTemplates.value = customTemplates.value.filter(
-          (t) => !isDuplicateOfBuiltin(t),
-        );
-        const removed = before - customTemplates.value.length;
-        if (removed > 0) {
-          console.log(
-            `[Templates] Migration: removed ${removed} custom template(s) that duplicate a built-in`,
-          );
-        }
+  function usesDiskTemplates(): boolean {
+    return typeof window !== "undefined" && !!window.electronAPI?.loadTemplates;
+  }
 
-        // One-time migration: if any template has non-template_N id, reassign to template_1, template_2, ...
-        const needsMigration = customTemplates.value.some(
-          (t) => !/^template_\d+$/.test(t.id),
-        );
-        if (
-          needsMigration &&
-          customTemplates.value.length > 0
-        ) {
-          customTemplates.value = customTemplates.value.map((t, i) => ({
-            ...t,
-            id: `template_${i + 1}`,
-          }));
-        }
-
-        // Persist if either migration mutated the list.
-        if (removed > 0 || needsMigration) {
-          saveCustomTemplates();
-        }
-      } catch {
-        customTemplates.value = [];
-      }
+  function parseStoredTemplates(raw: string | null): Template[] {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as Template[];
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((t) => t && typeof t.id === "string" && !isBuiltinTemplate(t.id))
+        .map((t) => ({ ...t, isActive: t.isActive !== false }));
+    } catch {
+      return [];
     }
+  }
+
+  function parseStoredOverrides(raw: string | null): BuiltinOverrideMap {
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw) as BuiltinOverrideMap;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Browser-only load. Electron skips this: a previous "drop custom
+   * templates that share a built-in's rows×cols" migration deleted real
+   * 2×2 / 3×2 / 4×2 layouts and then wrote that empty list over
+   * templates.json, so every restart snapped back to the built-ins.
+   * Disk is the source of truth; hydrateTemplatesFromDisk recovers
+   * anything localStorage still has.
+   */
+  function loadCustomTemplates() {
+    if (usesDiskTemplates()) return;
+    customTemplates.value = parseStoredTemplates(
+      localStorage.getItem(CUSTOM_TEMPLATES_KEY),
+    );
   }
 
   /**
@@ -494,64 +488,45 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
    * running outside Electron (`npm run dev` in a plain browser), and is
    * wrapped because at quota it WILL throw and must not take the caller
    * down with it.
+   *
+   * Writes are serialised so a later save cannot finish before an earlier
+   * one and leave disk on a stale snapshot.
    */
-  function persistTemplatesToDisk() {
+  let persistChain: Promise<void> = Promise.resolve();
+
+  function persistTemplatesToDisk(): Promise<void> {
+    persistChain = persistChain.then(writeTemplatesNow, writeTemplatesNow);
+    return persistChain;
+  }
+
+  async function writeTemplatesNow(): Promise<void> {
     const api = window.electronAPI;
     if (!api?.saveTemplates) return;
-    void api
-      .saveTemplates({
+    try {
+      const payload = {
         customTemplates: JSON.parse(JSON.stringify(customTemplates.value)),
         builtinTemplateOverrides: JSON.parse(
           JSON.stringify(builtinTemplateOverrides.value),
         ),
-      })
-      .then((r) => {
-        if (!r?.success) {
-          console.error("[Templates] Disk save failed:", r?.error);
-        }
-      })
-      .catch((e) => console.error("[Templates] Disk save threw:", e));
+      };
+      const r = await api.saveTemplates(payload);
+      if (!r?.success) {
+        console.error("[Templates] Disk save failed:", r?.error);
+      }
+    } catch (e) {
+      console.error("[Templates] Disk save threw:", e);
+    }
   }
 
-  function saveCustomTemplates() {
-    persistTemplatesToDisk();
+  function mirrorTemplatesToLocalStorage() {
     try {
       localStorage.setItem(
         CUSTOM_TEMPLATES_KEY,
         JSON.stringify(customTemplates.value),
       );
     } catch (e) {
-      // Expected once the quota fills; disk already has the real copy.
       console.warn("[Templates] localStorage mirror skipped (quota):", e);
     }
-  }
-
-  // ---- Built-in template active/inactive overrides ----
-  // BUILTIN_TEMPLATES is a hardcoded module-level array (not per-instance
-  // state), so a built-in's active status is tracked separately here and
-  // merged in via `templates` below, instead of mutating the array.
-  // Built-ins are code constants, so operator edits to them live here
-  // and are merged over the constant by the `templates` computed. The
-  // merge is a shallow spread, so any Template field can be overridden
-  // just by adding it to this type.
-  const builtinTemplateOverrides = ref<
-    Record<string, { isActive?: boolean; cells?: TemplateCell[] }>
-  >({});
-
-  function loadBuiltinTemplateOverrides() {
-    const raw = localStorage.getItem(STORAGE_KEY_BUILTIN_TEMPLATE_OVERRIDES);
-    if (raw) {
-      try {
-        builtinTemplateOverrides.value = JSON.parse(raw);
-      } catch {
-        builtinTemplateOverrides.value = {};
-      }
-    }
-  }
-  function saveBuiltinTemplateOverrides() {
-    // Same store, same reasoning as saveCustomTemplates: a built-in override
-    // can carry a full `cells` layout, and it must survive a restart.
-    persistTemplatesToDisk();
     try {
       localStorage.setItem(
         STORAGE_KEY_BUILTIN_TEMPLATE_OVERRIDES,
@@ -562,6 +537,22 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     }
   }
 
+  function saveCustomTemplates(): Promise<void> {
+    mirrorTemplatesToLocalStorage();
+    return persistTemplatesToDisk();
+  }
+
+  function loadBuiltinTemplateOverrides() {
+    if (usesDiskTemplates()) return;
+    builtinTemplateOverrides.value = parseStoredOverrides(
+      localStorage.getItem(STORAGE_KEY_BUILTIN_TEMPLATE_OVERRIDES),
+    );
+  }
+
+  function saveBuiltinTemplateOverrides(): Promise<void> {
+    return saveCustomTemplates();
+  }
+
   /**
    * Load templates from disk, which is where they now live.
    *
@@ -569,20 +560,27 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
    * file does not exist yet this is a first run after the upgrade, so
    * whatever localStorage still holds is imported and written to disk — an
    * operator's existing layouts are carried over rather than dropped.
+   *
+   * Also re-merges any custom templates / layout cells that localStorage
+   * still has but disk lost (the old duplicate-builtin wipe).
    */
   async function hydrateTemplatesFromDisk() {
     const api = window.electronAPI;
     if (!api?.loadTemplates) return; // browser dev: localStorage load already ran
+
+    const lsTemplates = parseStoredTemplates(
+      localStorage.getItem(CUSTOM_TEMPLATES_KEY),
+    );
+    const lsOverrides = parseStoredOverrides(
+      localStorage.getItem(STORAGE_KEY_BUILTIN_TEMPLATE_OVERRIDES),
+    );
 
     try {
       const res = await api.loadTemplates();
       if (res?.success && res.data) {
         const data = res.data as {
           customTemplates?: Template[];
-          builtinTemplateOverrides?: Record<
-            string,
-            { isActive?: boolean; cells?: TemplateCell[] }
-          >;
+          builtinTemplateOverrides?: BuiltinOverrideMap;
         };
         if (Array.isArray(data.customTemplates)) {
           customTemplates.value = data.customTemplates.map((t) => ({
@@ -593,9 +591,49 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
         if (data.builtinTemplateOverrides) {
           builtinTemplateOverrides.value = data.builtinTemplateOverrides;
         }
+
+        let recovered = 0;
+        const byId = new Map(customTemplates.value.map((t) => [t.id, t]));
+        for (const t of lsTemplates) {
+          const existing = byId.get(t.id);
+          if (!existing) {
+            customTemplates.value = [...customTemplates.value, t];
+            byId.set(t.id, t);
+            recovered += 1;
+          } else if (
+            (!existing.cells || existing.cells.length === 0) &&
+            t.cells &&
+            t.cells.length > 0
+          ) {
+            customTemplates.value = customTemplates.value.map((c) =>
+              c.id === t.id ? { ...c, cells: t.cells } : c,
+            );
+            recovered += 1;
+          }
+        }
+        const mergedOverrides: BuiltinOverrideMap = {
+          ...builtinTemplateOverrides.value,
+        };
+        for (const [id, ov] of Object.entries(lsOverrides)) {
+          const cur = mergedOverrides[id];
+          const diskHasCells = Array.isArray(cur?.cells) && cur.cells.length > 0;
+          const lsHasCells = Array.isArray(ov?.cells) && ov.cells.length > 0;
+          if (lsHasCells && !diskHasCells) {
+            mergedOverrides[id] = { ...cur, ...ov };
+            recovered += 1;
+          }
+        }
+        builtinTemplateOverrides.value = mergedOverrides;
+
         console.log(
           `[Templates] Loaded ${customTemplates.value.length} custom template(s) from disk`,
         );
+        if (recovered > 0) {
+          console.log(
+            `[Templates] Restored ${recovered} layout(s) that disk had dropped`,
+          );
+          await saveCustomTemplates();
+        }
         return;
       }
 
@@ -603,9 +641,20 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       console.log(
         "[Templates] No templates.json yet — migrating from localStorage",
       );
-      persistTemplatesToDisk();
+      customTemplates.value = lsTemplates;
+      builtinTemplateOverrides.value = lsOverrides;
+      await saveCustomTemplates();
     } catch (e) {
       console.error("[Templates] Disk load failed, keeping localStorage:", e);
+      if (!customTemplates.value.length && lsTemplates.length) {
+        customTemplates.value = lsTemplates;
+      }
+      if (
+        !Object.keys(builtinTemplateOverrides.value).length &&
+        Object.keys(lsOverrides).length
+      ) {
+        builtinTemplateOverrides.value = lsOverrides;
+      }
     }
   }
 
@@ -1407,7 +1456,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
    * Passing null clears them, which reverts that template to the
    * auto-detected windows / grid it used before.
    */
-  function setTemplateCells(id: string, cells: TemplateCell[] | null) {
+  async function setTemplateCells(id: string, cells: TemplateCell[] | null) {
     if (isBuiltinTemplate(id)) {
       const next = { ...builtinTemplateOverrides.value };
       const existing = next[id] ?? {};
@@ -1418,7 +1467,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
         next[id] = rest;
       }
       builtinTemplateOverrides.value = next;
-      saveBuiltinTemplateOverrides();
+      await saveBuiltinTemplateOverrides();
     } else {
       const idx = customTemplates.value.findIndex((t) => t.id === id);
       if (idx === -1) return;
@@ -1426,7 +1475,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       if (cells) t.cells = cells;
       else delete t.cells;
       customTemplates.value[idx] = t;
-      saveCustomTemplates();
+      await saveCustomTemplates();
     }
     // The live session may already hold a stale copy of this template.
     if (selectedTemplate.value?.id === id) {

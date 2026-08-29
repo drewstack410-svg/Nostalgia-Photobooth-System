@@ -689,18 +689,18 @@ function closeLayoutEditor() {
   layoutEditorCells.value = [];
 }
 
-function saveLayoutEditor() {
+async function saveLayoutEditor() {
   const t = layoutEditorTemplate.value;
   if (!t) return;
-  store.setTemplateCells(t.id, layoutEditorCells.value);
+  await store.setTemplateCells(t.id, layoutEditorCells.value);
   closeLayoutEditor();
 }
 
 /** Drops hand-placed slots, reverting to auto-detected windows. */
-function clearLayoutEditor() {
+async function clearLayoutEditor() {
   const t = layoutEditorTemplate.value;
   if (!t) return;
-  store.setTemplateCells(t.id, null);
+  await store.setTemplateCells(t.id, null);
   closeLayoutEditor();
 }
 const newTemplateName = ref("");
