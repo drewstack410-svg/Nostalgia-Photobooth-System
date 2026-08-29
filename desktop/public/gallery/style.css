@@ -213,7 +213,7 @@ body {
   object-fit: fill;
   display: block;
   pointer-events: none;
-  z-index: 1;
+  z-index: 3;
 }
 
 .highlight-strip-video {
@@ -223,8 +223,8 @@ body {
   height: 100%;
   object-fit: fill;
   display: block;
-  z-index: 2;
-  background: #000;
+  z-index: 1;
+  background: transparent;
 }
 
 .highlight-strip-video[hidden] {
