@@ -128,7 +128,8 @@ body {
 
 /* Templated print is a PNG with alpha — don't paint a panel behind it
    or the knocked-out gutters fill with --stage-bg instead of the page. */
-.stage.is-png {
+.stage.is-png,
+.stage.is-video {
   background: transparent;
   box-shadow: none;
   overflow: visible;
@@ -213,7 +214,7 @@ body {
   object-fit: fill;
   display: block;
   pointer-events: none;
-  z-index: 3;
+  z-index: 2;
 }
 
 .highlight-strip-video {

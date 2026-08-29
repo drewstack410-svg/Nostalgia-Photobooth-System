@@ -14,6 +14,7 @@ import { buildSessionGif } from "@/utils/sessionGif";
 import { composeStripVideo } from "@/utils/composeStripVideo";
 import {
   prepareFrameCanvas,
+  prepareFrameDataUrl,
   flattenPngDataUrlToWhite,
 } from "@/utils/pngAlpha";
 import {
@@ -1124,8 +1125,15 @@ async function saveComposite() {
                     s.h > 0,
                 )
             : [];
+          const pngFrame = store.sessionTemplate?.frameImageUrl
+            || store.selectedTemplate?.frameImageUrl;
+          let overlayDataUrl: string | undefined;
+          if (pngFrame) {
+            overlayDataUrl = await prepareFrameDataUrl(pngFrame);
+          }
           stripDataUrl = await composeStripVideo({
             frameDataUrl: shareComposite,
+            overlayDataUrl,
             clipDataUrls: clips,
             slots,
           });

@@ -140,14 +140,53 @@ async function pickAvcCodec(
   return codecs[0];
 }
 
+function drawPngOverlay(
+  ctx: CanvasRenderingContext2D,
+  overlay: HTMLImageElement,
+  width: number,
+  height: number,
+) {
+  const ow = overlay.naturalWidth || overlay.width;
+  const oh = overlay.naturalHeight || overlay.height;
+  if (!ow || !oh) return;
+  const canvasAspect = width / height;
+  const overlayAspect = ow / oh;
+  // Full 4×6 sheet vs a single 2×6 strip: use the left half.
+  if (overlayAspect > canvasAspect * 1.35) {
+    ctx.drawImage(overlay, 0, 0, ow / 2, oh, 0, 0, width, height);
+    return;
+  }
+  ctx.drawImage(overlay, 0, 0, width, height);
+}
+
+function fillGalleryBackdrop(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+) {
+  // Same greens as website/style.css --bg-top / --bg-bottom so the
+  // saved MP4 matches the gallery page behind transparent PNG gutters.
+  const g = ctx.createLinearGradient(0, 0, 0, height);
+  g.addColorStop(0, "#2e4029");
+  g.addColorStop(1, "#1a2618");
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-over";
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, width, height);
+  ctx.restore();
+}
+
 /**
- * Encode a full-strip highlight: printed template with clips playing
- * in every photo window. Returns a `data:video/mp4` (or webm) URL.
+ * Bake highlight clips into the printed strip. PNG templates draw the
+ * frame artwork ON TOP of the clips, then fill the gallery page greens
+ * behind the transparent gutters and encode H.264 MP4.
  */
 export async function composeStripVideo(opts: {
   frameDataUrl: string;
   clipDataUrls: string[];
   slots: StripSlot[];
+  /** Knocked-out PNG frame overlay. When set, clips go under it. */
+  overlayDataUrl?: string;
 }): Promise<string | null> {
   const clips = opts.clipDataUrls.filter(Boolean);
   if (!opts.frameDataUrl || !clips.length) {
@@ -160,6 +199,9 @@ export async function composeStripVideo(opts: {
   }
 
   const frame = await loadImage(opts.frameDataUrl);
+  const overlay = opts.overlayDataUrl
+    ? await loadImage(opts.overlayDataUrl).catch(() => null)
+    : null;
   const srcW = frame.naturalWidth;
   const srcH = frame.naturalHeight;
   if (srcW < 2 || srcH < 2) return null;
@@ -203,9 +245,12 @@ export async function composeStripVideo(opts: {
   });
 
   const slots = opts.slots;
+  const useOverlay = !!overlay;
   const paint = () => {
     ctx.clearRect(0, 0, width, height);
-    ctx.drawImage(frame, 0, 0, width, height);
+    if (!useOverlay) {
+      ctx.drawImage(frame, 0, 0, width, height);
+    }
     slots.forEach((slot, i) => {
       const v = videos[i % videos.length];
       const x = slot.x * width;
@@ -224,6 +269,8 @@ export async function composeStripVideo(opts: {
       drawCover(ctx, v, x, y, w, h);
       ctx.restore();
     });
+    if (overlay) drawPngOverlay(ctx, overlay, width, height);
+    if (useOverlay) fillGalleryBackdrop(ctx, width, height);
   };
 
   const durationMs = Math.min(

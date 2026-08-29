@@ -245,18 +245,11 @@
     return views.find((v) => v.key === key);
   }
 
-  function isPngTemplate() {
-    const print = String(printId || "");
-    const tpl = views.find((v) => v.key === "template");
-    const url = tpl ? String(tpl.url || tpl.downloadName || "") : print;
-    return /\.png(\?|$)/i.test(print) || /\.png(\?|$)/i.test(url);
-  }
-
   function isPngView(view) {
     if (!view) return false;
     if (view.kind === "image") return true;
-    if (view.kind === "gif") return isPngTemplate();
-    return false;
+    const name = `${view.downloadName || ""} ${view.url || ""}`;
+    return /\.png(\?|$)/i.test(name);
   }
 
   function setActive(key) {
@@ -269,10 +262,7 @@
     const view = getView(key);
     const isGifVideo = view && view.kind === "gif";
     stageEl.classList.toggle("is-video", !!isGifVideo);
-    stageEl.classList.toggle(
-      "is-highlight-strip",
-      !!(isGifVideo && isPngTemplate()),
-    );
+    stageEl.classList.toggle("is-highlight-strip", false);
     stageEl.classList.toggle("is-png", isPngView(view));
     stageEl.style.removeProperty("--strip-ar");
     if (stripResizeCleanup) {
@@ -332,10 +322,6 @@
   }
 
   function renderGifVideo(view) {
-    if (isPngTemplate() && printId) {
-      renderPngFrameOverClips(view);
-      return;
-    }
     loadingEl.hidden = false;
     updateSaveLabel(view);
     const url = view.url || framedStripUrl() || highlightUrls[0];
@@ -358,28 +344,13 @@
     video.setAttribute("controlslist", "nodownload");
     video.setAttribute("aria-label", "Strip video");
 
-    let started = false;
-    video.addEventListener("playing", () => {
-      if (activeKey !== view.key) return;
-      started = true;
-      loadingEl.hidden = true;
-      errorEl.hidden = true;
-    });
     video.addEventListener("loadeddata", () => {
       if (activeKey !== view.key) return;
       loadingEl.hidden = true;
       video.play().catch(() => {});
     });
-    video.addEventListener("ended", () => {
-      video.currentTime = 0;
-      video.play().catch(() => {});
-    });
     video.addEventListener("error", () => {
       if (activeKey !== view.key) return;
-      if (started) {
-        video.play().catch(() => {});
-        return;
-      }
       loadingEl.hidden = true;
       errorEl.hidden = false;
     });
@@ -389,203 +360,6 @@
     });
 
     stageInner.appendChild(video);
-  }
-
-  function punchSlotHoles(img, slots) {
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-    if (!w || !h || !slots.length) return "";
-    const c = document.createElement("canvas");
-    c.width = w;
-    c.height = h;
-    const ctx = c.getContext("2d");
-    if (!ctx) return "";
-    ctx.drawImage(img, 0, 0);
-    ctx.save();
-    ctx.globalCompositeOperation = "destination-out";
-    slots.forEach((s) => {
-      const x = s.x * w;
-      const y = s.y * h;
-      const sw = s.w * w;
-      const sh = s.h * h;
-      ctx.save();
-      if (s.r) {
-        ctx.translate(x + sw / 2, y + sh / 2);
-        ctx.rotate((s.r * Math.PI) / 180);
-        ctx.translate(-(x + sw / 2), -(y + sh / 2));
-      }
-      ctx.fillRect(x, y, sw, sh);
-      ctx.restore();
-    });
-    ctx.restore();
-    return c.toDataURL("image/png");
-  }
-
-  function placeSlotVideo(slotEl, src, slot) {
-    const vid = document.createElement("video");
-    vid.src = src;
-    vid.muted = true;
-    vid.loop = true;
-    vid.playsInline = true;
-    vid.autoplay = true;
-    vid.setAttribute("playsinline", "");
-    vid.setAttribute("webkit-playsinline", "");
-    vid.preload = "auto";
-    vid.setAttribute("controlslist", "nodownload");
-    vid.style.position = "absolute";
-    vid.style.maxWidth = "none";
-    vid.style.width = 100 / Math.max(slot.w, 0.001) + "%";
-    vid.style.height = 100 / Math.max(slot.h, 0.001) + "%";
-    vid.style.left = (-slot.x / Math.max(slot.w, 0.001)) * 100 + "%";
-    vid.style.top = (-slot.y / Math.max(slot.h, 0.001)) * 100 + "%";
-    vid.style.objectFit = "fill";
-    slotEl.appendChild(vid);
-    return vid;
-  }
-
-  function renderPngFrameOverClips(view) {
-    loadingEl.hidden = false;
-    errorEl.hidden = true;
-    updateSaveLabel(view);
-    const videoUrl = view.url || framedStripUrl() || highlightUrls[0];
-    const frameUrl = imageUrl(printId);
-    if (!videoUrl || !frameUrl) {
-      loadingEl.hidden = true;
-      errorEl.hidden = false;
-      return;
-    }
-
-    const strip = document.createElement("div");
-    strip.className = "highlight-strip";
-
-    const frame = document.createElement("img");
-    frame.className = "highlight-strip-frame";
-    frame.alt = "Template";
-    frame.crossOrigin = "anonymous";
-
-    const videos = [];
-    let started = false;
-
-    function markStarted() {
-      if (activeKey !== view.key) return;
-      started = true;
-      loadingEl.hidden = true;
-      errorEl.hidden = true;
-    }
-
-    function ignoreLateError(el) {
-      el.addEventListener("error", () => {
-        if (activeKey !== view.key) return;
-        if (started) {
-          el.play && el.play().catch(() => {});
-          return;
-        }
-        loadingEl.hidden = true;
-        errorEl.hidden = false;
-      });
-      el.addEventListener("ended", () => {
-        try {
-          el.currentTime = 0;
-        } catch (_) {
-          /* ignore */
-        }
-        el.play && el.play().catch(() => {});
-      });
-      el.addEventListener("playing", markStarted);
-    }
-
-    function mountSlots(slots) {
-      const srcs = highlightUrls.filter((u) => !/highlight-strip/i.test(u));
-      const perShot = srcs.length > 0;
-      slots.forEach((slot, i) => {
-        const hole = document.createElement("div");
-        hole.className = "highlight-slot";
-        hole.style.left = slot.x * 100 + "%";
-        hole.style.top = slot.y * 100 + "%";
-        hole.style.width = slot.w * 100 + "%";
-        hole.style.height = slot.h * 100 + "%";
-        if (slot.r) hole.style.transform = "rotate(" + slot.r + "deg)";
-        let vid;
-        if (perShot) {
-          vid = document.createElement("video");
-          vid.src = srcs[i] || srcs[i % srcs.length];
-          vid.muted = true;
-          vid.loop = true;
-          vid.playsInline = true;
-          vid.autoplay = true;
-          vid.setAttribute("playsinline", "");
-          vid.preload = "auto";
-          vid.style.width = "100%";
-          vid.style.height = "100%";
-          vid.style.objectFit = "cover";
-          hole.appendChild(vid);
-        } else {
-          vid = placeSlotVideo(hole, videoUrl, slot);
-        }
-        ignoreLateError(vid);
-        videos.push(vid);
-        strip.appendChild(hole);
-      });
-      videos.forEach((v) => v.play().catch(() => {}));
-    }
-
-    frame.onload = () => {
-      if (activeKey !== view.key) return;
-      frame.onload = null;
-      const slots =
-        (layoutSlots && layoutSlots.length
-          ? layoutSlots
-          : detectSlotsFromPrint(frame)) || [];
-      const nw = frame.naturalWidth;
-      const nh = frame.naturalHeight;
-      if (slots.length) {
-        try {
-          const punched = punchSlotHoles(frame, slots);
-          if (punched) frame.src = punched;
-        } catch (err) {
-          console.warn("[Gallery] Could not punch frame holes:", err);
-        }
-        mountSlots(slots);
-        strip.appendChild(frame);
-      } else {
-        const vid = document.createElement("video");
-        vid.className = "highlight-strip-video";
-        vid.src = videoUrl;
-        vid.muted = true;
-        vid.loop = true;
-        vid.playsInline = true;
-        vid.autoplay = true;
-        vid.setAttribute("playsinline", "");
-        vid.preload = "auto";
-        ignoreLateError(vid);
-        videos.push(vid);
-        strip.insertBefore(vid, frame);
-        vid.play().catch(() => {});
-      }
-      watchStripSize(nw, nh);
-      if (typeof ResizeObserver !== "undefined") {
-        const ro = new ResizeObserver(() => watchStripSize(nw, nh));
-        ro.observe(stageInner);
-        stripResizeCleanup = () => {
-          ro.disconnect();
-          videos.forEach((v) => v.pause());
-        };
-      }
-      markStarted();
-    };
-    frame.onerror = () => {
-      if (activeKey !== view.key) return;
-      loadingEl.hidden = true;
-      errorEl.hidden = false;
-    };
-
-    function watchStripSize(nw, nh) {
-      sizeHighlightStrip(strip, nw, nh);
-    }
-
-    strip.appendChild(frame);
-    stageInner.appendChild(strip);
-    frame.src = frameUrl;
   }
 
   function updateSaveLabel(view) {
