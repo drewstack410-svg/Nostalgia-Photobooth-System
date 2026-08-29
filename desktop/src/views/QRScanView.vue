@@ -100,8 +100,7 @@ async function encodeQr(url: string, width: number, margin: number): Promise<str
       errorCorrectionLevel: "M",
     });
   } catch {
-    // Long gallery URLs (many highlight clips) can exceed version-40
-    // at M; L still scans fine on a phone camera.
+    // Older long gallery URLs can exceed version-40 at M; L still scans.
     return await QRCode.toDataURL(url, {
       width,
       margin,

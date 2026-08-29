@@ -16,8 +16,8 @@
 #      https://app.netlify.com/drop
 #
 # After the first deploy, copy the generated *.netlify.app URL into
-# the photobooth app's `.env` as VITE_GALLERY_BASE_URL — the QR code
-# generator will point at that URL with each session's params.
+# the photobooth app's `.env` as VITE_GALLERY_BASE_URL — the QR encodes
+# that origin plus a short session code (`?s=`).
 
 [build]
   publish = "public/gallery"

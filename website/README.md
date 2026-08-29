@@ -2,32 +2,44 @@
 
 Static HTML/CSS/JS that shows a session’s photos on the guest’s phone after they scan the printed QR. Three tabs: **Template** (framed print), **Grid** (captures), **Highlight** (booth-recorded video).
 
-Photos are **not** stored on Vercel. Uploads go to **Cloudflare R2**; the QR link opens this Vercel page with the R2 public URL and object keys in the query string.
+Photos are **not** stored on Netlify. Uploads go to **Cloudflare R2**. The QR link is only a short session code (`?s=xxxxxx`); this page fetches a JSON manifest from R2, then loads photos and video from that file.
 
 ## Files
 
 - `index.html` — page shell
 - `style.css` — booth styles
-- `app.js` — reads URL params and renders the gallery
+- `app.js` — loads the session (short code → R2 manifest, or legacy query params) and renders the gallery
+- `config.js` — R2 public URL + folder (not taken from the QR)
 - `vercel.json` — Vercel static deploy config
 
-## URL parameters
+## URL
+
+New sessions:
 
 ```
-https://<your-project>.vercel.app/?base=<r2_public_url>&ids=<key1,key2,...>&print=<key>&vids=<key1,key2,...>&title=Nostalgia%20Photobooth
+https://nostalgia-qr.netlify.app/?s=n7k2mx
 ```
+
+The page reads `config.js` for the R2 public URL, then fetches:
+
+```
+https://<r2-public>/<folder>/s/n7k2mx.json
+```
+
+That manifest lists print/capture/video object keys. Image and video URLs are **not** in the QR.
+
+Older printed QRs that still have `base` / `ids` / `print` / `vids` (or Cloudinary `cloud`) keep working.
 
 | Param | Required | Notes |
 |-------|----------|-------|
-| `base` | yes (R2) | Cloudflare R2 public base, e.g. `https://pub-xxxx.r2.dev` — no trailing slash |
-| `ids` | yes* | Comma-separated R2 object keys for the captures. *Required if `print` and `vids` are also absent |
-| `print` | no | R2 object key of the finished framed print (Template tab) |
-| `vids` | no | Comma-separated R2 object keys for highlight clips (Highlight tab) |
-| `tag` | no | Session tag; kept for older QR codes |
-| `title` | no | Page heading. Defaults to "Nostalgia Photobooth" |
-| `cloud` | legacy | Old Cloudinary QR codes still work if `base` is missing |
+| `s` | yes (new) | 6-character session code |
+| `base` | legacy | R2 public base, for old QRs |
+| `ids` | legacy | Comma-separated capture keys |
+| `print` | legacy | Framed print key |
+| `vids` | legacy | Highlight video keys |
+| `cloud` | legacy | Old Cloudinary QRs |
 
-The kiosk builds this URL automatically (`VITE_GALLERY_BASE_URL` + `VITE_R2_PUBLIC_URL`).
+After changing `config.js` (R2 public URL / folder), redeploy this site.
 
 ## Deploying to Vercel
 

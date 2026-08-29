@@ -16,6 +16,11 @@ import {
   prepareFrameCanvas,
   flattenPngDataUrlToWhite,
 } from "@/utils/pngAlpha";
+import {
+  makeGalleryShortCode,
+  buildShortGalleryUrl,
+  galleryManifestDataUrl,
+} from "@/utils/gallerySession";
 
 const router = useRouter();
 const store = usePhotoboothStore();
@@ -144,15 +149,6 @@ function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; ext: string } | n
   return { bytes, ext };
 }
 
-// Build the URL of the public gallery page that the QR code points
-// at. The gallery is a static site hosted on Vercel (see
-// `website/README.md`); it reads the Cloudflare R2 public base +
-// object keys from the query string and renders a phone-friendly
-// carousel + highlight video.
-//
-// Falls back to "" when R2 or the gallery base URL aren't
-// configured — QRScanView handles that case by showing a friendly
-// "cloud upload didn't complete" message instead of a dead QR.
 function loadNaturalSize(
   src: string,
 ): Promise<{ w: number; h: number } | null> {
@@ -249,34 +245,41 @@ async function galleryLayoutParam(): Promise<{ slots: string; par: string } | nu
   return { slots, par };
 }
 
-async function buildGalleryUrl(
+async function publishGallerySession(
+  shortCode: string,
   publicIds: string[],
-  sessionTag: string,
   printId?: string,
   videoIds?: string[],
 ): Promise<string> {
-  if (publicIds.length === 0 && !printId && !(videoIds && videoIds.length)) return "";
+  if (publicIds.length === 0 && !printId && !(videoIds && videoIds.length)) {
+    return "";
+  }
   const r2Base = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
   if (!r2Base) {
     console.warn("[Gallery] No VITE_R2_PUBLIC_URL set");
     return "";
   }
 
-  const base = (
-    import.meta.env.VITE_GALLERY_BASE_URL ||
-    `${window.location.origin}/gallery/`
-  ).replace(/\/+$/, "/");
-
-  const url = new URL(base);
-  url.searchParams.set("base", r2Base);
-  url.searchParams.set("ids", publicIds.join(","));
-  if (sessionTag) url.searchParams.set("tag", sessionTag);
-  if (printId) url.searchParams.set("print", printId);
-  if (videoIds && videoIds.length > 0) {
-    url.searchParams.set("vids", videoIds.join(","));
+  const layout = await galleryLayoutParam();
+  const manifest = galleryManifestDataUrl({
+    v: 1,
+    title: "Nostalgia Photobooth",
+    ids: publicIds,
+    print: printId || undefined,
+    vids: videoIds && videoIds.length ? videoIds : undefined,
+    slots: layout?.slots,
+    par: layout?.par,
+  });
+  const uploaded = await uploadToR2(
+    manifest,
+    "nostalgia-photobooth",
+    `s/${shortCode}`,
+  );
+  if (!uploaded.success) {
+    console.warn("[Gallery] Manifest upload failed:", uploaded.error);
+    return "";
   }
-  url.searchParams.set("title", "Nostalgia Photobooth");
-  return url.toString();
+  return buildShortGalleryUrl(shortCode);
 }
 
 // makePreviewDataUrl (downscale-for-localStorage) moved to
@@ -1273,10 +1276,8 @@ async function saveComposite() {
         }),
       );
 
-      // Build the QR's target: the public gallery page URL with the
-      // per-capture R2 object keys. The gallery page (hosted on
-      // Vercel) reads `base` + `ids` + `vids` and renders a carousel
-      // plus the session highlight video.
+      // QR encodes only a short session code. Photo/video keys live in
+      // an R2 manifest the gallery site fetches on its own.
       const successfulIds = captureResults
         .map((r) => r.cloudPublicId)
         .filter((id): id is string => !!id);
@@ -1284,9 +1285,10 @@ async function saveComposite() {
         compositeUploadPromise,
         highlightUploadPromise,
       ]);
-      const sessionShareableUrl = await buildGalleryUrl(
+      const galleryShortCode = makeGalleryShortCode();
+      const sessionShareableUrl = await publishGallerySession(
+        galleryShortCode,
         successfulIds,
-        `session_${sessionTs}`,
         compositePublicId,
         videoIds,
       );

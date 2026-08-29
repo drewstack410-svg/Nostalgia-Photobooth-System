@@ -124,17 +124,19 @@ function parseDataUrl(imageDataUrl) {
     || "image/jpeg";
   const body = Buffer.from(payload, isBase64 ? "base64" : "utf8");
   const type = contentType.toLowerCase();
-  const ext = type.includes("mp4")
-    ? "mp4"
-    : type.includes("webm")
-      ? "webm"
-      : type.includes("png")
-        ? "png"
-        : type.includes("gif")
-          ? "gif"
-          : type.includes("webp")
-            ? "webp"
-            : "jpg";
+  const ext = type.includes("json")
+    ? "json"
+    : type.includes("mp4")
+      ? "mp4"
+      : type.includes("webm")
+        ? "webm"
+        : type.includes("png")
+          ? "png"
+          : type.includes("gif")
+            ? "gif"
+            : type.includes("webp")
+              ? "webp"
+              : "jpg";
   return { contentType, body, ext };
 }
 
@@ -397,7 +399,10 @@ async function uploadToR2({ imageDataUrl, folder, publicId }) {
         "x-amz-content-sha256": payloadHash,
         "x-amz-date": amzDate,
         Authorization: authorization,
-        "Cache-Control": "public, max-age=31536000, immutable",
+        "Cache-Control":
+          ext === "json"
+            ? "public, max-age=300"
+            : "public, max-age=31536000, immutable",
       },
       body,
     );

@@ -1,68 +1,25 @@
-﻿// Nostalgia Photobooth â€” public gallery viewer
+﻿// Nostalgia Photobooth — public gallery viewer
 // ---------------------------------------------
-// Vanilla JS, no framework, no build step. Reads URL params:
-//   ?base=<public_url>    (required for R2) Cloudflare R2 public base,
-//                         e.g. https://pub-xxxx.r2.dev â€” no trailing slash.
-//   ?cloud=<cloud_name>   (legacy) Cloudinary cloud name, kept so old
-//                         printed QR codes still open.
-//   &ids=<id1,id2,...>    (required) comma-separated object keys /
-//                         public IDs of the individual captures.
-//                         Order is preserved. Also listed individually
-//                         under â€œsave individual photosâ€.
-//   &tag=<session_tag>    (optional, unused by GIF anymore) kept for
-//                         backward compatibility with older printed
-//                         QR codes; harmless if present.
-//   &print=<publicId>    (optional) public ID of the finished
-//                         TEMPLATED print (frame applied) â€” shown as
-//                         the "Template" view. This is what actually
-//                         printed, not a raw stack of captures.
-//   &vids=<key1,key2,..>  (optional) R2 object keys of highlight
-//                         video. Prefer a single framed strip
-//                         (highlight-strip). Shown on the GIF tab.
-//   &title=<text>         (optional) overrides the page title.
-//                         Defaults to "Nostalgia Photobooth".
+// Vanilla JS, no framework, no build step.
 //
-// Example: gallery/?cloud=uprdu3kg&print=abc&ids=foo:bar,foo:baz
+// New QRs are short:  ?s=<6-char-code>
+// The page loads a JSON manifest from Cloudflare R2 (see config.js),
+// then the photos and video listed in that file. Image/video URLs are
+// NOT taken from the scanned link.
+//
+// Older printed QRs still work:
+//   ?base=<r2_public_url>&ids=<key1,key2>&print=<key>&vids=<key1,key2>
+//   ?cloud=<cloudinary_name>&ids=...   (pre-R2)
 //
 // UI is Template / Grid / GIF tabs. Template is the printed still,
-// GIF plays the framed strip video on a loop. One big
-// "Save to Camera Roll" action for whichever is showing, plus a
-// secondary link to save captures one at a time. Built deliberately
-// tiny â€” the page should load fast on a phone over a venue's wifi
-// after someone scans the QR code.
-//
-// The GIF tab used to stitch captures client-side via gif.js. It now
-// plays the booth-composited strip video instead.
+// GIF plays the framed strip video on a loop.
 
-(function () {
+(async function () {
   "use strict";
 
-  // â”€â”€â”€ URL param parsing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const params = new URLSearchParams(window.location.search);
-  const r2Base = (params.get("base") || "").trim().replace(/\/+$/, "");
-  const cloud = (params.get("cloud") || "").trim();
-  const tag = (params.get("tag") || "").trim();
-  const idsRaw = (params.get("ids") || "").trim();
-  const printId = (params.get("print") || "").trim();
-  const vidsRaw = (params.get("vids") || "").trim();
-  const slotsRaw = (params.get("slots") || "").trim();
-  const parRaw = (params.get("par") || "").trim();
-  const title = (params.get("title") || "Nostalgia Photobooth").trim();
 
-  const ids = idsRaw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const vids = vidsRaw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const layoutSlots = parseSlots(slotsRaw);
-  const printAspect = parsePrintAspect(parRaw);
-
-  // â”€â”€â”€ DOM refs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── DOM refs ───────────────────────────────────────────────────
   const titleEl = document.getElementById("title");
   const stageEl = document.getElementById("stage");
   const stageInner = document.getElementById("stageInner");
@@ -82,18 +39,31 @@
   let lightboxCleanup = null;
   let stripResizeCleanup = null;
 
-  titleEl.textContent = title;
-  document.title = title;
+  if (loadingEl) loadingEl.hidden = false;
 
-  // â”€â”€â”€ Sanity checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  if ((!r2Base && !cloud) || (ids.length === 0 && !printId && vids.length === 0)) {
+  const session = await resolveGallerySession(params);
+  if (!session) {
     showFatal(
-      "This link is missing photo references. Try scanning the QR code from your printed strip again.",
+      "Couldn't find this session. Try scanning the QR code from your printed strip again.",
     );
     return;
   }
 
-  // â”€â”€â”€ Build the view list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const r2Base = session.r2Base;
+  const cloud = session.cloud;
+  const tag = session.tag;
+  const ids = session.ids;
+  const printId = session.printId;
+  const vids = session.vids;
+  const layoutSlots = session.layoutSlots;
+  const printAspect = session.printAspect;
+  const title = session.title;
+
+  titleEl.textContent = title;
+  document.title = title;
+  if (loadingEl) loadingEl.hidden = true;
+
+  // ─── Build the view list ────────────────────────────────────────
   // Each view: { key, label, kind: 'image' | 'grid' | 'gif', ... }
   // Order sets tab order AND which one is active by default.
   const views = [];
@@ -1276,14 +1246,98 @@
     return `nostalgia_highlight${n}.${ext}`;
   }
 
-  // Public image URL. New sessions use Cloudflare R2 (`base`).
-  // Older printed QR codes still pass Cloudinary `cloud` + public IDs.
+  // Public image URL. Short-code sessions use R2 from config.js.
+  // Older printed QR codes still pass `base` or Cloudinary `cloud`.
   function imageUrl(publicId, options = {}) {
     if (r2Base) {
       const key = String(publicId || "").replace(/^\/+/, "");
       return `${r2Base}/${key}`;
     }
     return cloudinaryImageUrl(cloud, publicId, options);
+  }
+
+  function resolveShortCode(searchParams) {
+    const fromQuery = (searchParams.get("s") || searchParams.get("code") || "")
+      .trim();
+    if (fromQuery) return fromQuery.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
+    const path = (window.location.pathname || "").replace(/\/+$/, "");
+    const match = path.match(/\/s\/([a-zA-Z0-9]{4,12})$/i);
+    return match ? match[1] : "";
+  }
+
+  function splitKeys(raw) {
+    return String(raw || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  async function resolveGallerySession(searchParams) {
+    const shortCode = resolveShortCode(searchParams);
+    if (shortCode) return loadManifestSession(shortCode);
+    return loadLegacySession(searchParams);
+  }
+
+  async function loadManifestSession(code) {
+    const cfg = window.NOSTALGIA_GALLERY || {};
+    const base = String(cfg.r2Base || "").trim().replace(/\/+$/, "");
+    const folder = String(cfg.r2Folder || "nostalgia-photobooth")
+      .replace(/^\/+|\/+$/g, "");
+    if (!base) return null;
+    try {
+      const res = await fetch(`${base}/${folder}/s/${code}.json`, {
+        cache: "no-cache",
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const sessionIds = [].concat(data.ids || []).map(String).filter(Boolean);
+      const sessionVids = [].concat(data.vids || []).map(String).filter(Boolean);
+      const sessionPrint = String(data.print || "").trim();
+      if (!sessionIds.length && !sessionPrint && !sessionVids.length) {
+        return null;
+      }
+      return {
+        r2Base: base,
+        cloud: "",
+        tag: code,
+        ids: sessionIds,
+        printId: sessionPrint,
+        vids: sessionVids,
+        layoutSlots: parseSlots(String(data.slots || "")),
+        printAspect: parsePrintAspect(String(data.par || "")),
+        title: String(data.title || "Nostalgia Photobooth").trim(),
+      };
+    } catch (err) {
+      console.warn("[Gallery] Manifest fetch failed:", err);
+      return null;
+    }
+  }
+
+  function loadLegacySession(searchParams) {
+    const legacyBase = (searchParams.get("base") || "")
+      .trim()
+      .replace(/\/+$/, "");
+    const legacyCloud = (searchParams.get("cloud") || "").trim();
+    const sessionIds = splitKeys(searchParams.get("ids"));
+    const sessionPrint = (searchParams.get("print") || "").trim();
+    const sessionVids = splitKeys(searchParams.get("vids"));
+    if (
+      (!legacyBase && !legacyCloud) ||
+      (sessionIds.length === 0 && !sessionPrint && sessionVids.length === 0)
+    ) {
+      return null;
+    }
+    return {
+      r2Base: legacyBase,
+      cloud: legacyCloud,
+      tag: (searchParams.get("tag") || "").trim(),
+      ids: sessionIds,
+      printId: sessionPrint,
+      vids: sessionVids,
+      layoutSlots: parseSlots((searchParams.get("slots") || "").trim()),
+      printAspect: parsePrintAspect((searchParams.get("par") || "").trim()),
+      title: (searchParams.get("title") || "Nostalgia Photobooth").trim(),
+    };
   }
 
   // Legacy Cloudinary delivery URL for QR codes printed before R2.
