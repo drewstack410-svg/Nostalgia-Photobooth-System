@@ -3,13 +3,13 @@
   "framework": null,
   "buildCommand": "",
   "trailingSlash": false,
-  "cleanUrls": true,
   "rewrites": [
     {
       "source": "/session/:code.json",
       "destination": "https://pub-60ed42d101464039b0a65609342fdea3.r2.dev/nostalgia-photobooth/s/:code.json"
     },
-    { "source": "/((?!.*\\.).*)", "destination": "/index.html" }
+    { "source": "/s/:code", "destination": "/index.html" },
+    { "source": "/s/:code/", "destination": "/index.html" }
   ],
   "headers": [
     {
