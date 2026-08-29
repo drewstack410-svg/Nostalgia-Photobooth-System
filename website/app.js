@@ -245,11 +245,18 @@
     return views.find((v) => v.key === key);
   }
 
+  function isPngTemplate() {
+    const print = String(printId || "");
+    const tpl = views.find((v) => v.key === "template");
+    const url = tpl ? String(tpl.url || tpl.downloadName || "") : print;
+    return /\.png(\?|$)/i.test(print) || /\.png(\?|$)/i.test(url);
+  }
+
   function isPngView(view) {
     if (!view) return false;
     if (view.kind === "image") return true;
-    const name = `${view.downloadName || ""} ${view.url || ""}`;
-    return /\.png(\?|$)/i.test(name);
+    if (view.kind === "gif") return isPngTemplate();
+    return false;
   }
 
   function setActive(key) {
@@ -343,6 +350,19 @@
     video.preload = "auto";
     video.setAttribute("controlslist", "nodownload");
     video.setAttribute("aria-label", "Strip video");
+
+    if (isPngTemplate() && printId) {
+      const maskUrl = imageUrl(printId);
+      video.classList.add("is-png-mask");
+      video.style.webkitMaskImage = `url("${maskUrl}")`;
+      video.style.maskImage = `url("${maskUrl}")`;
+      video.style.webkitMaskSize = "contain";
+      video.style.maskSize = "contain";
+      video.style.webkitMaskRepeat = "no-repeat";
+      video.style.maskRepeat = "no-repeat";
+      video.style.webkitMaskPosition = "center";
+      video.style.maskPosition = "center";
+    }
 
     video.addEventListener("loadeddata", () => {
       if (activeKey !== view.key) return;

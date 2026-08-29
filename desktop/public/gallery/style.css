@@ -189,6 +189,12 @@ body {
   background: transparent;
 }
 
+/* GIF/MP4 has no alpha — mask with the print PNG so transparent
+   gutters show the page instead of the encoder's black fill. */
+.stage-video-gif.is-png-mask {
+  background: transparent;
+}
+
 .stage.is-highlight-strip {
   /* Keep the same 4/5 stage as Template so the strip contain-fits identically. */
 }
@@ -231,7 +237,7 @@ body {
   padding: 0;
   border: none;
   overflow: hidden;
-  background: #111;
+  background: transparent;
   cursor: pointer;
   transform-origin: center center;
 }

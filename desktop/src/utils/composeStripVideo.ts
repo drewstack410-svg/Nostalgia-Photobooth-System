@@ -204,6 +204,7 @@ export async function composeStripVideo(opts: {
 
   const slots = opts.slots;
   const paint = () => {
+    ctx.clearRect(0, 0, width, height);
     ctx.drawImage(frame, 0, 0, width, height);
     slots.forEach((slot, i) => {
       const v = videos[i % videos.length];
