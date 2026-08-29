@@ -13,13 +13,13 @@
      blush wordmark colour as the accent. Replaces the old espresso
      gradient so the landing page matches the brand. */
   --bg-top: #2e4029;
-  --bg-bottom: #1a2618;
+  --bg-bottom: #2e4029;
   --cream: #f2d4c4;
   --cream-dim: rgba(242, 212, 196, 0.75);
   --gold: #e8b49c;
   --gold-strong: #d2917a;
   --ink: #1b2619;
-  --stage-bg: #16200f;
+  --stage-bg: #2e4029;
   --thumb-border: rgba(250, 243, 230, 0.18);
   /* Controls (tabs, save button, secondary link) are plain white rather
      than the blush wordmark colour — white reads far more clearly on the
@@ -49,7 +49,7 @@ body {
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
   color: var(--cream);
-  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  background: var(--bg-top);
 }
 
 .page {
@@ -524,19 +524,21 @@ body.hl-lightbox-open {
   pointer-events: none;
 }
 
-/* Grid preview: a live CSS grid of the individual captures. Rows are
- * computed inline (see app.js) so 2, 3, 4+ photos all lay out sensibly. */
+/* Grid preview: occupancy from the session (template rows × cols). */
 .stage-grid {
   width: 100%;
   height: 100%;
   display: grid;
   gap: 3px;
   padding: 3px;
+  min-height: 0;
 }
 
 .stage-grid img {
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   object-fit: cover;
   display: block;
 }

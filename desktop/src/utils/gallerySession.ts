@@ -29,6 +29,10 @@ export type GalleryManifest = {
   vids?: string[];
   slots?: string;
   par?: string;
+  /** Template occupancy — gallery Grid tab uses these, not a guess from photo count. */
+  rows?: number;
+  cols?: number;
+  shots?: number;
 };
 
 export function galleryManifestDataUrl(manifest: GalleryManifest): string {

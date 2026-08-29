@@ -164,14 +164,10 @@ function fillGalleryBackdrop(
   width: number,
   height: number,
 ) {
-  // Same greens as website/style.css --bg-top / --bg-bottom so the
-  // saved MP4 matches the gallery page behind transparent PNG gutters.
-  const g = ctx.createLinearGradient(0, 0, 0, height);
-  g.addColorStop(0, "#2e4029");
-  g.addColorStop(1, "#1a2618");
+  // Same solid as website/style.css --bg-top so gutters match the page.
   ctx.save();
   ctx.globalCompositeOperation = "destination-over";
-  ctx.fillStyle = g;
+  ctx.fillStyle = "#2e4029";
   ctx.fillRect(0, 0, width, height);
   ctx.restore();
 }

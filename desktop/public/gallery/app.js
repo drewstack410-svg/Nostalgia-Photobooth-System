@@ -60,6 +60,8 @@
   const vids = session.vids;
   const layoutSlots = session.layoutSlots;
   const printAspect = session.printAspect;
+  const gridRows = session.rows;
+  const gridCols = session.cols;
   const title = session.title;
 
   titleEl.textContent = title;
@@ -264,7 +266,11 @@
     stageEl.classList.toggle("is-video", !!isGifVideo);
     stageEl.classList.toggle("is-highlight-strip", false);
     stageEl.classList.toggle("is-png", isPngView(view));
+    stageEl.classList.toggle("is-grid", !!(view && view.kind === "grid"));
     stageEl.style.removeProperty("--strip-ar");
+    if (!(view && view.kind === "grid")) {
+      stageEl.style.removeProperty("aspect-ratio");
+    }
     if (stripResizeCleanup) {
       stripResizeCleanup();
       stripResizeCleanup = null;
@@ -283,8 +289,14 @@
       loadingEl.hidden = true; // CSS grid renders instantly; each <img> loads on its own
       const grid = document.createElement("div");
       grid.className = "stage-grid";
-      const cols = view.ids.length <= 1 ? 1 : view.ids.length === 3 ? 3 : 2;
-      grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+      const layout = resolveShotGrid(view.ids.length);
+      grid.style.gridTemplateColumns = `repeat(${layout.cols}, 1fr)`;
+      grid.style.gridTemplateRows = `repeat(${layout.rows}, 1fr)`;
+      if (printAspect && printAspect.w > 0 && printAspect.h > 0) {
+        stageEl.style.aspectRatio = `${printAspect.w} / ${printAspect.h}`;
+      } else {
+        stageEl.style.aspectRatio = `${layout.cols} / ${layout.rows}`;
+      }
       view.ids.forEach((id, i) => {
         const img = document.createElement("img");
         img.alt = `Capture ${i + 1}`;
@@ -396,6 +408,64 @@
     const h = Number(m[2]);
     if (w < 1 || h < 1) return null;
     return { w, h };
+  }
+
+  function parseGridAxis(raw) {
+    const n = Math.floor(Number(raw));
+    return Number.isFinite(n) && n >= 1 && n <= 16 ? n : 0;
+  }
+
+  function uniqueNear(values, eps) {
+    const sorted = values.slice().sort((a, b) => a - b);
+    const out = [];
+    sorted.forEach((v) => {
+      if (!out.length || Math.abs(v - out[out.length - 1]) > eps) out.push(v);
+    });
+    return out;
+  }
+
+  function inferGridFromSlots(slots) {
+    if (!slots || slots.length < 1) return null;
+    const cols = uniqueNear(
+      slots.map((s) => s.x),
+      0.04,
+    ).length;
+    const rows = uniqueNear(
+      slots.map((s) => s.y),
+      0.04,
+    ).length;
+    if (cols < 1 || rows < 1) return null;
+    return { cols, rows };
+  }
+
+  // Template rows × cols from the kiosk session. Unique shots fill that
+  // column count; extra copy-cells on the print are not shown twice.
+  function resolveShotGrid(shotCount) {
+    const n = Math.max(1, shotCount);
+    const cols = parseGridAxis(gridCols);
+    const rows = parseGridAxis(gridRows);
+    if (cols && rows) {
+      return {
+        cols,
+        rows: n === rows * cols ? rows : Math.ceil(n / cols),
+      };
+    }
+    if (cols) {
+      return { cols, rows: Math.ceil(n / cols) };
+    }
+    if (rows) {
+      return { rows, cols: Math.ceil(n / rows) };
+    }
+    const fromSlots = inferGridFromSlots(layoutSlots);
+    if (fromSlots) {
+      const uniqueRows = Math.ceil(n / fromSlots.cols);
+      return {
+        cols: fromSlots.cols,
+        rows: Math.min(fromSlots.rows, uniqueRows),
+      };
+    }
+    const fallbackCols = n <= 1 ? 1 : n === 3 ? 3 : 2;
+    return { cols: fallbackCols, rows: Math.ceil(n / fallbackCols) };
   }
 
   function defaultSlots(n, portrait) {
@@ -1115,10 +1185,23 @@
     const imgs = await Promise.all(
       photoIds.map((id) => loadCorsImage(imageUrl(id))),
     );
-    const cols = imgs.length <= 1 ? 1 : imgs.length === 3 ? 3 : 2;
-    const rows = Math.ceil(imgs.length / cols);
-    const cellW = 900;
-    const cellH = 900;
+    const layout = resolveShotGrid(imgs.length);
+    const cols = layout.cols;
+    const rows = layout.rows;
+    let cellW = 900;
+    let cellH = 900;
+    if (printAspect && printAspect.w > 0 && printAspect.h > 0) {
+      const templateCols = parseGridAxis(gridCols) || cols;
+      const templateRows = parseGridAxis(gridRows) || rows;
+      cellW = printAspect.w / templateCols;
+      cellH = printAspect.h / templateRows;
+      const maxEdge = 1800;
+      const sheetW = cellW * cols;
+      const sheetH = cellH * rows;
+      const scale = Math.min(1, maxEdge / Math.max(sheetW, sheetH));
+      cellW = Math.max(1, Math.round(cellW * scale));
+      cellH = Math.max(1, Math.round(cellH * scale));
+    }
     const gap = 10;
     const W = cols * cellW + (cols - 1) * gap;
     const H = rows * cellH + (rows - 1) * gap;
@@ -1127,7 +1210,7 @@
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#000";
+    ctx.fillStyle = "#2e4029";
     ctx.fillRect(0, 0, W, H);
 
     imgs.forEach((img, i) => {
@@ -1324,6 +1407,9 @@
           vids: sessionVids,
           layoutSlots: parseSlots(String(data.slots || "")),
           printAspect: parsePrintAspect(String(data.par || "")),
+          rows: parseGridAxis(data.rows),
+          cols: parseGridAxis(data.cols),
+          shots: parseGridAxis(data.shots),
           title: String(data.title || "Nostalgia Photobooth").trim(),
         };
       } catch (err) {
@@ -1356,6 +1442,9 @@
       vids: sessionVids,
       layoutSlots: parseSlots((searchParams.get("slots") || "").trim()),
       printAspect: parsePrintAspect((searchParams.get("par") || "").trim()),
+      rows: parseGridAxis(searchParams.get("rows")),
+      cols: parseGridAxis(searchParams.get("cols")),
+      shots: parseGridAxis(searchParams.get("shots")),
       title: (searchParams.get("title") || "Nostalgia Photobooth").trim(),
     };
   }

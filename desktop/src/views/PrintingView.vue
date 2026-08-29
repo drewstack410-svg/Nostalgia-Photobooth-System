@@ -5,7 +5,12 @@ import { usePhotoboothStore } from "@/stores/photobooth";
 // Cloudinary unsigned uploads are parked. Guest copies now go to Cloudflare R2.
 // import { uploadToCloudinary } from "@/services/cloudinary";
 import { uploadToR2 } from "@/services/r2";
-import { getPaperSizePx, getTemplateCellRects, occupancyFill } from "@/utils/printLayout";
+import {
+  getPaperSizePx,
+  getTemplateCellRects,
+  occupancyFill,
+  getTemplateGrid,
+} from "@/utils/printLayout";
 import type { Rect } from "@/utils/printLayout";
 import { getFrameWindows, scaleWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
@@ -262,6 +267,12 @@ async function publishGallerySession(
   }
 
   const layout = await galleryLayoutParam();
+  const template = store.sessionTemplate ?? store.selectedTemplate;
+  const grid = template ? getTemplateGrid(template) : null;
+  const shots = Math.max(
+    1,
+    template?.photoCount ?? publicIds.length,
+  );
   const manifest = galleryManifestDataUrl({
     v: 1,
     title: "Nostalgia Photobooth",
@@ -270,6 +281,9 @@ async function publishGallerySession(
     vids: videoIds && videoIds.length ? videoIds : undefined,
     slots: layout?.slots,
     par: layout?.par,
+    rows: grid?.rows,
+    cols: grid?.cols,
+    shots,
   });
   const uploaded = await uploadToR2(
     manifest,
