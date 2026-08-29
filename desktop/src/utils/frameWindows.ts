@@ -22,6 +22,8 @@
  * old grid maths rather than printing something unexpected.
  */
 
+import { prepareFrameCanvas } from "@/utils/pngAlpha";
+
 export interface WindowRect {
   x: number;
   y: number;
@@ -35,16 +37,6 @@ const cache = new Map<string, WindowRect[] | null>();
 const ALPHA_TRANSPARENT = 40;
 /** Ignore specks: a window must be at least this fraction of the sheet. */
 const MIN_AREA_FRACTION = 0.004;
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error(`frame image failed to load: ${src}`));
-    img.src = src;
-  });
-}
 
 /**
  * Connected-component scan over the transparent pixels, returning one
@@ -134,26 +126,41 @@ export async function getFrameWindows(
 
   let result: WindowRect[] | null = null;
   try {
-    const img = await loadImage(src);
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
+    // Knock out authored-white so white gutters count as holes, not
+    // opaque sheet — same bitmap the print composite draws.
+    const canvas = await prepareFrameCanvas(src);
+    const w = canvas.width;
+    const h = canvas.height;
     if (w && h) {
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (ctx) {
-        ctx.drawImage(img, 0, 0);
         const data = ctx.getImageData(0, 0, w, h).data;
         const alpha = new Uint8ClampedArray(w * h);
         for (let i = 0, p = 3; i < alpha.length; i++, p += 4) alpha[i] = data[p];
 
         const found = findWindows(alpha, w, h);
-        if (found.length > 0 && (!expectedCount || found.length === expectedCount)) {
-          result = found;
+        // Knocking out white gutters often yields one extra blob — the
+        // connected background that touches the sheet edge. Drop those
+        // so the remaining interiors match the declared photo count.
+        const inner = found.filter(
+          (r) =>
+            r.x > 1 &&
+            r.y > 1 &&
+            r.x + r.width < w - 1 &&
+            r.y + r.height < h - 1,
+        );
+        const pick =
+          expectedCount && inner.length === expectedCount
+            ? inner
+            : found;
+        if (pick.length > 0 && (!expectedCount || pick.length === expectedCount)) {
+          result = pick;
         } else {
           console.warn(
             `[frameWindows] ${src}: found ${found.length} window(s)` +
+              (inner.length !== found.length
+                ? ` (${inner.length} interior)`
+                : "") +
               (expectedCount ? `, expected ${expectedCount}` : "") +
               " — falling back to grid layout",
           );

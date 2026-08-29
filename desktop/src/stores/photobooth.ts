@@ -423,14 +423,16 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   // BUILTIN_TEMPLATES is a hardcoded module-level array (not per-instance
   // state), so a built-in's active status / layout cells are tracked
   // separately here and merged in via `templates` below.
-  const builtinTemplateOverrides = ref<
-    Record<string, { isActive?: boolean; cells?: TemplateCell[] }>
-  >({});
-
   type BuiltinOverrideMap = Record<
     string,
-    { isActive?: boolean; cells?: TemplateCell[] }
+    {
+      isActive?: boolean;
+      cells?: TemplateCell[];
+      name?: string;
+      photoCount?: number;
+    }
   >;
+  const builtinTemplateOverrides = ref<BuiltinOverrideMap>({});
 
   function usesDiskTemplates(): boolean {
     return typeof window !== "undefined" && !!window.electronAPI?.loadTemplates;
@@ -1451,6 +1453,50 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   /**
+   * Update a template's name and/or how many photos the guest shoots.
+   * Price lives on the dashboard store (setPricePerTemplate), not here.
+   */
+  function updateTemplateDetails(
+    id: string,
+    patch: { name?: string; photoCount?: number },
+  ) {
+    const name =
+      patch.name !== undefined ? patch.name.trim() : undefined;
+    let photoCount = patch.photoCount;
+    if (photoCount !== undefined) {
+      photoCount = Math.max(1, Math.floor(Number(photoCount) || 1));
+    }
+    if (!name && photoCount === undefined) return;
+
+    if (isBuiltinTemplate(id)) {
+      const current = templates.value.find((t) => t.id === id);
+      if (!current) return;
+      builtinTemplateOverrides.value = {
+        ...builtinTemplateOverrides.value,
+        [id]: {
+          ...(builtinTemplateOverrides.value[id] ?? {}),
+          ...(name ? { name } : {}),
+          ...(photoCount !== undefined ? { photoCount } : {}),
+        },
+      };
+      saveBuiltinTemplateOverrides();
+    } else {
+      const idx = customTemplates.value.findIndex((t) => t.id === id);
+      if (idx === -1) return;
+      const t = { ...customTemplates.value[idx] };
+      if (name) t.name = name;
+      if (photoCount !== undefined) t.photoCount = photoCount;
+      customTemplates.value[idx] = t;
+      saveCustomTemplates();
+    }
+
+    if (selectedTemplate.value?.id === id) {
+      const fresh = templates.value.find((t) => t.id === id);
+      if (fresh) selectedTemplate.value = fresh;
+    }
+  }
+
+  /**
    * Persist hand-placed photo slots from the layout editor. Works for
    * built-ins (written to the override map) and custom templates alike.
    * Passing null clears them, which reverts that template to the
@@ -1808,6 +1854,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // Template Actions
     // -----------------------------
     addTemplate,
+    updateTemplateDetails,
     removeTemplate,
     setTemplateCells,
     toggleTemplateActive,

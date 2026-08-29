@@ -12,6 +12,10 @@ import type { WindowRect } from "@/utils/frameWindows";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { buildSessionGif } from "@/utils/sessionGif";
 import { composeStripVideo } from "@/utils/composeStripVideo";
+import {
+  prepareFrameCanvas,
+  flattenPngDataUrlToWhite,
+} from "@/utils/pngAlpha";
 
 const router = useRouter();
 const store = usePhotoboothStore();
@@ -389,9 +393,14 @@ async function createCompositeImage(
         ]
       : [{ x: 0, y: 0, width: CANVAS_W, height: CANVAS_H }];
 
-    // White background so there are no black bleed areas
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    // Transparent sheet when a frame PNG is present so its alpha
+    // (and knocked-out white gutters) stay holes. Frameless grids
+    // still sit on white paper. Printers get an opaque flatten later.
+    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+    if (!template.frameImageUrl) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    }
 
     // ── Determine the landscape grid (cols × rows) that best fills the paper
     //    for a given number of photos.
@@ -584,8 +593,21 @@ async function createCompositeImage(
     const finalize = (loadedImages: HTMLImageElement[]) => {
       console.log(`[Composite] finalize() called with ${loadedImages.length} images, frameImageUrl=${template.frameImageUrl || 'none'}`);
       if (template.frameImageUrl) {
-        const frameImg = new Image();
-        frameImg.onload = async () => {
+        void (async () => {
+          let frameCanvas: HTMLCanvasElement;
+          try {
+            frameCanvas = await prepareFrameCanvas(template.frameImageUrl as string);
+          } catch (e) {
+            console.error(
+              `[Composite] Frame image failed to load: ${template.frameImageUrl}`,
+              e,
+            );
+            for (const printArea of printAreas) {
+              drawPhotosIntoArea(loadedImages, printArea);
+            }
+            resolve(exportFinalDataUrl());
+            return;
+          }
           // Read the frame's real photo windows off its alpha channel.
           // Rejected (null) unless the count matches the declared grid,
           // so an unexpected result falls back to the margin/gap maths
@@ -602,8 +624,8 @@ async function createCompositeImage(
           } catch (e) {
             console.warn("[Composite] window detection failed:", e);
           }
-          const natW = frameImg.naturalWidth;
-          const natH = frameImg.naturalHeight;
+          const natW = frameCanvas.width;
+          const natH = frameCanvas.height;
           console.log(`[Composite] Frame natural size: ${natW}×${natH}`);
 
           // The frame-PNG path now uses a deterministic margin+gap
@@ -815,7 +837,7 @@ async function createCompositeImage(
             //    after the loop, covering both halves).
             if (!frameIsFullSheet) {
               ctx.drawImage(
-                frameImg,
+                frameCanvas,
                 printArea.x,
                 printArea.y,
                 printArea.width,
@@ -827,7 +849,7 @@ async function createCompositeImage(
           }
 
           if (frameIsFullSheet) {
-            ctx.drawImage(frameImg, 0, 0, CANVAS_W, CANVAS_H);
+            ctx.drawImage(frameCanvas, 0, 0, CANVAS_W, CANVAS_H);
             console.log(
               `[Composite] Full-sheet frame drawn once across both print areas`,
             );
@@ -836,15 +858,7 @@ async function createCompositeImage(
           const dataUrl = exportFinalDataUrl();
           console.log(`[Composite] Final PNG data URL length: ${dataUrl.length}`);
           resolve(dataUrl);
-        };
-        frameImg.onerror = () => {
-          console.error(`[Composite] Frame image failed to load: ${template.frameImageUrl}`);
-          for (const printArea of printAreas) {
-            drawPhotosIntoArea(loadedImages, printArea);
-          }
-          resolve(exportFinalDataUrl());
-        };
-        frameImg.src = template.frameImageUrl;
+        })();
       } else {
         // Frameless: draw the grid into every print area (both halves
         // for cut sheets → two identical strips; one full sheet
@@ -869,7 +883,11 @@ async function createCompositeImage(
       // produces the doubled-frame look the user just flagged.
       // Resize the canvas to exactly fit the grid at native photo
       // resolution so no quality is lost.
-      if (purpose === "display" && loadedImages.length > 0) {
+      if (
+        purpose === "display" &&
+        !template.frameImageUrl &&
+        loadedImages.length > 0
+      ) {
         const cols = Math.max(1, Math.floor(grid.cols));
         const rows = Math.max(1, Math.floor(grid.rows));
         const photoW = loadedImages[0].naturalWidth;
@@ -979,6 +997,12 @@ async function saveComposite() {
       "[Save] Print composite created, length:",
       printComposite.length,
     );
+    // Printers can't ink alpha — flatten remaining holes to white paper.
+    // The gallery/QR copy keeps transparency so the landing page shows
+    // through the layout's knocked-out white gutters.
+    const printOpaque = printComposite
+      ? await flattenPngDataUrlToWhite(printComposite)
+      : "";
 
     if (window.electronAPI && printComposite) {
       console.log("[Save] Electron API available, attempting to save...");
@@ -989,7 +1013,7 @@ async function saveComposite() {
       //    the canonical save location. A reprint can recreate the
       //    sheet on demand by re-running createCompositeImage with the
       //    saved per-capture photos + the same template.
-      const printResult = await window.electronAPI.saveTempPhoto(printComposite);
+      const printResult = await window.electronAPI.saveTempPhoto(printOpaque);
       if (!printResult.success || !printResult.path) {
         console.error(
           "[Save] Print sheet save failed!",
@@ -1009,7 +1033,7 @@ async function saveComposite() {
       if (previewBeforePrint.value) {
         // Preview the PRINT version — that's what actually goes to
         // the printer, including the cut-line indicator.
-        previewDataUrl.value = printComposite;
+        previewDataUrl.value = printOpaque;
         showPreview.value = true;
         countdownPaused = true;
         console.log("[Save] Preview mode — awaiting user confirmation");
@@ -1457,9 +1481,10 @@ async function runReprint() {
         "Couldn't rebuild the print — the template may no longer exist.";
       return;
     }
+    const printOpaque = await flattenPngDataUrlToWhite(printComposite);
     // Transient temp file just for the print job (same as a fresh
     // print's print sheet — never lands in the user's Pictures).
-    const saved = await window.electronAPI.saveTempPhoto(printComposite);
+    const saved = await window.electronAPI.saveTempPhoto(printOpaque);
     if (!saved.success || !saved.path) {
       printStatus.value = "error";
       printError.value = saved.error || "Failed to stage reprint";

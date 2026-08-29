@@ -126,6 +126,14 @@ body {
   aspect-ratio: 4 / 5;
 }
 
+/* Templated print is a PNG with alpha — don't paint a panel behind it
+   or the knocked-out gutters fill with --stage-bg instead of the page. */
+.stage.is-png {
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
 .stage-share-btn {
   position: absolute;
   top: 10px;
@@ -545,6 +553,11 @@ body.hl-lightbox-open {
 .stage-loading[hidden],
 .stage-error[hidden] {
   display: none;
+}
+
+.stage.is-png .stage-loading,
+.stage.is-png .stage-error {
+  background: transparent;
 }
 
 .stage-error p {

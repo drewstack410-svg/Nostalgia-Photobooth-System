@@ -21,6 +21,7 @@ import type { WindowRect } from "@/utils/frameWindows";
 import { getPaperSizePx } from "@/utils/printLayout";
 import type { PaperSize } from "@/utils/printLayout";
 import type { TemplateCell } from "@/stores/photobooth";
+import { prepareFrameDataUrl } from "@/utils/pngAlpha";
 
 const props = withDefaults(
   defineProps<{
@@ -56,6 +57,21 @@ const paperAspect = computed(() => {
   const spec = getPaperSizePx(props.paperSize);
   return spec.width / spec.height;
 });
+
+const displayFrameUrl = ref("");
+watch(
+  () => props.frameImageUrl,
+  async (url) => {
+    displayFrameUrl.value = url || "";
+    if (!url) return;
+    try {
+      displayFrameUrl.value = await prepareFrameDataUrl(url);
+    } catch {
+      /* keep the original src */
+    }
+  },
+  { immediate: true },
+);
 
 function snapshot() {
   undoStack.value.push(JSON.stringify(cells.value));
@@ -493,8 +509,8 @@ watch(
         @pointerdown="selected = -1"
       >
         <img
-          v-if="frameImageUrl"
-          :src="frameImageUrl"
+          v-if="displayFrameUrl"
+          :src="displayFrameUrl"
           class="stage-frame"
           alt=""
           draggable="false"

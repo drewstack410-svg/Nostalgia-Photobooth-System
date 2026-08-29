@@ -3,8 +3,9 @@
  * TemplatePreview – Renders a single photo-strip template as thumbnail, frame overlay, or built-in strip.
  * Used in template picker (full size), admin settings (mini), and anywhere a template needs to be shown.
  */
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import type { Template } from "@/stores/photobooth";
+import { prepareFrameDataUrl } from "@/utils/pngAlpha";
 
 const props = defineProps<{
   template: Template;
@@ -32,6 +33,21 @@ const thumbnailUrl = computed(() => {
   }
   return null;
 });
+
+const displayFrameUrl = ref("");
+watch(
+  () => props.template.frameImageUrl,
+  async (url) => {
+    displayFrameUrl.value = url || "";
+    if (!url) return;
+    try {
+      displayFrameUrl.value = await prepareFrameDataUrl(url);
+    } catch {
+      /* keep the original src */
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -53,7 +69,7 @@ const thumbnailUrl = computed(() => {
 
     <!-- 2. Custom frame image (no thumbnails; frame only) -->
     <div
-      v-else-if="template.frameImageUrl"
+      v-else-if="displayFrameUrl"
       class="preview-frame-overlay"
       :class="[
         size === 'mini'
@@ -65,7 +81,7 @@ const thumbnailUrl = computed(() => {
         { 'preview-frame-overlay--active': active && size === 'full' },
       ]"
     >
-      <img :src="template.frameImageUrl" alt="Frame" />
+      <img :src="displayFrameUrl" alt="Frame" />
       <span v-if="size === 'mini'" class="preview-frame-overlay-badge"
         >{{ template.photoCount }} photos</span
       >

@@ -17,6 +17,7 @@ import { BLEND_MODES } from "@/stores/photobooth";
 import { applyBoothConfig, saveBoothConfig } from "@/lib/boothConfig";
 import { getPaperSizePx } from "@/utils/printLayout";
 import type { PaperSize } from "@/utils/printLayout";
+import { prepareFrameCanvas, prepareFrameDataUrl } from "@/utils/pngAlpha";
 import TemplatePreview from "@/components/TemplatePreview.vue";
 import TemplateLayoutEditor from "@/components/TemplateLayoutEditor.vue";
 import OnScreenKeyboard from "@/components/OnScreenKeyboard.vue";
@@ -867,8 +868,10 @@ async function redrawTemplatePreview() {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (!frameImg) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
 
   const rows = Math.max(1, Math.min(GRID_AXIS_MAX, newTemplateFrameRows.value || 1));
   const cols = Math.max(1, Math.min(GRID_AXIS_MAX, newTemplateFrameCols.value || 1));
@@ -894,8 +897,14 @@ async function redrawTemplatePreview() {
   // 2×6 cut's full-sheet-vs-per-strip duplication — see PrintingView's
   // frameIsFullSheet — since that's a print-time concern, not a design
   // one: either way, this shows the ONE strip's design faithfully.)
-  if (frameImg) {
-    ctx.drawImage(frameImg, 0, 0, canvas.width, canvas.height);
+  if (newTemplateFrameImageUrl.value) {
+    const prepared = await prepareFrameCanvas(newTemplateFrameImageUrl.value).catch(
+      () => null,
+    );
+    if (myToken !== previewRedrawToken) return;
+    if (prepared) {
+      ctx.drawImage(prepared, 0, 0, canvas.width, canvas.height);
+    }
   }
 }
 
@@ -1038,8 +1047,13 @@ function onFrameImageChange(event: Event) {
   const file = input.files?.[0];
   if (!file || !file.type.startsWith("image/")) return;
   const reader = new FileReader();
-  reader.onload = () => {
-    newTemplateFrameImageUrl.value = reader.result as string;
+  reader.onload = async () => {
+    const raw = reader.result as string;
+    try {
+      newTemplateFrameImageUrl.value = await prepareFrameDataUrl(raw);
+    } catch {
+      newTemplateFrameImageUrl.value = raw;
+    }
   };
   reader.readAsDataURL(file);
 }
@@ -1249,6 +1263,116 @@ function handleDeleteTemplate(template: Template, event: Event) {
   if (confirmed) {
     store.removeTemplate(template.id);
   }
+}
+
+// ── Edit template details (name, price, shots) ──────────────────────
+const showEditTemplateModal = ref(false);
+const editingTemplate = ref<Template | null>(null);
+const editTemplateName = ref("");
+const editTemplatePrice = ref(0);
+const editTemplateShots = ref(1);
+const showEditNameKeyboard = ref(false);
+let editNameBlurTimeout: ReturnType<typeof setTimeout> | null = null;
+
+/** Sheet cells for a saved template (grid, or hand-placed slots). */
+function templateSheetCells(t: Template): number {
+  if (t.cells?.length) return t.cells.length;
+  const rows = t.frameRows;
+  const cols = t.frameCols;
+  if (rows != null && cols != null && rows > 0 && cols > 0) return rows * cols;
+  return Math.max(1, t.photoCount ?? 1);
+}
+
+const editShotPlan = computed(() => {
+  const t = editingTemplate.value;
+  const cells = t ? templateSheetCells(t) : 1;
+  const raw = Number(editTemplateShots.value);
+  const shots =
+    Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), cells) : cells;
+  const copies = cells / shots;
+  return { cells, shots, copies, even: Number.isInteger(copies) };
+});
+
+function templatePriceLabel(id: string): string {
+  const n = dashboardStore.priceByTemplateId[id] ?? 0;
+  if (!n) return "Free";
+  return `₱${Number.isInteger(n) ? String(n) : n.toFixed(2)}`;
+}
+
+function openEditTemplateDetails(t: Template) {
+  editingTemplate.value = t;
+  editTemplateName.value = t.name;
+  editTemplatePrice.value = dashboardStore.priceByTemplateId[t.id] ?? 0;
+  editTemplateShots.value = t.photoCount;
+  showEditNameKeyboard.value = false;
+  showEditTemplateModal.value = true;
+}
+
+function closeEditTemplateDetails() {
+  showEditTemplateModal.value = false;
+  editingTemplate.value = null;
+  showEditNameKeyboard.value = false;
+  if (editNameBlurTimeout) {
+    clearTimeout(editNameBlurTimeout);
+    editNameBlurTimeout = null;
+  }
+}
+
+watch(showEditTemplateModal, (open) => {
+  if (!open) {
+    editingTemplate.value = null;
+    showEditNameKeyboard.value = false;
+  }
+});
+
+function handleEditNameClick() {
+  if (editNameBlurTimeout) {
+    clearTimeout(editNameBlurTimeout);
+    editNameBlurTimeout = null;
+  }
+  showEditNameKeyboard.value = true;
+}
+
+function handleEditNameBlur() {
+  if (editNameBlurTimeout) {
+    clearTimeout(editNameBlurTimeout);
+    editNameBlurTimeout = null;
+  }
+  editNameBlurTimeout = setTimeout(() => {
+    if (document.activeElement?.tagName !== "BUTTON") {
+      showEditNameKeyboard.value = false;
+    }
+    editNameBlurTimeout = null;
+  }, 200);
+}
+
+function handleEditNameKeyDown() {
+  keyboardInputDetected.value = true;
+  if (showEditNameKeyboard.value) {
+    nextTick(() => {
+      showEditNameKeyboard.value = false;
+    });
+  }
+}
+
+function updateEditTemplateName(value: string) {
+  editTemplateName.value = value;
+}
+
+function submitEditTemplateDetails() {
+  const t = editingTemplate.value;
+  if (!t) return;
+  const name = editTemplateName.value.trim();
+  if (!name) return;
+  store.updateTemplateDetails(t.id, {
+    name,
+    photoCount: editShotPlan.value.shots,
+  });
+  const price = Number(editTemplatePrice.value);
+  if (!Number.isNaN(price) && price >= 0) {
+    dashboardStore.setPricePerTemplate(t.id, price);
+  }
+  closeEditTemplateDetails();
 }
 </script>
 
@@ -1583,8 +1707,9 @@ function handleDeleteTemplate(template: Template, event: Event) {
         >
           <h3 class="subsection-title">Templates</h3>
           <p class="section-desc">
-            Manage photo strip templates. Add new templates and set which are
-            active for the template picker.
+            Manage photo strip templates. Add new templates, then edit each
+            one's name, price, and number of shots. Set which are active for
+            the template picker.
           </p>
         </button>
       </div>
@@ -2652,7 +2777,7 @@ function handleDeleteTemplate(template: Template, event: Event) {
     <AdminFormModal
       v-model:open="showTemplatesModal"
       title="Templates"
-      description="Photo strip templates. These are fixed for now — the set below is what shows in the template picker."
+      description="Add templates, then use Edit details to change name, price, and shots. Toggle which ones appear in the picker."
       size="large"
     >
       <div class="templates-grid">
@@ -2661,6 +2786,7 @@ function handleDeleteTemplate(template: Template, event: Event) {
           :key="t.id"
           class="template-card template-card--custom"
           :class="{ 'template-card--inactive': t.isActive === false }"
+          @click="openEditTemplateDetails(t)"
         >
           <div class="template-menu-wrap template-menu-wrap--top-right">
             <button
@@ -2678,6 +2804,17 @@ function handleDeleteTemplate(template: Template, event: Event) {
               class="template-menu-dropdown"
               role="menu"
             >
+              <button
+                type="button"
+                role="menuitem"
+                class="template-menu-item"
+                @click.stop="
+                  openEditTemplateDetails(t);
+                  closeTemplateMenu();
+                "
+              >
+                Edit details…
+              </button>
               <button
                 type="button"
                 role="menuitem"
@@ -2716,6 +2853,11 @@ function handleDeleteTemplate(template: Template, event: Event) {
           </div>
           <TemplatePreview :template="t" size="mini" prefer-active-thumbnail />
           <p class="template-label">{{ t.name }}</p>
+          <p class="template-meta">
+            {{ templatePriceLabel(t.id) }} · {{ t.photoCount }} shot{{
+              t.photoCount === 1 ? "" : "s"
+            }}
+          </p>
 
           <div
             class="template-status-badge"
@@ -3129,6 +3271,100 @@ function handleDeleteTemplate(template: Template, event: Event) {
           </div>
         </div>
       </div>
+    </AdminFormModal>
+
+    <AdminFormModal
+      v-model:open="showEditTemplateModal"
+      :title="editingTemplate ? `Edit — ${editingTemplate.name}` : 'Edit template'"
+      description="Change this template's name, price, and how many photos the guest shoots."
+    >
+      <form
+        v-if="editingTemplate"
+        class="edit-template-form"
+        @submit.prevent="submitEditTemplateDetails"
+      >
+        <div class="form-row">
+          <div class="form-row-field form-row-field--full">
+            <label class="form-label">Template name</label>
+            <input
+              v-model="editTemplateName"
+              type="text"
+              class="form-input"
+              :class="{ 'keyboard-active': showEditNameKeyboard }"
+              placeholder="e.g. My Strip 5"
+              required
+              @click="handleEditNameClick"
+              @touchstart="handleEditNameClick"
+              @focus="handleEditNameClick"
+              @blur="handleEditNameBlur"
+              @keydown="handleEditNameKeyDown"
+            />
+            <div v-if="showEditNameKeyboard" class="keyboard-wrapper">
+              <OnScreenKeyboard
+                :model-value="editTemplateName"
+                input-type="text"
+                @update:model-value="updateEditTemplateName"
+                @enter="submitEditTemplateDetails"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row form-row--layout-and-number">
+          <div class="form-row-field">
+            <label class="form-label">Price / cost (₱)</label>
+            <input
+              v-model.number="editTemplatePrice"
+              type="number"
+              class="form-input"
+              min="0"
+              step="0.01"
+              placeholder="0"
+            />
+          </div>
+          <div class="form-row-field">
+            <label class="form-label">Number of shots</label>
+            <input
+              v-model.number="editTemplateShots"
+              type="number"
+              class="form-input"
+              min="1"
+              :max="editShotPlan.cells"
+            />
+          </div>
+        </div>
+
+        <p class="form-hint form-hint-block">
+          <strong>
+            {{ editShotPlan.cells }} cells → {{ editShotPlan.shots }} shot{{
+              editShotPlan.shots === 1 ? "" : "s"
+            }}
+            <template v-if="editShotPlan.copies > 1">
+              × {{ editShotPlan.copies }} copies
+            </template>
+          </strong>
+          <span v-if="!editShotPlan.even" class="form-error">
+            — {{ editShotPlan.shots }} doesn't divide evenly into
+            {{ editShotPlan.cells }} cells, so the last copy will be partial.
+          </span>
+        </p>
+        <p class="form-hint form-hint-block">
+          Shots is how many photos the guest takes. Set it lower than the
+          sheet's cells to repeat the same shots as copies (for example 4
+          shots on a 12-cell sheet prints 3 copies).
+        </p>
+
+        <div class="modal-actions">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            @click="closeEditTemplateDetails"
+          >
+            Cancel
+          </button>
+          <button type="submit" class="btn btn-primary">Save details</button>
+        </div>
+      </form>
     </AdminFormModal>
 
     <!-- Photo-slot layout editor. Positions where each capture lands on
@@ -3939,6 +4175,7 @@ function handleDeleteTemplate(template: Template, event: Event) {
 
 .template-card--custom {
   position: relative;
+  cursor: pointer;
 }
 
 .template-card--inactive {
@@ -4077,6 +4314,20 @@ function handleDeleteTemplate(template: Template, event: Event) {
   color: var(--color-brown-dark);
   margin: 0.75rem 0 0 0;
   text-align: center;
+}
+
+.template-meta {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  color: var(--color-brown-light);
+  margin: 0.2rem 0 0 0;
+  text-align: center;
+}
+
+.edit-template-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
 }
 
 .add-template-card {
@@ -4356,7 +4607,8 @@ function handleDeleteTemplate(template: Template, event: Event) {
   height: auto;
   border: 2px solid var(--color-brown-light);
   border-radius: 8px;
-  background: #fff;
+  background:
+    repeating-conic-gradient(#e9e2d2 0% 25%, #f7f2e6 0% 50%) 50% / 16px 16px;
   display: block;
 }
 

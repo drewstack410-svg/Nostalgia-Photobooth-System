@@ -16,6 +16,7 @@ import type { Template } from "@/stores/photobooth";
 import { getPaperSizePx, getTemplateCellRects, occupancyFill } from "@/utils/printLayout";
 import { getFrameWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
+import { prepareFrameDataUrl } from "@/utils/pngAlpha";
 
 const props = withDefaults(
   defineProps<{
@@ -62,17 +63,24 @@ const boxStyle = computed(() => {
 // what comes out of the printer. Null until loaded / when unavailable.
 const frameWindows = ref<WindowRect[] | null>(null);
 const frameSize = ref<{ w: number; h: number } | null>(null);
+const displayFrameUrl = ref("");
 
 watch(
   () => props.template.frameImageUrl,
   async (url) => {
     frameWindows.value = null;
     frameSize.value = null;
+    displayFrameUrl.value = url || "";
     if (!url) return;
     const expected =
       Math.max(1, props.template.frameRows ?? 0) *
       Math.max(1, props.template.frameCols ?? 0);
     const found = await getFrameWindows(url, expected > 1 ? expected : undefined);
+    try {
+      displayFrameUrl.value = await prepareFrameDataUrl(url);
+    } catch {
+      /* keep the original src */
+    }
     if (!found) return;
     // Window rects are in the frame's pixel space; record its size so
     // they can be expressed as percentages of the sheet below.
@@ -187,9 +195,9 @@ const activeCells = computed(() => {
             photos beneath, exactly as the print composite draws it
             (stretched to the print area, NOT contain-fit). -->
     <img
-      v-if="template.frameImageUrl"
+      v-if="displayFrameUrl"
       class="tlp-frame"
-      :src="template.frameImageUrl"
+      :src="displayFrameUrl"
       alt=""
       aria-hidden="true"
     />
@@ -209,8 +217,9 @@ const activeCells = computed(() => {
 <style scoped>
 .tlp {
   position: relative;
-  /* White sheet, same as the print canvas's background fill. */
-  background: #ffffff;
+  /* Transparent sheet so PNG alpha (and knocked-out white gutters)
+     reveal the page behind, matching the digital gallery. */
+  background: transparent;
   overflow: hidden;
   box-shadow: var(--shadow-medium);
 }

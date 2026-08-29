@@ -272,6 +272,13 @@
     return views.find((v) => v.key === key);
   }
 
+  function isPngView(view) {
+    if (!view) return false;
+    if (view.kind === "image") return true;
+    const name = `${view.downloadName || ""} ${view.url || ""}`;
+    return /\.png(\?|$)/i.test(name);
+  }
+
   function setActive(key) {
     activeKey = key;
     Array.from(tabsEl.children).forEach((el) => {
@@ -283,6 +290,7 @@
     const isGifVideo = view && view.kind === "gif";
     stageEl.classList.toggle("is-video", !!isGifVideo);
     stageEl.classList.toggle("is-highlight-strip", false);
+    stageEl.classList.toggle("is-png", isPngView(view));
     stageEl.style.removeProperty("--strip-ar");
     if (stripResizeCleanup) {
       stripResizeCleanup();

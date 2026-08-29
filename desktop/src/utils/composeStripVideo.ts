@@ -179,7 +179,7 @@ export async function composeStripVideo(opts: {
   canvas.height = height;
   host.appendChild(canvas);
   const ctx = canvas.getContext("2d", {
-    alpha: false,
+    alpha: true,
     colorSpace: "srgb",
     willReadFrequently: true,
   });
