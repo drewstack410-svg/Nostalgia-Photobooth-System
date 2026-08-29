@@ -82,6 +82,27 @@ function r2DevProxy() {
             })
           return
         }
+        if (url.startsWith('/r2/') && req.method === 'GET') {
+          const r2 = loadR2()
+          const cfg = r2.getR2Config()
+          const rest = url.slice('/r2/'.length)
+          const target = `${cfg.publicUrl}/${rest}`
+          void fetch(target)
+            .then(async (up) => {
+              const buf = Buffer.from(await up.arrayBuffer())
+              res.statusCode = up.status
+              const contentType = up.headers.get('content-type')
+              if (contentType) res.setHeader('Content-Type', contentType)
+              res.setHeader('Cache-Control', 'public, max-age=300')
+              res.end(buf)
+            })
+            .catch((err: unknown) => {
+              res.statusCode = 502
+              res.setHeader('Content-Type', 'text/plain')
+              res.end(err instanceof Error ? err.message : String(err))
+            })
+          return
+        }
         const sessionMatch = url.match(/^\/session\/([a-zA-Z0-9]+)\.json$/)
         if (sessionMatch && req.method === 'GET') {
           const r2 = loadR2()

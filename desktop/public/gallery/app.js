@@ -1249,12 +1249,23 @@
     return `nostalgia_highlight${n}.${ext}`;
   }
 
-  // Public image URL. Short-code sessions use R2 from config.js.
-  // Older printed QR codes still pass `base` or Cloudinary `cloud`.
+  function mediaKey(publicId) {
+    const raw = String(publicId || "").trim();
+    if (/^https?:\/\//i.test(raw)) {
+      try {
+        return new URL(raw).pathname.replace(/^\/+/, "");
+      } catch {
+        /* fall through */
+      }
+    }
+    return raw.replace(/^\/+/, "");
+  }
+
+  // Same-origin `/r2/...` so phones never have to resolve r2.dev
+  // (that host is what Chrome reports as ERR_NAME_NOT_RESOLVED).
   function imageUrl(publicId, options = {}) {
     if (r2Base) {
-      const key = String(publicId || "").replace(/^\/+/, "");
-      return `${r2Base}/${key}`;
+      return `/r2/${mediaKey(publicId)}`;
     }
     return cloudinaryImageUrl(cloud, publicId, options);
   }
