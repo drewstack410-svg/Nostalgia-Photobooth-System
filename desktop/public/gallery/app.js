@@ -38,6 +38,7 @@
   const lightboxClose = document.getElementById("hlLightboxClose");
   let lightboxCleanup = null;
   let stripResizeCleanup = null;
+  let videoSrcCleanup = null;
 
   if (loadingEl) loadingEl.hidden = false;
 
@@ -357,8 +358,6 @@
     probe.src = view.url;
     updateSaveLabel(view);
   }
-
-  let videoSrcCleanup = null;
 
   function revokeVideoSrc() {
     if (!videoSrcCleanup) return;
