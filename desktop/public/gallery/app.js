@@ -77,7 +77,7 @@
   if (printId) {
     views.push({
       key: "template",
-      label: "Template",
+      label: "Strips",
       kind: "image",
       url: imageUrl(printId),
       downloadUrl: imageUrl(printId, {
@@ -146,7 +146,7 @@
   if (views.length === 0 && highlightUrls.length > 0) {
     views.push({
       key: "template",
-      label: "Template",
+      label: "Strips",
       kind: "image",
       url: "",
       downloadUrl: highlightUrls[0],
@@ -849,7 +849,7 @@
       loadingEl.hidden = false;
       const frame = document.createElement("img");
       frame.className = "highlight-strip-frame";
-      frame.alt = view.label || "Template";
+      frame.alt = view.label || "Strips";
       frame.onload = () => {
         loadingEl.hidden = true;
         watchStripSize(frame.naturalWidth, frame.naturalHeight);
