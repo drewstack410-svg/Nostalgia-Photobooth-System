@@ -436,7 +436,10 @@ async function encodeWithMediaRecorder(
   durationMs: number,
 ): Promise<string | null> {
   const mime = pickRecorderMime();
-  if (!mime || typeof canvas.captureStream !== "function") return null;
+  // iPhones (QR scans) cannot play WebM. Skip this fallback unless it is MP4.
+  if (!mime || !/mp4/i.test(mime) || typeof canvas.captureStream !== "function") {
+    return null;
+  }
 
   paint();
   const stream = canvas.captureStream(FPS);

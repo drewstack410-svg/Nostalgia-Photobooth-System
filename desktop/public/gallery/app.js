@@ -102,8 +102,32 @@
   function framedStripUrl() {
     const named = highlightUrls.find((u) => /highlight-strip/i.test(u));
     if (named) return named;
+    const mp4 = highlightUrls.find((u) => /\.mp4(\?|$)/i.test(u));
+    if (mp4) return mp4;
     if (highlightUrls.length === 1) return highlightUrls[0];
     return "";
+  }
+
+  function inAppBrowserName() {
+    const ua = navigator.userAgent || "";
+    if (/Instagram/i.test(ua)) return "Instagram";
+    if (/FBAN|FBAV|FB_IAB|FBOS/i.test(ua)) return "Facebook";
+    if (/Line\//i.test(ua)) return "LINE";
+    if (/MicroMessenger/i.test(ua)) return "WeChat";
+    if (/Snapchat/i.test(ua)) return "Snapchat";
+    if (/TikTok|musical_ly|Bytedance/i.test(ua)) return "TikTok";
+    return "";
+  }
+
+  if (footnoteEl) {
+    const appName = inAppBrowserName();
+    if (appName) {
+      footnoteEl.hidden = false;
+      footnoteEl.textContent =
+        "Video may not play inside " +
+        appName +
+        ". Tap ⋯ and choose Open in Safari or Chrome.";
+    }
   }
 
   // GIF tab — same button as before, now plays the framed strip video.
@@ -278,6 +302,7 @@
     if (filmstripEl) filmstripEl.hidden = true;
     if (filmstripEl) filmstripEl.innerHTML = "";
     closeHighlightLightbox();
+    revokeVideoSrc();
     renderStage(view);
   }
 
@@ -333,8 +358,54 @@
     updateSaveLabel(view);
   }
 
-  function renderGifVideo(view) {
+  let videoSrcCleanup = null;
+
+  function revokeVideoSrc() {
+    if (!videoSrcCleanup) return;
+    videoSrcCleanup();
+    videoSrcCleanup = null;
+  }
+
+  function guessVideoMime(url, header) {
+    const h = String(header || "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    if (h.startsWith("video/")) return h;
+    if (/\.webm(\?|$)/i.test(url)) return "video/webm";
+    return "video/mp4";
+  }
+
+  // Phone cameras / in-app QR browsers often cannot stream MP4 through
+  // the Vercel → R2 rewrite (no Range 206). Fetch the file, then play
+  // a blob URL — same origin, explicit video/mp4, works in Safari.
+  async function bindVideoSrc(video, url) {
+    revokeVideoSrc();
+    const probe = guessVideoMime(url, "");
+    if (
+      probe === "video/webm" &&
+      video.canPlayType &&
+      !video.canPlayType("video/webm")
+    ) {
+      throw new Error("webm-unsupported");
+    }
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error("video fetch " + res.status);
+      const buf = await res.arrayBuffer();
+      const type = guessVideoMime(url, res.headers.get("content-type"));
+      const obj = URL.createObjectURL(new Blob([buf], { type }));
+      videoSrcCleanup = () => URL.revokeObjectURL(obj);
+      video.src = obj;
+    } catch (err) {
+      if (err && err.message === "webm-unsupported") throw err;
+      video.src = url;
+    }
+  }
+
+  async function renderGifVideo(view) {
     loadingEl.hidden = false;
+    errorEl.hidden = true;
     updateSaveLabel(view);
     const url = view.url || framedStripUrl() || highlightUrls[0];
     if (!url) {
@@ -343,9 +414,11 @@
       return;
     }
 
+    const wrap = document.createElement("div");
+    wrap.className = "gif-video-wrap";
+
     const video = document.createElement("video");
     video.className = "stage-img stage-video-gif";
-    video.src = url;
     video.muted = true;
     video.loop = true;
     video.playsInline = true;
@@ -356,22 +429,77 @@
     video.setAttribute("controlslist", "nodownload");
     video.setAttribute("aria-label", "Strip video");
 
-    video.addEventListener("loadeddata", () => {
+    const playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.className = "video-play-btn";
+    playBtn.hidden = true;
+    playBtn.setAttribute("aria-label", "Play video");
+    playBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="36" height="36" fill="currentColor"><polygon points="7,4 21,12 7,20"/></svg>';
+
+    function showPlay() {
+      playBtn.hidden = false;
+    }
+    function hidePlay() {
+      playBtn.hidden = true;
+    }
+
+    video.addEventListener("playing", () => {
       if (activeKey !== view.key) return;
       loadingEl.hidden = true;
-      video.play().catch(() => {});
+      errorEl.hidden = true;
+      hidePlay();
+    });
+    video.addEventListener("pause", () => {
+      if (activeKey !== view.key) return;
+      showPlay();
     });
     video.addEventListener("error", () => {
       if (activeKey !== view.key) return;
       loadingEl.hidden = true;
       errorEl.hidden = false;
     });
+    playBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      video.play().catch(() => showPlay());
+    });
     video.addEventListener("click", () => {
-      if (video.paused) video.play().catch(() => {});
+      if (video.paused) video.play().catch(() => showPlay());
       else video.pause();
     });
 
-    stageInner.appendChild(video);
+    wrap.appendChild(video);
+    wrap.appendChild(playBtn);
+    stageInner.appendChild(wrap);
+
+    try {
+      await bindVideoSrc(video, url);
+    } catch (err) {
+      if (activeKey !== view.key) return;
+      loadingEl.hidden = true;
+      errorEl.hidden = false;
+      if (err && err.message === "webm-unsupported" && footnoteEl) {
+        footnoteEl.hidden = false;
+        footnoteEl.textContent =
+          "This clip is WebM, which iPhone cannot play. Take a new session so the booth saves MP4.";
+      }
+      return;
+    }
+
+    const attempt = video.play();
+    if (attempt && typeof attempt.then === "function") {
+      attempt
+        .then(() => {
+          if (activeKey !== view.key) return;
+          loadingEl.hidden = true;
+          hidePlay();
+        })
+        .catch(() => {
+          if (activeKey !== view.key) return;
+          loadingEl.hidden = true;
+          showPlay();
+        });
+    }
   }
 
   function updateSaveLabel(view) {

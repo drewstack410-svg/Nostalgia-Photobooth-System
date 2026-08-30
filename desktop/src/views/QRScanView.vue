@@ -63,15 +63,10 @@ function resolveShareUrl(): string | null {
   if (!sessionId) return null;
   const mine = store.recentStrips.filter((s) => s.sessionId === sessionId);
   if (!mine.length) return null;
-  // Prefer the composite (all photos in one image), else any capture.
-  const best =
-    mine.find((s) => s.shareableUrl) ??
-    mine.find((s) => s.cloudinaryUrl) ??
-    mine.find((s) => s.cloudinaryPhotos?.[0]?.url);
-  if (!best) return null;
-  return (
-    best.shareableUrl || best.cloudinaryUrl || best.cloudinaryPhotos?.[0]?.url || null
-  );
+  // Only the short gallery page — never a raw R2/Cloudinary file.
+  // Phones often cannot resolve r2.dev, and a lone PNG/MP4 has no GIF tab.
+  const gallery = mine.find((s) => s.shareableUrl);
+  return gallery?.shareableUrl || null;
 }
 
 function returnToStart() {
@@ -193,6 +188,10 @@ onUnmounted(() => {
 
 <template>
   <div class="qr-scan-screen">
+    <button type="button" class="wood-btn done-btn" @click="returnToStart">
+      Done
+    </button>
+
     <div class="qr-content">
       <h1 class="qr-title">
         SCAN THIS QR CODE<br />
@@ -418,6 +417,16 @@ onUnmounted(() => {
   color: var(--color-brown-dark);
   text-align: center;
   line-height: 1.4;
+}
+
+/* Same placement as PrintingView so it clears the corner ornament. */
+.done-btn {
+  position: absolute;
+  top: 2.5rem;
+  right: 7rem;
+  font-size: 1.5rem;
+  padding: 0.65rem 2.4rem;
+  z-index: 10;
 }
 
 /* No short-viewport breakpoint any more — the fractions above already
