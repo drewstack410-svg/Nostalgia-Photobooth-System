@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 // Cloudinary unsigned uploads are parked. Guest copies now go to Cloudflare R2.
 // import { uploadToCloudinary } from "@/services/cloudinary";
-import { uploadToR2 } from "@/services/r2";
+import { uploadToR2, uploadBytesToR2 } from "@/services/r2";
 import {
   getPaperSizePx,
   getTemplateCellRects,
@@ -18,6 +18,7 @@ import type { WindowRect } from "@/utils/frameWindows";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { buildSessionGif } from "@/utils/sessionGif";
 import { composeStripVideo } from "@/utils/composeStripVideo";
+import { mediaUrlToBytes } from "@/utils/mediaBytes";
 import {
   prepareFrameCanvas,
   prepareFrameDataUrl,
@@ -135,26 +136,6 @@ async function printSavedPhoto(filePath: string, copiesOverride?: number) {
 // 2×2/Heart Grid/4×2 → 4×6 portrait, Horizontal Strip → 4×6
 // landscape). The composite canvas sizes itself from
 // `getPaperSizePx(template.paperSize)` instead of measuring artwork.
-
-function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; ext: string } | null {
-  const match = /^data:([^,]+),(.*)$/s.exec(dataUrl);
-  if (!match) return null;
-  const meta = match[1];
-  const payload = match[2];
-  const isBase64 = /;base64$/i.test(meta);
-  const contentType = (
-    meta.replace(/;base64$/i, "").split(";")[0] || ""
-  ).toLowerCase();
-  const ext = contentType.includes("mp4")
-    ? "mp4"
-    : contentType.includes("webm")
-      ? "webm"
-      : "mp4";
-  const raw = isBase64 ? atob(payload) : payload;
-  const bytes = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-  return { bytes, ext };
-}
 
 function loadNaturalSize(
   src: string,
@@ -1186,50 +1167,75 @@ async function saveComposite() {
           name: `highlight-${i + 1}`,
         }));
         const toSave = stripItem ? [stripItem, ...fullItems] : fullItems;
-
+        type PreparedClip = {
+          name: string;
+          kind: "strip" | "full";
+          bytes: Uint8Array;
+          mime: string;
+          ext: string;
+        };
+        const prepared: PreparedClip[] = [];
         for (const item of toSave) {
+          const parsed = await mediaUrlToBytes(item.dataUrl);
+          if (!parsed) {
+            console.warn(`[Save] ${item.name} had no bytes to store`);
+            continue;
+          }
+          prepared.push({
+            name: item.name,
+            kind: item.name === "highlight-strip" ? "strip" : "full",
+            bytes: parsed.bytes,
+            mime: parsed.mime,
+            ext: parsed.ext,
+          });
+        }
+        if (!prepared.length) {
+          console.warn("[Save] No highlight clips to store locally or on R2");
+        }
+
+        for (const item of prepared) {
           if (sessionFolder && window.electronAPI?.saveSessionBytes) {
             try {
-              const parsed = dataUrlToBytes(item.dataUrl);
-              if (parsed) {
-                await window.electronAPI.saveSessionBytes({
-                  bytes: parsed.bytes,
-                  filename: `${sessionFolder}/${item.name}.${parsed.ext}`,
-                });
+              const r = await window.electronAPI.saveSessionBytes({
+                bytes: item.bytes,
+                filename: `${sessionFolder}/${item.name}.${item.ext}`,
+              });
+              if (r.success) {
+                console.log(`[Save] ${item.name} wrote to session folder:`, r.path);
+              } else {
+                console.warn(`[Save] ${item.name} session save failed:`, r.error);
               }
             } catch (e) {
               console.warn(`[Save] ${item.name} session save failed:`, e);
             }
           }
         }
-        if (stripItem && window.electronAPI?.saveHighlightVideo) {
-          try {
-            const parsed = dataUrlToBytes(stripItem.dataUrl);
-            if (parsed) {
-              const now = new Date();
-              const stamp = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getFullYear()).slice(-2)}`;
-              const time = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+        if (window.electronAPI?.saveHighlightVideo) {
+          const now = new Date();
+          const stamp = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getFullYear()).slice(-2)}`;
+          const time = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+          for (const item of prepared) {
+            try {
               const r = await window.electronAPI.saveHighlightVideo({
-                bytes: parsed.bytes,
-                filename: `${stamp}/highlight-strip-${time}.${parsed.ext}`,
+                bytes: item.bytes,
+                filename: `${stamp}/${item.name}-${time}.${item.ext}`,
               });
-              if (r.success) console.log("[Save] Strip video saved locally:", r.path);
-              else console.warn("[Save] Strip video local save failed:", r.error);
+              if (r.success) console.log(`[Save] ${item.name} saved locally:`, r.path);
+              else console.warn(`[Save] ${item.name} local save failed:`, r.error);
+            } catch (e) {
+              console.warn(`[Save] ${item.name} local save error:`, e);
             }
-          } catch (e) {
-            console.warn("[Save] Strip video local save error:", e);
           }
         }
 
-        async function uploadClip(
-          item: { dataUrl: string; name: string },
-        ): Promise<string | undefined> {
+        async function uploadClip(item: PreparedClip): Promise<string | undefined> {
           try {
             const publicId = `nostalgia_${sessionTs}_${item.name}_${Math.random()
               .toString(36)
               .substring(2, 8)}`;
-            const cr = await uploadToR2(
-              item.dataUrl,
+            const cr = await uploadBytesToR2(
+              item.bytes,
+              item.mime || `video/${item.ext}`,
               "nostalgia-photobooth",
               publicId,
             );
@@ -1245,14 +1251,12 @@ async function saveComposite() {
         }
 
         const stripIds: string[] = [];
-        if (stripItem) {
-          const id = await uploadClip(stripItem);
-          if (id) stripIds.push(id);
-        }
         const fullVidIds: string[] = [];
-        for (const item of fullItems) {
+        for (const item of prepared) {
           const id = await uploadClip(item);
-          if (id) fullVidIds.push(id);
+          if (!id) continue;
+          if (item.kind === "strip") stripIds.push(id);
+          else fullVidIds.push(id);
         }
         if (!stripIds.length && fullVidIds.length) {
           return { stripIds: fullVidIds, fullVidIds };

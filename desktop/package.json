@@ -53,6 +53,9 @@
       "!node_modules/@brick-a-brack/napi-canon-cameras/src/**/*",
       "!node_modules/@brick-a-brack/napi-canon-cameras/build/**/*"
     ],
+    "asarUnpack": [
+      "**/*.{mp4,webm,mov,m4v}"
+    ],
     "extraResources": [
       {
         "from": "public/luts",
@@ -74,6 +77,10 @@
       {
         "from": ".env",
         "to": ".env"
+      },
+      {
+        "from": "public/backgrounds",
+        "to": "backgrounds"
       }
     ],
     "mac": {

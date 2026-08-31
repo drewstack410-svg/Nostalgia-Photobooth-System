@@ -6,6 +6,7 @@
 
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { highlightedViewRect } from "./viewfinderCrop";
+import { objectUrlFromBlob } from "./mediaBytes";
 
 export type StripSlot = {
   x: number;
@@ -19,6 +20,8 @@ const FPS = 30;
 const FRAME_MS = 1000 / FPS;
 const MAX_EDGE = 1080;
 const MAX_MS = 16000;
+
+type AvcHwAccel = "no-preference" | "prefer-hardware" | "prefer-software";
 
 function even(n: number): number {
   return Math.max(2, n & ~1);
@@ -90,16 +93,6 @@ function drawCover(
   ctx.drawImage(media, sx, sy, sw, sh, x, y, w, h);
 }
 
-function blobToDataUrl(blob: Blob): Promise<string | null> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () =>
-      resolve(typeof reader.result === "string" ? reader.result : null);
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(blob);
-  });
-}
-
 function pickRecorderMime(): string {
   if (typeof MediaRecorder === "undefined") return "";
   const types = [
@@ -113,10 +106,16 @@ function pickRecorderMime(): string {
   return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
 }
 
+function pickRecorderMimePreferMp4(): string {
+  const mime = pickRecorderMime();
+  if (mime && /mp4/i.test(mime)) return mime;
+  return mime;
+}
+
 async function pickAvcCodec(
   width: number,
   height: number,
-): Promise<string | null> {
+): Promise<{ codec: string; hardwareAcceleration: AvcHwAccel } | null> {
   if (typeof VideoEncoder === "undefined") return null;
   const codecs = [
     "avc1.4D401F",
@@ -125,22 +124,26 @@ async function pickAvcCodec(
     "avc1.640028",
     "avc1.42001E",
   ];
-  for (const codec of codecs) {
-    try {
-      const probe = await VideoEncoder.isConfigSupported({
-        codec,
-        width,
-        height,
-        bitrate: 3_500_000,
-        framerate: FPS,
-        avc: { format: "avc" },
-      });
-      if (probe.supported) return codec;
-    } catch {
-      /* try next */
+  const modes: AvcHwAccel[] = ["prefer-hardware", "prefer-software", "no-preference"];
+  for (const hardwareAcceleration of modes) {
+    for (const codec of codecs) {
+      try {
+        const probe = await VideoEncoder.isConfigSupported({
+          codec,
+          width,
+          height,
+          bitrate: 3_500_000,
+          framerate: FPS,
+          avc: { format: "avc" },
+          hardwareAcceleration,
+        });
+        if (probe.supported) return { codec, hardwareAcceleration };
+      } catch {
+        /* try next */
+      }
     }
   }
-  return codecs[0];
+  return null;
 }
 
 function drawPngOverlay(
@@ -330,8 +333,8 @@ async function encodeWithVideoEncoder(
   durationMs: number,
 ): Promise<string | null> {
   if (typeof VideoEncoder === "undefined") return null;
-  const codec = await pickAvcCodec(width, height);
-  if (!codec) return null;
+  const picked = await pickAvcCodec(width, height);
+  if (!picked) return null;
 
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({
@@ -360,12 +363,13 @@ async function encodeWithVideoEncoder(
 
   try {
     encoder.configure({
-      codec,
+      codec: picked.codec,
       width,
       height,
       bitrate: 3_500_000,
       framerate: FPS,
       avc: { format: "avc" },
+      hardwareAcceleration: picked.hardwareAcceleration,
     });
   } catch (e) {
     console.warn("[StripVideo] VideoEncoder configure failed:", errText(e));
@@ -376,7 +380,9 @@ async function encodeWithVideoEncoder(
     }
     return null;
   }
-  console.log(`[StripVideo] VideoEncoder ${codec} ${width}x${height}`);
+  console.log(
+    `[StripVideo] VideoEncoder ${picked.codec} ${picked.hardwareAcceleration} ${width}x${height}`,
+  );
 
   const startedAt = performance.now();
   while (performance.now() - startedAt < durationMs) {
@@ -430,9 +436,9 @@ async function encodeWithVideoEncoder(
     return null;
   }
   const blob = new Blob([bytes], { type: "video/mp4" });
-  const dataUrl = await blobToDataUrl(blob);
+  const url = objectUrlFromBlob(blob);
   console.log(`[StripVideo] Ready ${Math.round(blob.size / 1024)}KB video/mp4`);
-  return dataUrl;
+  return url;
 }
 
 async function encodeWithMediaRecorder(
@@ -440,9 +446,10 @@ async function encodeWithMediaRecorder(
   paint: () => void,
   durationMs: number,
 ): Promise<string | null> {
-  const mime = pickRecorderMime();
-  // iPhones (QR scans) cannot play WebM. Skip this fallback unless it is MP4.
-  if (!mime || !/mp4/i.test(mime) || typeof canvas.captureStream !== "function") {
+  const mime = pickRecorderMimePreferMp4();
+  // Prefer MP4 for iPhone gallery playback. WebM still beats an empty
+  // clip on kiosks that have no H.264 encoder at all.
+  if (!mime || typeof canvas.captureStream !== "function") {
     return null;
   }
 
@@ -489,9 +496,9 @@ async function encodeWithMediaRecorder(
     return null;
   }
   const blob = new Blob(chunks, { type: mime });
-  const dataUrl = await blobToDataUrl(blob);
+  const url = objectUrlFromBlob(blob);
   console.log(
     `[StripVideo] Ready ${Math.round(blob.size / 1024)}KB ${mime}`,
   );
-  return dataUrl;
+  return url;
 }

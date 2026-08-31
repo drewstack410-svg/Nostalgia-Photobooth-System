@@ -8,6 +8,14 @@ const paymentMiddleware = require('./paymentMiddleware');
 const pocketbaseServer = require('./pocketbaseServer');
 const r2 = require('./r2Upload');
 
+// Must be set before app ready. Packaged kiosks often sit on the GPU
+// blocklist or have no Quick Sync driver; without these switches
+// VideoEncoder produces empty highlight clips.
+app.commandLine.appendSwitch("ignore-gpu-blocklist");
+app.commandLine.appendSwitch("enable-gpu-rasterization");
+app.commandLine.appendSwitch("enable-accelerated-video-encode");
+app.commandLine.appendSwitch("enable-accelerated-video-decode");
+
 function loadRuntimeEnv() {
   let userEnv = "";
   let packaged = "";
@@ -197,6 +205,7 @@ function createWindow() {
         "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
         "connect-src 'self' https://*.r2.dev https://*.r2.cloudflarestorage.com http://127.0.0.1:8090 http://localhost:8090 ws://127.0.0.1:8090 ws://localhost:8090; " +
         "img-src 'self' data: blob: https: https://*.r2.dev https://*.r2.cloudflarestorage.com; " +
+        "media-src 'self' blob: data:; " +
         "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
         "font-src 'self' data: https://fonts.gstatic.com;";
@@ -223,7 +232,7 @@ function createWindow() {
       // Add new CSP meta tag (Cloudflare R2 + PocketBase)
       const meta = document.createElement('meta');
       meta.httpEquiv = 'Content-Security-Policy';
-      meta.content = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self' https://*.r2.dev https://*.r2.cloudflarestorage.com http://127.0.0.1:8090 http://localhost:8090 ws://127.0.0.1:8090 ws://localhost:8090; img-src 'self' data: blob: https: https://*.r2.dev https://*.r2.cloudflarestorage.com; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';";
+      meta.content = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self' https://*.r2.dev https://*.r2.cloudflarestorage.com http://127.0.0.1:8090 http://localhost:8090 ws://127.0.0.1:8090 ws://localhost:8090; img-src 'self' data: blob: https: https://*.r2.dev https://*.r2.cloudflarestorage.com; media-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';";
       document.getElementsByTagName('head')[0].appendChild(meta);
       void 0;
     `,
@@ -819,6 +828,23 @@ ipcMain.handle("r2:upload", async (_event, payload) => {
   });
 });
 
+ipcMain.handle("r2:upload-bytes", async (_event, payload) => {
+  try {
+    return await r2.uploadBuffer({
+      body: r2.toNodeBuffer(payload?.bytes),
+      contentType: payload?.contentType,
+      folder: payload?.folder,
+      publicId: payload?.publicId,
+    });
+  } catch (error) {
+    console.error("[R2] upload-bytes failed:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
 // IPC Handlers
 ipcMain.handle("save-photo", async (event, { imageData, filename }) => {
   try {
@@ -962,6 +988,41 @@ ipcMain.handle("get-title-background", async (event, arg) => {
     return { success: true, bytes: buffer, mime, mediaType };
   } catch (error) {
     console.error("[Main] Error reading title background:", error);
+    return { success: false, error: error.message, bytes: null, mime: null, mediaType: null };
+  }
+});
+
+function packagedBackgroundFile(slot) {
+  const name =
+    slot === "payment"
+      ? "default-payment-background.mp4"
+      : "default-title-background.mp4";
+  const candidates = [
+    path.join(process.resourcesPath || "", "backgrounds", name),
+    path.join(process.resourcesPath || "", "app.asar.unpacked", "dist", "backgrounds", name),
+    path.join(app.getAppPath(), "dist", "backgrounds", name),
+    path.join(__dirname, "..", "dist", "backgrounds", name),
+    path.join(__dirname, "..", "public", "backgrounds", name),
+  ];
+  return candidates.find((p) => {
+    try {
+      return p && fs.existsSync(p);
+    } catch {
+      return false;
+    }
+  }) || null;
+}
+
+ipcMain.handle("get-packaged-background", async (_event, arg) => {
+  const empty = { success: true, bytes: null, mime: null, mediaType: null };
+  try {
+    const filePath = packagedBackgroundFile(arg && arg.slot);
+    if (!filePath) return empty;
+    const buffer = fs.readFileSync(filePath);
+    console.log(`[Main] Packaged ${arg && arg.slot} background: ${filePath} (${buffer.length} bytes)`);
+    return { success: true, bytes: buffer, mime: "video/mp4", mediaType: "video" };
+  } catch (error) {
+    console.error("[Main] Error reading packaged background:", error);
     return { success: false, error: error.message, bytes: null, mime: null, mediaType: null };
   }
 });
@@ -1267,8 +1328,12 @@ ipcMain.handle("save-session-bytes", async (event, { bytes, filename }) => {
       return { success: false, error: "Invalid filename" };
     }
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, Buffer.from(bytes));
-    console.log(`[Session] Wrote ${filename} (${bytes.length} bytes)`);
+    const buffer = r2.toNodeBuffer(bytes);
+    if (!buffer.length) {
+      return { success: false, error: "Decoded 0 bytes" };
+    }
+    fs.writeFileSync(filePath, buffer);
+    console.log(`[Session] Wrote ${filename} (${buffer.length} bytes)`);
     return { success: true, path: filePath };
   } catch (error) {
     console.error("[Session] Error saving bytes:", error);
@@ -1278,12 +1343,39 @@ ipcMain.handle("save-session-bytes", async (event, { bytes, filename }) => {
 
 // Highlight clips live under Videos/NostalgiaPhotobooth so they are
 // not mixed into the Pictures photo dumps.
+function highlightVideosDir() {
+  const candidates = [];
+  try {
+    candidates.push(path.join(app.getPath("videos"), "NostalgiaPhotobooth"));
+  } catch (err) {
+    console.warn("[Highlight] Videos path unavailable:", err.message);
+  }
+  candidates.push(
+    path.join(app.getPath("pictures"), "NostalgiaPhotobooth", "videos"),
+  );
+  try {
+    candidates.push(path.join(app.getPath("userData"), "videos"));
+  } catch (_) {
+    /* ignore */
+  }
+  let lastError = null;
+  for (const dir of candidates) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Could not create a videos folder");
+}
+
 ipcMain.handle("save-highlight-video", async (_event, { bytes, filename }) => {
   try {
     if (!bytes || !filename) {
       return { success: false, error: "Missing bytes or filename" };
     }
-    const videosDir = path.join(app.getPath("videos"), "NostalgiaPhotobooth");
+    const videosDir = highlightVideosDir();
     const safeRel = String(filename).replace(/\\/g, "/").replace(/^\/+/, "");
     if (!safeRel || safeRel.includes("..")) {
       return { success: false, error: "Invalid filename" };
@@ -1293,8 +1385,12 @@ ipcMain.handle("save-highlight-video", async (_event, { bytes, filename }) => {
       return { success: false, error: "Invalid filename" };
     }
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, Buffer.from(bytes));
-    console.log(`[Highlight] Saved local video: ${filePath} (${bytes.length} bytes)`);
+    const buffer = r2.toNodeBuffer(bytes);
+    if (!buffer.length) {
+      return { success: false, error: "Decoded 0 bytes" };
+    }
+    fs.writeFileSync(filePath, buffer);
+    console.log(`[Highlight] Saved local video: ${filePath} (${buffer.length} bytes)`);
     return { success: true, path: filePath };
   } catch (error) {
     console.error("[Highlight] Error saving local video:", error);

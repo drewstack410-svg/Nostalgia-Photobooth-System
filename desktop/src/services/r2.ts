@@ -129,3 +129,66 @@ export async function uploadToR2(
     return { success: false, error };
   }
 }
+
+function ipcBytes(bytes: Uint8Array): Uint8Array {
+  const out = new Uint8Array(bytes.byteLength);
+  out.set(bytes);
+  return out;
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  const chunk = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const slice = bytes.subarray(i, i + chunk);
+    binary += String.fromCharCode.apply(null, Array.from(slice));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Upload a video/binary without routing it through a giant data URL.
+ * Used for highlight clips (blob: URLs → bytes → R2).
+ */
+export async function uploadBytesToR2(
+  bytes: Uint8Array,
+  contentType: string,
+  folder: string = "nostalgia-photobooth",
+  publicId?: string,
+): Promise<CloudUploadResult> {
+  const type = contentType || "application/octet-stream";
+  console.log("[R2] Starting bytes upload...", {
+    folder,
+    publicId,
+    bytes: bytes.byteLength,
+    type,
+  });
+
+  if (window.electronAPI?.uploadToR2Bytes) {
+    const result = await window.electronAPI.uploadToR2Bytes({
+      bytes: ipcBytes(bytes),
+      contentType: type,
+      folder,
+      publicId,
+    });
+    if (result.success) {
+      console.log("[R2] Bytes upload successful:", result.url);
+    } else {
+      console.warn("[R2] Bytes upload failed:", result.error);
+    }
+    return result;
+  }
+
+  try {
+    return await uploadToR2(
+      `data:${type};base64,${uint8ToBase64(bytes)}`,
+      folder,
+      publicId,
+    );
+  } catch (err) {
+    const error =
+      err instanceof Error ? err.message : "R2 bytes upload failed";
+    console.error("[R2] Bytes upload error:", err);
+    return { success: false, error };
+  }
+}

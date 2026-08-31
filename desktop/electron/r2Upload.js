@@ -20,7 +20,61 @@ function envFileCandidates() {
       out.push(path.join(process.resourcesPath, ".env"));
     }
   } catch (_) { /* ignore */ }
+  try {
+    const { app } = require("electron");
+    if (app?.getPath) {
+      out.unshift(path.join(app.getPath("userData"), ".env"));
+    }
+  } catch (_) { /* not running under Electron */ }
   return out;
+}
+
+/**
+ * Electron IPC + contextBridge often delivers a Uint8Array, an
+ * ArrayBuffer, a Node Buffer JSON shape, or a numeric-keyed object.
+ * `Buffer.from(mystery)` is not safe for all of those.
+ */
+function toNodeBuffer(bytes) {
+  if (bytes == null) {
+    throw new Error("No bytes");
+  }
+  if (Buffer.isBuffer(bytes)) return bytes;
+  if (bytes instanceof ArrayBuffer) return Buffer.from(bytes);
+  if (ArrayBuffer.isView(bytes)) {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  }
+  if (typeof bytes === "string") {
+    return Buffer.from(bytes, "base64");
+  }
+  if (typeof bytes === "object") {
+    if (bytes.type === "Buffer" && Array.isArray(bytes.data)) {
+      return Buffer.from(bytes.data);
+    }
+    const len = Number(bytes.byteLength ?? bytes.length ?? 0);
+    if (len > 0 && bytes.buffer instanceof ArrayBuffer) {
+      return Buffer.from(bytes.buffer, bytes.byteOffset || 0, len);
+    }
+    if (len > 0 && typeof bytes[0] === "number") {
+      const out = Buffer.allocUnsafe(len);
+      for (let i = 0; i < len; i++) out[i] = bytes[i] & 0xff;
+      return out;
+    }
+  }
+  throw new Error(`Cannot convert ${typeof bytes} to Buffer`);
+}
+
+function extFromContentType(contentType) {
+  const type = (contentType || "").toLowerCase();
+  if (type.includes("json")) return "json";
+  if (type.includes("mp4") || type.includes("m4v") || type.includes("avc")) {
+    return "mp4";
+  }
+  if (type.includes("webm")) return "webm";
+  if (type.includes("png")) return "png";
+  if (type.includes("gif")) return "gif";
+  if (type.includes("webp")) return "webp";
+  if (type.includes("jpeg") || type.includes("jpg")) return "jpg";
+  return "bin";
 }
 
 function loadEnvFile(filePath) {
@@ -197,8 +251,8 @@ function httpsRequest({ method, url, headers, body, timeoutMs = 4000 }) {
   });
 }
 
-function httpsPut(url, headers, body) {
-  return httpsRequest({ method: "PUT", url, headers, body, timeoutMs: 30000 });
+function httpsPut(url, headers, body, timeoutMs = 30000) {
+  return httpsRequest({ method: "PUT", url, headers, body, timeoutMs });
 }
 
 /**
@@ -332,12 +386,13 @@ async function pingR2() {
 
 /**
  * @param {object} opts
- * @param {string} opts.imageDataUrl
+ * @param {Buffer|Uint8Array|ArrayBuffer} opts.body
+ * @param {string} [opts.contentType]
  * @param {string} [opts.folder]
  * @param {string} [opts.publicId]
  * @returns {Promise<{success:boolean,url?:string,publicId?:string,error?:string}>}
  */
-async function uploadToR2({ imageDataUrl, folder, publicId }) {
+async function uploadBuffer({ body, contentType, folder, publicId }) {
   const cfg = getR2Config();
   if (!cfg.ok) {
     return {
@@ -347,21 +402,28 @@ async function uploadToR2({ imageDataUrl, folder, publicId }) {
   }
 
   try {
-    const { contentType, body, ext } = parseDataUrl(imageDataUrl);
+    const buf = toNodeBuffer(body);
+    if (!buf.length) {
+      return { success: false, error: "Empty upload body" };
+    }
+    const type =
+      (contentType || "application/octet-stream").split(";")[0].trim() ||
+      "application/octet-stream";
+    const ext = extFromContentType(type);
     const key = objectKey(folder || cfg.folder, publicId, ext);
     const region = "auto";
     const service = "s3";
     const now = new Date();
     const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
     const dateStamp = amzDate.slice(0, 8);
-    const payloadHash = sha256Hex(body);
+    const payloadHash = sha256Hex(buf);
     const host = new URL(cfg.endpoint).host;
     const canonicalUri = `/${encodePath(`${cfg.bucket}/${key}`)}`;
     const putUrl = `${cfg.endpoint}/${encodePath(`${cfg.bucket}/${key}`)}`;
 
     const headersToSign = {
       host,
-      "content-type": contentType,
+      "content-type": type,
       "x-amz-content-sha256": payloadHash,
       "x-amz-date": amzDate,
     };
@@ -396,12 +458,16 @@ async function uploadToR2({ imageDataUrl, folder, publicId }) {
 
     const authorization = `AWS4-HMAC-SHA256 Credential=${cfg.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
+    const timeoutMs = Math.min(
+      180000,
+      Math.max(45000, 15000 + Math.ceil(buf.length / 4000)),
+    );
     const res = await httpsPut(
       putUrl,
       {
         Host: host,
-        "Content-Type": contentType,
-        "Content-Length": body.length,
+        "Content-Type": type,
+        "Content-Length": buf.length,
         "x-amz-content-sha256": payloadHash,
         "x-amz-date": amzDate,
         Authorization: authorization,
@@ -410,7 +476,8 @@ async function uploadToR2({ imageDataUrl, folder, publicId }) {
             ? "public, max-age=300"
             : "public, max-age=31536000, immutable",
       },
-      body,
+      buf,
+      timeoutMs,
     );
 
     if (res.status < 200 || res.status >= 300) {
@@ -422,8 +489,33 @@ async function uploadToR2({ imageDataUrl, folder, publicId }) {
     }
 
     const url = `${cfg.publicUrl}/${key}`;
-    console.log("[R2] Uploaded:", url);
+    console.log("[R2] Uploaded:", url, `(${buf.length} bytes)`);
     return { success: true, url, publicId: key };
+  } catch (err) {
+    console.error("[R2] Upload error:", err);
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * @param {object} opts
+ * @param {string} opts.imageDataUrl
+ * @param {string} [opts.folder]
+ * @param {string} [opts.publicId]
+ * @returns {Promise<{success:boolean,url?:string,publicId?:string,error?:string}>}
+ */
+async function uploadToR2({ imageDataUrl, folder, publicId }) {
+  try {
+    const { contentType, body } = parseDataUrl(imageDataUrl);
+    return await uploadBuffer({
+      body,
+      contentType,
+      folder,
+      publicId,
+    });
   } catch (err) {
     console.error("[R2] Upload error:", err);
     return {
@@ -438,5 +530,7 @@ module.exports = {
   loadEnvFromDisk,
   getR2Config,
   pingR2,
+  toNodeBuffer,
+  uploadBuffer,
   uploadToR2,
 };

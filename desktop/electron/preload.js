@@ -1,5 +1,19 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+function cloneBytesForIpc(bytes) {
+  if (!bytes) return bytes;
+  if (bytes instanceof Uint8Array) {
+    const out = new Uint8Array(bytes.byteLength);
+    out.set(bytes);
+    return out;
+  }
+  if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes.slice(0));
+  if (ArrayBuffer.isView(bytes)) {
+    return new Uint8Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  }
+  return bytes;
+}
+
 console.log('[Preload] Preload script loaded');
 
 try {
@@ -10,6 +24,10 @@ try {
     },
 
     uploadToR2: (payload) => ipcRenderer.invoke('r2:upload', payload),
+    uploadToR2Bytes: (payload) => ipcRenderer.invoke('r2:upload-bytes', {
+      ...payload,
+      bytes: cloneBytesForIpc(payload?.bytes),
+    }),
     getR2Status: () => ipcRenderer.invoke('r2:status'),
 
     // Temp-folder save for transient print sheets — file ends up in
@@ -49,13 +67,15 @@ try {
 
     // Raw-bytes save (used for the session GIF), relative to the photos folder.
     saveSessionBytes: ({ bytes, filename }) => {
-      console.log(`[Preload] saveSessionBytes (${filename}, ${bytes?.length} bytes)`);
-      return ipcRenderer.invoke('save-session-bytes', { bytes, filename });
+      const payload = cloneBytesForIpc(bytes);
+      console.log(`[Preload] saveSessionBytes (${filename}, ${payload?.byteLength ?? payload?.length} bytes)`);
+      return ipcRenderer.invoke('save-session-bytes', { bytes: payload, filename });
     },
 
     saveHighlightVideo: ({ bytes, filename }) => {
-      console.log(`[Preload] saveHighlightVideo (${filename}, ${bytes?.length} bytes)`);
-      return ipcRenderer.invoke('save-highlight-video', { bytes, filename });
+      const payload = cloneBytesForIpc(bytes);
+      console.log(`[Preload] saveHighlightVideo (${filename}, ${payload?.byteLength ?? payload?.length} bytes)`);
+      return ipcRenderer.invoke('save-highlight-video', { bytes: payload, filename });
     },
 
     getPhotosDirectory: () => {
@@ -106,6 +126,10 @@ try {
     getTitleBackground: (slot) => {
       console.log(`[Preload] getTitleBackground called (${slot || 'title'})`);
       return ipcRenderer.invoke('get-title-background', { slot });
+    },
+
+    getPackagedBackground: (slot) => {
+      return ipcRenderer.invoke('get-packaged-background', { slot });
     },
 
     clearTitleBackground: (slot) => {

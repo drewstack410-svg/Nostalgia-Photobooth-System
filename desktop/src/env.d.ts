@@ -157,6 +157,17 @@ interface ElectronAPI {
     publicId?: string;
     error?: string;
   }>;
+  uploadToR2Bytes?: (payload: {
+    bytes: Uint8Array;
+    contentType: string;
+    folder?: string;
+    publicId?: string;
+  }) => Promise<{
+    success: boolean;
+    url?: string;
+    publicId?: string;
+    error?: string;
+  }>;
   getR2Status?: () => Promise<{
     configured: boolean;
     connected?: boolean;
@@ -251,6 +262,13 @@ interface ElectronAPI {
    * video from a large data URL anyway.
    */
   getTitleBackground: (slot?: "title" | "payment") => Promise<{
+    success: boolean;
+    bytes: Uint8Array | null;
+    mime: string | null;
+    mediaType: "image" | "video" | null;
+    error?: string;
+  }>;
+  getPackagedBackground?: (slot?: "title" | "payment") => Promise<{
     success: boolean;
     bytes: Uint8Array | null;
     mime: string | null;

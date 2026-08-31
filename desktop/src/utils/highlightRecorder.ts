@@ -3,9 +3,15 @@
  * shutter, then 5s of the frozen last frame. Encoded at the FULL camera
  * frame (not the viewfinder crop). Strip compose cover-fits these clips
  * into print windows. Clips also go to Videos/NostalgiaPhotobooth.
+ *
+ * Packaged kiosks often lack a working hardware H.264 encoder (missing
+ * GPU drivers, GPU blocklist, software canvas). VideoEncoder.configure()
+ * can succeed then fail asynchronously — we probe, encode a test frame,
+ * and fall back to MediaRecorder so other PCs still get a file.
  */
 
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
+import { objectUrlFromBlob } from "./mediaBytes";
 
 export const HIGHLIGHT_LEAD_MS = 10000;
 export const HIGHLIGHT_PREVIEW_MS = 5000;
@@ -14,6 +20,8 @@ const MAX_WIDTH = 1280;
 const FPS = 30;
 const FRAME_MS = 1000 / FPS;
 const TARGET_MS = HIGHLIGHT_LEAD_MS + HIGHLIGHT_PREVIEW_MS;
+
+type AvcHwAccel = "no-preference" | "prefer-hardware" | "prefer-software";
 
 export type HighlightCaptureOpts = {
   stream?: MediaStream | null;
@@ -31,6 +39,7 @@ let recorder: MediaRecorder | null = null;
 let chunks: Blob[] = [];
 let pumping = false;
 let recording = false;
+let starting = false;
 let frozen = false;
 let sourceVideo: HTMLVideoElement | null = null;
 let getStillUrl: (() => string | null) | null = null;
@@ -48,6 +57,7 @@ let lastKeyframeUs = -1;
 let encodeError: string | null = null;
 
 export function isHighlightRecording(): boolean {
+  if (starting) return true;
   if (!recording) return false;
   if (encoder && encoder.state === "configured") return true;
   return recorder != null && recorder.state !== "inactive";
@@ -59,6 +69,7 @@ export function pickRecorderMime(): string {
     "video/mp4;codecs=avc1.42E01E",
     "video/mp4;codecs=avc1.4D401E",
     "video/mp4",
+    "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
     "video/webm",
   ];
@@ -71,6 +82,11 @@ function currentMirror(): boolean {
 
 function even(n: number): number {
   return Math.max(2, n & ~1);
+}
+
+function errText(e: unknown): string {
+  if (e instanceof Error) return `${e.name}: ${e.message}`;
+  return String(e);
 }
 
 /** Draw the entire source onto the canvas (no viewfinder crop). */
@@ -131,13 +147,15 @@ function drawLiveOrFreeze() {
   }
 }
 
-function encodeCanvasFrame() {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function encodeCanvasFrame() {
   if (!canvas || !encoder || encoder.state !== "configured") return;
   if (encodeError) return;
   if (!startedAt) return;
   try {
-    // Wall-clock timestamps so playback speed matches real life even
-    // when we capture fewer than 30fps.
     const ts = Math.max(0, Math.round((performance.now() - startedAt) * 1000));
     if (lastTimestampUs >= 0 && ts - lastTimestampUs < 500) return;
     const duration =
@@ -146,21 +164,23 @@ function encodeCanvasFrame() {
         : Math.round(FRAME_MS * 1000);
     const keyFrame =
       lastKeyframeUs < 0 || ts - lastKeyframeUs >= 1_000_000;
-    const frame = new VideoFrame(canvas, { timestamp: ts, duration });
+    // createImageBitmap works on software canvases; VideoFrame(canvas)
+    // often throws "unaccelerated" on kiosks without a working GPU.
+    const bmp = await createImageBitmap(canvas);
+    const frame = new VideoFrame(bmp, { timestamp: ts, duration });
+    bmp.close();
     encoder.encode(frame, { keyFrame });
     frame.close();
     lastTimestampUs = ts;
     if (keyFrame) lastKeyframeUs = ts;
     frameIndex++;
   } catch (e) {
-    encodeError = e instanceof Error ? e.message : String(e);
-    console.warn("[Highlight] Encode frame failed:", e);
+    encodeError = errText(e);
+    console.warn("[Highlight] Encode frame failed:", encodeError);
   }
 }
 
-function snapshotNow() {
-  drawLiveOrFreeze();
-  encodeCanvasFrame();
+function requestRecorderFrame() {
   if (recorder && recorder.state === "recording") {
     try {
       (
@@ -174,32 +194,73 @@ function snapshotNow() {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function pumpLoop() {
   while (pumping) {
     while (encoder && encoder.encodeQueueSize > 12) {
       await sleep(8);
     }
-    snapshotNow();
+    drawLiveOrFreeze();
+    await encodeCanvasFrame();
+    requestRecorderFrame();
     await sleep(FRAME_MS);
   }
 }
 
-function pickAvcCodec(): string {
+async function pickAvcCodec(
+  width: number,
+  height: number,
+): Promise<{ codec: string; hardwareAcceleration: AvcHwAccel } | null> {
+  if (typeof VideoEncoder === "undefined") return null;
   const codecs = [
-    "avc1.42001E",
+    "avc1.4D401F",
     "avc1.42001F",
+    "avc1.42001E",
     "avc1.4D001E",
-    "avc1.64001E",
+    "avc1.64001F",
   ];
-  return codecs[0];
+  const modes: AvcHwAccel[] = ["prefer-hardware", "prefer-software", "no-preference"];
+  for (const hardwareAcceleration of modes) {
+    for (const codec of codecs) {
+      try {
+        const probe = await VideoEncoder.isConfigSupported({
+          codec,
+          width,
+          height,
+          bitrate: 3_000_000,
+          framerate: FPS,
+          avc: { format: "avc" },
+          hardwareAcceleration,
+        });
+        if (probe.supported) return { codec, hardwareAcceleration };
+      } catch {
+        /* try next */
+      }
+    }
+  }
+  return null;
 }
 
-function beginMp4Encoder(width: number, height: number): boolean {
-  if (typeof VideoEncoder === "undefined") return false;
+function closeEncoder() {
+  try {
+    if (encoder && encoder.state !== "closed") encoder.close();
+  } catch {
+    /* ignore */
+  }
+  encoder = null;
+  muxer = null;
+}
+
+async function beginMp4Encoder(width: number, height: number): Promise<boolean> {
+  if (typeof VideoEncoder === "undefined") {
+    console.warn("[Highlight] VideoEncoder API missing");
+    return false;
+  }
+  const picked = await pickAvcCodec(width, height);
+  if (!picked) {
+    console.warn("[Highlight] No H.264 VideoEncoder config is supported on this PC");
+    return false;
+  }
+
   encodeError = null;
   frameIndex = 0;
   lastTimestampUs = -1;
@@ -230,28 +291,43 @@ function beginMp4Encoder(width: number, height: number): boolean {
       },
     });
     encoder.configure({
-      codec: pickAvcCodec(),
+      codec: picked.codec,
       width,
       height,
       bitrate: 3_000_000,
       framerate: FPS,
       avc: { format: "avc" },
+      hardwareAcceleration: picked.hardwareAcceleration,
     });
   } catch (e) {
-    console.warn("[Highlight] VideoEncoder configure failed:", e);
-    try {
-      encoder?.close();
-    } catch {
-      /* ignore */
-    }
-    encoder = null;
-    muxer = null;
+    console.warn("[Highlight] VideoEncoder configure failed:", errText(e));
+    closeEncoder();
     return false;
   }
+
   mimeType = "video/mp4";
   startedAt = performance.now();
+  drawLiveOrFreeze();
+  await encodeCanvasFrame();
+  await sleep(40);
+  if (encodeError || !encoder || encoder.state !== "configured") {
+    console.warn(
+      "[Highlight] VideoEncoder rejected the first frame:",
+      encodeError || encoder?.state,
+    );
+    closeEncoder();
+    encodeError = null;
+    frameIndex = 0;
+    lastTimestampUs = -1;
+    lastKeyframeUs = -1;
+    startedAt = 0;
+    return false;
+  }
+
   recording = true;
-  console.log(`[Highlight] Encoding MP4 ${width}x${height} ${FPS}fps`);
+  console.log(
+    `[Highlight] Encoding MP4 ${picked.codec} ${picked.hardwareAcceleration} ${width}x${height} ${FPS}fps`,
+  );
   return true;
 }
 
@@ -281,14 +357,25 @@ function beginRecorder(recStream: MediaStream, label: string): boolean {
   return true;
 }
 
-function startCanvasCapture(opts: HighlightCaptureOpts): boolean {
+async function waitForSourceSize(timeoutMs = 2000) {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    pullStill();
+    const size = sizeFromSources();
+    if (size) return size;
+    await sleep(50);
+  }
+  pullStill();
+  return sizeFromSources();
+}
+
+async function startCanvasCapture(opts: HighlightCaptureOpts): Promise<boolean> {
   sourceVideo = opts.video ?? null;
   getStillUrl = opts.getStillUrl ?? null;
   getMirror = opts.getMirror ?? null;
   applyLook = opts.applyLook ?? null;
-  pullStill();
 
-  const size = sizeFromSources();
+  const size = await waitForSourceSize();
   if (!size) {
     console.warn("[Highlight] No live video to record yet");
     sourceVideo = null;
@@ -306,7 +393,7 @@ function startCanvasCapture(opts: HighlightCaptureOpts): boolean {
   canvas.style.cssText =
     "position:fixed;left:0;top:0;width:4px;height:4px;opacity:0.02;pointer-events:none;z-index:0";
   document.body.appendChild(canvas);
-  ctx = canvas.getContext("2d", { alpha: false });
+  ctx = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
   if (!ctx) return false;
 
   frozen = false;
@@ -314,7 +401,7 @@ function startCanvasCapture(opts: HighlightCaptureOpts): boolean {
   pumping = true;
   drawLiveOrFreeze();
 
-  if (!beginMp4Encoder(canvas.width, canvas.height)) {
+  if (!(await beginMp4Encoder(canvas.width, canvas.height))) {
     const recStream = canvas.captureStream(FPS);
     if (!beginRecorder(recStream, `${canvas.width}x${canvas.height}`)) {
       pumping = false;
@@ -329,9 +416,17 @@ function startCanvasCapture(opts: HighlightCaptureOpts): boolean {
   return true;
 }
 
-export function startHighlightCapture(opts: HighlightCaptureOpts): boolean {
+export async function startHighlightCapture(
+  opts: HighlightCaptureOpts,
+): Promise<boolean> {
   if (recording) return true;
-  return startCanvasCapture(opts);
+  if (starting) return false;
+  starting = true;
+  try {
+    return await startCanvasCapture(opts);
+  } finally {
+    starting = false;
+  }
 }
 
 export function freezeHighlightCapture() {
@@ -360,6 +455,7 @@ export async function waitForHighlightLead(): Promise<void> {
 function resetState() {
   pumping = false;
   recording = false;
+  starting = false;
   frozen = false;
   sourceVideo = null;
   getStillUrl = null;
@@ -375,13 +471,7 @@ function resetState() {
   freezeCanvas = null;
   mimeType = "video/mp4";
   startedAt = 0;
-  try {
-    if (encoder && encoder.state !== "closed") encoder.close();
-  } catch {
-    /* ignore */
-  }
-  encoder = null;
-  muxer = null;
+  closeEncoder();
   frameIndex = 0;
   lastTimestampUs = -1;
   lastKeyframeUs = -1;
@@ -400,14 +490,8 @@ export function abortHighlightCapture() {
   resetState();
 }
 
-async function blobToDataUrl(blob: Blob): Promise<string | null> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () =>
-      resolve(typeof reader.result === "string" ? reader.result : null);
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(blob);
-  });
+function blobToObjectUrl(blob: Blob): string {
+  return objectUrlFromBlob(blob);
 }
 
 export async function stopHighlightCapture(): Promise<string | null> {
@@ -422,13 +506,14 @@ export async function stopHighlightCapture(): Promise<string | null> {
   }
   frozen = true;
 
-  // Keep encoding the freeze at real time until the clip is 15s.
   while (
     encoder &&
     encoder.state === "configured" &&
+    !encodeError &&
     performance.now() - startedAt < TARGET_MS
   ) {
-    snapshotNow();
+    drawLiveOrFreeze();
+    await encodeCanvasFrame();
     await sleep(FRAME_MS);
   }
 
@@ -436,37 +521,43 @@ export async function stopHighlightCapture(): Promise<string | null> {
     `[Highlight] Stopping after ${Math.round(performance.now() - startedAt)}ms (${frameIndex} frames)`,
   );
 
-  if (encoder && muxer && encoder.state === "configured") {
+  const rec = recorder;
+  const usedEncoder = !!(encoder && muxer);
+
+  if (usedEncoder) {
     try {
-      await encoder.flush();
+      if (encoder && encoder.state === "configured") await encoder.flush();
     } catch (e) {
       console.warn("[Highlight] Encoder flush failed:", e);
     }
     try {
-      muxer.finalize();
+      muxer?.finalize();
     } catch (e) {
       console.warn("[Highlight] Mux finalize failed:", e);
     }
-    const buffer = muxer.target.buffer;
+    const buffer = muxer?.target.buffer;
+    const frames = frameIndex;
+    const err = encodeError;
     resetState();
-    if (!buffer || buffer.byteLength < 100) {
-      console.warn("[Highlight] MP4 empty");
-      return null;
+    if (buffer && buffer.byteLength >= 100 && frames > 0) {
+      const blob = new Blob([buffer], { type: "video/mp4" });
+      const url = blobToObjectUrl(blob);
+      console.log(
+        `[Highlight] Clip ready ${Math.round(blob.size / 1024)}KB video/mp4 (${frames} frames)`,
+      );
+      return url;
     }
-    const blob = new Blob([buffer], { type: "video/mp4" });
-    const url = await blobToDataUrl(blob);
-    console.log(`[Highlight] Clip ready ${Math.round(blob.size / 1024)}KB video/mp4`);
-    return url;
+    console.warn("[Highlight] Encoder produced no usable file:", err || "empty mux");
+    return null;
   }
 
-  const rec = recorder;
   if (!rec || rec.state === "inactive") {
     abortHighlightCapture();
     return null;
   }
   const blob = await new Promise<Blob | null>((resolve) => {
     rec.onstop = () => {
-      const type = rec.mimeType || mimeType || "video/mp4";
+      const type = rec.mimeType || mimeType || "video/webm";
       const out = new Blob(chunks, { type });
       resolve(out.size >= 100 ? out : null);
     };
@@ -477,13 +568,13 @@ export async function stopHighlightCapture(): Promise<string | null> {
       resolve(null);
     }
   });
-  const type = blob?.type || mimeType || "video/mp4";
+  const type = blob?.type || mimeType || "video/webm";
   resetState();
   if (!blob) {
     console.warn("[Highlight] Clip empty");
     return null;
   }
-  const url = await blobToDataUrl(blob);
+  const url = blobToObjectUrl(blob);
   console.log(`[Highlight] Clip ready ${Math.round(blob.size / 1024)}KB ${type}`);
   return url;
 }

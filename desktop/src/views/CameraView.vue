@@ -35,6 +35,7 @@ import {
   stopHighlightCapture,
   waitForHighlightLead,
 } from "@/utils/highlightRecorder";
+import { mediaUrlToBytes } from "@/utils/mediaBytes";
 import {
   openVideoStream as requestVideoStream,
   stopWebcamTracks,
@@ -645,25 +646,27 @@ function armHighlightRecording(countdownSeconds: number) {
   const tryStart = () => {
     highlightLeadTimer = null;
     if (isUnmounted || isHighlightRecording()) return;
-    let ok = false;
-    try {
-      ok = startHighlightCapture({
-        stream: stream.value,
-        video: videoRef.value,
-        getStillUrl: () => liveViewFrame.value,
-        getMirror: () => store.mirrorMode,
-        applyLook: applyHighlightLook,
-      });
-    } catch (e) {
-      console.warn("[Highlight] Start failed:", e);
-    }
-    if (ok) {
-      highlightRecording.value = true;
-      return;
-    }
-    if (!isUnmounted && isCountingDown.value) {
-      highlightLeadTimer = setTimeout(tryStart, 200);
-    }
+    void (async () => {
+      let ok = false;
+      try {
+        ok = await startHighlightCapture({
+          stream: stream.value,
+          video: videoRef.value,
+          getStillUrl: () => liveViewFrame.value,
+          getMirror: () => store.mirrorMode,
+          applyLook: applyHighlightLook,
+        });
+      } catch (e) {
+        console.warn("[Highlight] Start failed:", e);
+      }
+      if (ok) {
+        highlightRecording.value = true;
+        return;
+      }
+      if (!isUnmounted && isCountingDown.value) {
+        highlightLeadTimer = setTimeout(tryStart, 200);
+      }
+    })();
   };
   highlightLeadTimer = setTimeout(tryStart, delay);
 }
@@ -722,32 +725,17 @@ async function finishHighlightClip(shotNumber: number) {
   }
 }
 
-function highlightDataUrlToBytes(
-  dataUrl: string,
-): { bytes: Uint8Array; ext: string } | null {
-  const match = /^data:([^,]+),(.*)$/s.exec(dataUrl);
-  if (!match) return null;
-  const meta = match[1];
-  const payload = match[2];
-  const isBase64 = /;base64$/i.test(meta);
-  const contentType = (
-    meta.replace(/;base64$/i, "").split(";")[0] || ""
-  ).toLowerCase();
-  const ext = contentType.includes("mp4") ? "mp4" : "webm";
-  const raw = isBase64 ? atob(payload) : payload;
-  const bytes = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-  return { bytes, ext };
-}
-
-async function saveHighlightLocally(dataUrl: string, shot: number) {
+async function saveHighlightLocally(clipUrl: string, shot: number) {
   const api = window.electronAPI;
   if (!api?.saveHighlightVideo) {
     console.warn("[Highlight] saveHighlightVideo is not available — restart Electron");
     return;
   }
-  const parsed = highlightDataUrlToBytes(dataUrl);
-  if (!parsed) return;
+  const parsed = await mediaUrlToBytes(clipUrl);
+  if (!parsed) {
+    console.warn("[Highlight] Could not read clip bytes (blob URL?)");
+    return;
+  }
   const now = new Date();
   const stamp = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getFullYear()).slice(-2)}`;
   const time = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;

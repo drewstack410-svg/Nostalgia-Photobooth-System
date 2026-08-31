@@ -16,6 +16,14 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
+import { revokeMediaUrl } from "@/utils/mediaBytes";
+
+/** IPC Uint8Array is ArrayBufferLike; Blob wants a plain ArrayBuffer. */
+function blobFromIpcBytes(bytes: Uint8Array, type: string): Blob {
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return new Blob([copy], { type });
+}
 
 // -----------------------------------------------------------------------------
 // Types
@@ -703,8 +711,15 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   const selectedTemplate = ref<Template | null>(null);
   const capturedPhotos = ref<CapturedPhoto[]>([]);
   const currentPhotoIndex = ref(0);
-  /** Per-shot highlight clips (data URLs) recorded around each shutter. */
+  /** Per-shot highlight clips (blob: URLs) recorded around each shutter. */
   const highlightClips = ref<string[]>([]);
+
+  function clearHighlightClips() {
+    for (const url of highlightClips.value) {
+      revokeMediaUrl(url);
+    }
+    highlightClips.value = [];
+  }
 
   /**
    * Live copy of the selected template (cells, zoom, fitMode) from the
@@ -945,10 +960,12 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   // export, so don't "unify" them.
   const DEFAULT_TITLE_BG_URL = `${import.meta.env.BASE_URL}backgrounds/default-title-background.mp4`;
   const DEFAULT_PAYMENT_BG_URL = `${import.meta.env.BASE_URL}backgrounds/default-payment-background.mp4`;
+  let packagedTitleUrl: string | null = null;
+  let packagedPaymentUrl: string | null = null;
 
   /** What the title screen should actually render. */
   const effectiveTitleBackgroundUrl = computed(
-    () => titleBackgroundUrl.value || DEFAULT_TITLE_BG_URL,
+    () => titleBackgroundUrl.value || packagedTitleUrl || DEFAULT_TITLE_BG_URL,
   );
   const effectiveTitleBackgroundType = computed<TitleBackgroundType>(
     () => (titleBackgroundUrl.value ? titleBackgroundType.value : "video"),
@@ -1142,7 +1159,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   /** The payment screen's own default (mirrored strips) unless uploaded. */
   const effectivePaymentBackgroundUrl = computed(
-    () => paymentBackgroundUrl.value || DEFAULT_PAYMENT_BG_URL,
+    () => paymentBackgroundUrl.value || packagedPaymentUrl || DEFAULT_PAYMENT_BG_URL,
   );
   const effectivePaymentBackgroundType = computed<TitleBackgroundType>(
     () => (paymentBackgroundUrl.value ? paymentBackgroundType.value : "video"),
@@ -1189,10 +1206,13 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       if (result.success && result.bytes && result.mediaType) {
         setPaymentBackgroundBlob(
           result.mediaType,
-          new Blob([result.bytes], {
-            type: result.mime || (result.mediaType === "video" ? "video/mp4" : "image/jpeg"),
-          }),
+          blobFromIpcBytes(
+            result.bytes,
+            result.mime || (result.mediaType === "video" ? "video/mp4" : "image/jpeg"),
+          ),
         );
+      } else if (!packagedPaymentUrl) {
+        packagedPaymentUrl = await loadPackagedBackground("payment");
       }
     } catch (e) {
       console.error("Failed to load payment background from disk:", e);
@@ -1283,17 +1303,34 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
    * whatever loadCustomize() already read from localStorage when
    * running without Electron (plain-browser dev preview).
    */
+  async function loadPackagedBackground(
+    slot: "title" | "payment",
+  ): Promise<string | null> {
+    const api = window.electronAPI;
+    if (!api?.getPackagedBackground) return null;
+    try {
+      const result = await api.getPackagedBackground(slot);
+      if (!result.success || !result.bytes || !result.bytes.byteLength) return null;
+      const blob = blobFromIpcBytes(result.bytes, result.mime || "video/mp4");
+      return URL.createObjectURL(blob);
+    } catch (e) {
+      console.warn(`[Store] Packaged ${slot} background missing:`, e);
+      return null;
+    }
+  }
+
   async function loadTitleBackgroundFromDisk() {
     if (!window.electronAPI) return;
     try {
       const result = await window.electronAPI.getTitleBackground();
       if (result.success && result.bytes && result.mediaType) {
-        // Wrap in a Blob -> object URL. See setTitleBackgroundBlob for
-        // why this can't be a data: URL.
-        const blob = new Blob([result.bytes], {
-          type: result.mime || (result.mediaType === "video" ? "video/mp4" : "image/jpeg"),
-        });
+        const blob = blobFromIpcBytes(
+          result.bytes,
+          result.mime || (result.mediaType === "video" ? "video/mp4" : "image/jpeg"),
+        );
         setTitleBackgroundBlob(result.mediaType, blob);
+      } else if (!packagedTitleUrl) {
+        packagedTitleUrl = await loadPackagedBackground("title");
       }
     } catch (e) {
       console.error("Failed to load title background from disk:", e);
@@ -1578,7 +1615,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
           setOverlayMediaRuntime(
             f.id,
             result.mediaType,
-            new Blob([result.bytes], { type: mime }),
+            blobFromIpcBytes(result.bytes, mime),
           );
         }
       } catch (e) {
@@ -1788,7 +1825,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     selectedTemplate.value =
       templates.value.find((t) => t.id === template.id) ?? template;
     capturedPhotos.value = [];
-    highlightClips.value = [];
+    clearHighlightClips();
     currentPhotoIndex.value = 0;
   }
 
@@ -1826,7 +1863,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   function resetSession() {
     capturedPhotos.value = [];
-    highlightClips.value = [];
+    clearHighlightClips();
     currentPhotoIndex.value = 0;
     selectedTemplate.value = null;
     // Critical: clearing this is what stops the next guest inheriting this
