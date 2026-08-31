@@ -1081,7 +1081,9 @@ async function saveComposite() {
       // then fall back to the old flat filenames rather than being lost.
       const sessionFolder = await beginSessionFolder(
         printComposite,
-        store.capturedPhotos.map((p) => p.dataUrl).filter(Boolean),
+        store.capturedPhotos
+          .map((p) => p.fullDataUrl || p.dataUrl)
+          .filter(Boolean),
       );
 
       // Also upload the finished TEMPLATED print (frame applied) so the
@@ -1278,18 +1280,20 @@ async function saveComposite() {
 
           const fullDataUrl = photo.fullDataUrl || photo.dataUrl;
 
-          // Local file save (per-capture) — cropped for reprint, full for keepsake.
+          // Primary file = FULL live preview (the wooden-frame view,
+          // including the dimmed side bars). The portrait crop is only
+          // for print/reprint, saved as photo-N-print.jpg.
           let localPath: string | undefined;
           try {
             const r = await window.electronAPI.savePhoto(
-              photo.dataUrl,
+              fullDataUrl,
               sessionFolder
                 ? `${sessionFolder}/photo-${idx + 1}.jpg`
                 : undefined,
             );
             if (r.success && r.path) {
               localPath = r.path;
-              console.log(`[Save] Capture ${idx} saved to:`, r.path);
+              console.log(`[Save] Capture ${idx} full live view saved to:`, r.path);
             } else {
               console.warn(
                 `[Save] Capture ${idx} disk save failed:`,
@@ -1300,30 +1304,32 @@ async function saveComposite() {
             console.error(`[Save] Capture ${idx} disk save error:`, e);
           }
 
-          if (fullDataUrl && window.electronAPI?.savePhoto) {
+          if (
+            photo.dataUrl &&
+            photo.dataUrl !== fullDataUrl &&
+            window.electronAPI?.savePhoto
+          ) {
             try {
               const r = await window.electronAPI.savePhoto(
-                fullDataUrl,
+                photo.dataUrl,
                 sessionFolder
-                  ? `${sessionFolder}/photo-${idx + 1}-full.jpg`
-                  : `nostalgia_${sessionTs}_${idx + 1}-full.jpg`,
+                  ? `${sessionFolder}/photo-${idx + 1}-print.jpg`
+                  : `nostalgia_${sessionTs}_${idx + 1}-print.jpg`,
               );
               if (r.success && r.path) {
-                console.log(`[Save] Capture ${idx} full frame saved to:`, r.path);
+                console.log(`[Save] Capture ${idx} print crop saved to:`, r.path);
               } else {
                 console.warn(
-                  `[Save] Capture ${idx} full-frame disk save failed:`,
+                  `[Save] Capture ${idx} print-crop disk save failed:`,
                   r.error,
                 );
               }
             } catch (e) {
-              console.error(`[Save] Capture ${idx} full-frame disk save error:`, e);
+              console.error(`[Save] Capture ${idx} print-crop disk save error:`, e);
             }
           }
 
-          // Cloudflare R2 upload (per-capture, raw camera image — NO
-          // template, NO frame, NO composite). Session tag is unused by
-          // R2; the gallery GIF is built client-side from `ids`.
+          // Cloudflare R2: guest-facing stills are the FULL live preview.
           let cloudUrl: string | undefined;
           let cloudPublicId: string | undefined;
           try {
@@ -1331,7 +1337,7 @@ async function saveComposite() {
               .toString(36)
               .substring(2, 8)}`;
             const cr = await uploadToR2(
-              photo.dataUrl,
+              fullDataUrl,
               "nostalgia-photobooth",
               publicId,
               `session_${sessionTs}`,
@@ -1339,7 +1345,7 @@ async function saveComposite() {
             if (cr.success && cr.url && cr.publicId) {
               cloudUrl = cr.url;
               cloudPublicId = cr.publicId;
-              console.log(`[Save] Capture ${idx} uploaded:`, cr.url);
+              console.log(`[Save] Capture ${idx} full live view uploaded:`, cr.url);
             } else {
               console.warn(
                 `[Save] Capture ${idx} upload failed:`,
@@ -1350,33 +1356,7 @@ async function saveComposite() {
             console.error(`[Save] Capture ${idx} upload error:`, e);
           }
 
-          let fullCloudPublicId: string | undefined;
-          if (fullDataUrl && fullDataUrl !== photo.dataUrl) {
-            try {
-              const publicId = `nostalgia_${sessionTs}_${idx}_full_${Math.random()
-                .toString(36)
-                .substring(2, 8)}`;
-              const cr = await uploadToR2(
-                fullDataUrl,
-                "nostalgia-photobooth",
-                publicId,
-                `session_${sessionTs}`,
-              );
-              if (cr.success && cr.publicId) {
-                fullCloudPublicId = cr.publicId;
-                console.log(`[Save] Capture ${idx} full frame uploaded:`, cr.url);
-              } else {
-                console.warn(
-                  `[Save] Capture ${idx} full-frame upload failed:`,
-                  cr.error,
-                );
-              }
-            } catch (e) {
-              console.error(`[Save] Capture ${idx} full-frame upload error:`, e);
-            }
-          } else if (cloudPublicId) {
-            fullCloudPublicId = cloudPublicId;
-          }
+          const fullCloudPublicId = cloudPublicId;
 
           return {
             idx,
@@ -1436,7 +1416,7 @@ async function saveComposite() {
         // Full resolution survives on disk at `path` (and on
         // Cloudinary); the admin reprint flow re-reads the disk file
         // when rebuilding a print sheet.
-        const previewUrl = await makePreviewDataUrl(r.dataUrl);
+        const previewUrl = await makePreviewDataUrl(r.fullDataUrl || r.dataUrl);
         store.addRecentStrip({
           id: `strip_${sessionTs}_${r.idx}`,
           dataUrl: previewUrl,

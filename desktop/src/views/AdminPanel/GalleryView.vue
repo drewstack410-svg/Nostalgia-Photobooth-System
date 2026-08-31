@@ -299,7 +299,14 @@ async function confirmReprint() {
     let dataUrl = s.dataUrl;
     if (s.path && window.electronAPI) {
       try {
-        const full = await window.electronAPI.readPhoto(s.path);
+        const printCrop = s.path.replace(
+          /photo-(\d+)\.jpg$/i,
+          "photo-$1-print.jpg",
+        );
+        const full =
+          (printCrop !== s.path
+            ? await window.electronAPI.readPhoto(printCrop)
+            : null) || (await window.electronAPI.readPhoto(s.path));
         if (full) dataUrl = full;
       } catch {
         /* fall back to the stored preview */
