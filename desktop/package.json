@@ -4,12 +4,13 @@
   "description": "A vintage-themed photobooth application for touchscreen kiosks",
   "main": "electron/main.js",
   "scripts": {
-    "pb:serve": "pocketbase serve --migrationsDir=pb_migrations",
+    "pb:serve": "node scripts/ensure-pocketbase.js && vendor/pocketbase/pocketbase.exe serve --http=127.0.0.1:8090 --dir=./pb_data --migrationsDir=pb_migrations",
+    "pb:ensure": "node scripts/ensure-pocketbase.js",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "vite build && electron-builder"
+    "electron:dev": "node scripts/ensure-pocketbase.js && concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron:build": "node scripts/ensure-pocketbase.js && vite build && electron-builder"
   },
   "dependencies": {
     "@brick-a-brack/napi-canon-cameras": "^0.1.5",
@@ -58,6 +59,19 @@
       {
         "from": "public/strip-frame",
         "to": "strip-frame"
+      },
+      {
+        "from": "vendor/pocketbase",
+        "to": "pocketbase",
+        "filter": ["pocketbase.exe", "pocketbase"]
+      },
+      {
+        "from": "pb_migrations",
+        "to": "pb_migrations"
+      },
+      {
+        "from": ".env",
+        "to": ".env"
       }
     ],
     "mac": {
@@ -65,7 +79,7 @@
     },
     "win": {
       "target": "nsis",
-      "sign": false,
+      "signAndEditExecutable": false,
       "icon": "build/icon.ico"
     },
     "nsis": {

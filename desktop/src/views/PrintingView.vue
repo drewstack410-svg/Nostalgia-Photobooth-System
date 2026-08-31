@@ -11,6 +11,7 @@ import {
   occupancyFill,
   getTemplateGrid,
 } from "@/utils/printLayout";
+import { cropBarPercentForTemplate } from "@/utils/viewfinderCrop";
 import type { Rect } from "@/utils/printLayout";
 import { getFrameWindows, scaleWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
@@ -256,8 +257,16 @@ async function publishGallerySession(
   publicIds: string[],
   printId?: string,
   videoIds?: string[],
+  fullIds?: string[],
+  fullVids?: string[],
 ): Promise<string> {
-  if (publicIds.length === 0 && !printId && !(videoIds && videoIds.length)) {
+  if (
+    publicIds.length === 0 &&
+    !printId &&
+    !(videoIds && videoIds.length) &&
+    !(fullIds && fullIds.length) &&
+    !(fullVids && fullVids.length)
+  ) {
     return "";
   }
   const r2Base = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
@@ -277,8 +286,10 @@ async function publishGallerySession(
     v: 1,
     title: "Nostalgia Photobooth",
     ids: publicIds,
+    fullIds: fullIds && fullIds.length ? fullIds : undefined,
     print: printId || undefined,
     vids: videoIds && videoIds.length ? videoIds : undefined,
+    fullVids: fullVids && fullVids.length ? fullVids : undefined,
     slots: layout?.slots,
     par: layout?.par,
     rows: grid?.rows,
@@ -751,8 +762,8 @@ async function createCompositeImage(
             const detected = frameWindowRects
               ? scaleWindows(
                   frameWindowRects,
-                  frameImg.naturalWidth,
-                  frameImg.naturalHeight,
+                  natW,
+                  natH,
                   printArea,
                 )
               : null;
@@ -1107,13 +1118,19 @@ async function saveComposite() {
         }
       })();
 
-      // Bake clips into the printed strip (full frame), save locally,
-      // and upload that one video for the gallery. Per-shot crops still
-      // land in Videos/ from CameraView; the QR gets the framed strip.
-      const highlightUploadPromise: Promise<string[]> = (async () => {
+      // Bake clips into the printed strip (viewfinder crop in the
+      // windows), save locally, and upload that video plus the
+      // uncropped per-shot clips for the gallery download row.
+      const highlightUploadPromise: Promise<{
+        stripIds: string[];
+        fullVidIds: string[];
+      }> = (async () => {
         const clips = store.highlightClips.filter(Boolean);
-        if (!clips.length || !shareComposite) return [];
+        if (!clips.length) {
+          return { stripIds: [], fullVidIds: [] };
+        }
         let stripDataUrl: string | null = null;
+        if (shareComposite) {
         try {
           const layout = await galleryLayoutParam();
           const slots = layout
@@ -1150,17 +1167,23 @@ async function saveComposite() {
             overlayDataUrl,
             clipDataUrls: clips,
             slots,
+            cropBarPercent: cropBarPercentForTemplate(
+              store.sessionTemplate ?? store.selectedTemplate,
+            ),
           });
         } catch (e) {
           console.warn("[Save] Strip video compose failed:", e);
         }
+        }
 
-        const toSave = stripDataUrl
-          ? [{ dataUrl: stripDataUrl, name: "highlight-strip" }]
-          : clips.map((dataUrl, i) => ({
-              dataUrl,
-              name: `highlight-${i + 1}`,
-            }));
+        const stripItem = stripDataUrl
+          ? { dataUrl: stripDataUrl, name: "highlight-strip" }
+          : null;
+        const fullItems = clips.map((dataUrl, i) => ({
+          dataUrl,
+          name: `highlight-${i + 1}`,
+        }));
+        const toSave = stripItem ? [stripItem, ...fullItems] : fullItems;
 
         for (const item of toSave) {
           if (sessionFolder && window.electronAPI?.saveSessionBytes) {
@@ -1176,29 +1199,29 @@ async function saveComposite() {
               console.warn(`[Save] ${item.name} session save failed:`, e);
             }
           }
-          if (stripDataUrl && window.electronAPI?.saveHighlightVideo) {
-            try {
-              const parsed = dataUrlToBytes(item.dataUrl);
-              if (parsed) {
-                const now = new Date();
-                const stamp = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getFullYear()).slice(-2)}`;
-                const time = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
-                const r = await window.electronAPI.saveHighlightVideo({
-                  bytes: parsed.bytes,
-                  filename: `${stamp}/highlight-strip-${time}.${parsed.ext}`,
-                });
-                if (r.success) console.log("[Save] Strip video saved locally:", r.path);
-                else console.warn("[Save] Strip video local save failed:", r.error);
-              }
-            } catch (e) {
-              console.warn("[Save] Strip video local save error:", e);
+        }
+        if (stripItem && window.electronAPI?.saveHighlightVideo) {
+          try {
+            const parsed = dataUrlToBytes(stripItem.dataUrl);
+            if (parsed) {
+              const now = new Date();
+              const stamp = `${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getFullYear()).slice(-2)}`;
+              const time = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+              const r = await window.electronAPI.saveHighlightVideo({
+                bytes: parsed.bytes,
+                filename: `${stamp}/highlight-strip-${time}.${parsed.ext}`,
+              });
+              if (r.success) console.log("[Save] Strip video saved locally:", r.path);
+              else console.warn("[Save] Strip video local save failed:", r.error);
             }
+          } catch (e) {
+            console.warn("[Save] Strip video local save error:", e);
           }
         }
 
-        const ids: string[] = [];
-        for (let i = 0; i < toSave.length; i++) {
-          const item = toSave[i];
+        async function uploadClip(
+          item: { dataUrl: string; name: string },
+        ): Promise<string | undefined> {
           try {
             const publicId = `nostalgia_${sessionTs}_${item.name}_${Math.random()
               .toString(36)
@@ -1209,16 +1232,30 @@ async function saveComposite() {
               publicId,
             );
             if (cr.success && cr.publicId) {
-              ids.push(cr.publicId);
               console.log(`[Save] ${item.name} uploaded:`, cr.url);
-            } else {
-              console.warn(`[Save] ${item.name} upload failed:`, cr.error);
+              return cr.publicId;
             }
+            console.warn(`[Save] ${item.name} upload failed:`, cr.error);
           } catch (e) {
             console.error(`[Save] ${item.name} upload error:`, e);
           }
+          return undefined;
         }
-        return ids;
+
+        const stripIds: string[] = [];
+        if (stripItem) {
+          const id = await uploadClip(stripItem);
+          if (id) stripIds.push(id);
+        }
+        const fullVidIds: string[] = [];
+        for (const item of fullItems) {
+          const id = await uploadClip(item);
+          if (id) fullVidIds.push(id);
+        }
+        if (!stripIds.length && fullVidIds.length) {
+          return { stripIds: fullVidIds, fullVidIds };
+        }
+        return { stripIds, fullVidIds };
       })();
 
       // Save+upload each capture in parallel, collect results so we
@@ -1226,9 +1263,11 @@ async function saveComposite() {
       type CaptureResult = {
         idx: number;
         dataUrl: string;
+        fullDataUrl?: string;
         localPath?: string;
         cloudUrl?: string;
         cloudPublicId?: string;
+        fullCloudPublicId?: string;
       };
       const captureResults = await Promise.all(
         store.capturedPhotos.map(async (photo, idx): Promise<CaptureResult> => {
@@ -1237,7 +1276,9 @@ async function saveComposite() {
             return { idx, dataUrl: "" };
           }
 
-          // Local file save (per-capture)
+          const fullDataUrl = photo.fullDataUrl || photo.dataUrl;
+
+          // Local file save (per-capture) — cropped for reprint, full for keepsake.
           let localPath: string | undefined;
           try {
             const r = await window.electronAPI.savePhoto(
@@ -1257,6 +1298,27 @@ async function saveComposite() {
             }
           } catch (e) {
             console.error(`[Save] Capture ${idx} disk save error:`, e);
+          }
+
+          if (fullDataUrl && window.electronAPI?.savePhoto) {
+            try {
+              const r = await window.electronAPI.savePhoto(
+                fullDataUrl,
+                sessionFolder
+                  ? `${sessionFolder}/photo-${idx + 1}-full.jpg`
+                  : `nostalgia_${sessionTs}_${idx + 1}-full.jpg`,
+              );
+              if (r.success && r.path) {
+                console.log(`[Save] Capture ${idx} full frame saved to:`, r.path);
+              } else {
+                console.warn(
+                  `[Save] Capture ${idx} full-frame disk save failed:`,
+                  r.error,
+                );
+              }
+            } catch (e) {
+              console.error(`[Save] Capture ${idx} full-frame disk save error:`, e);
+            }
           }
 
           // Cloudflare R2 upload (per-capture, raw camera image — NO
@@ -1288,12 +1350,42 @@ async function saveComposite() {
             console.error(`[Save] Capture ${idx} upload error:`, e);
           }
 
+          let fullCloudPublicId: string | undefined;
+          if (fullDataUrl && fullDataUrl !== photo.dataUrl) {
+            try {
+              const publicId = `nostalgia_${sessionTs}_${idx}_full_${Math.random()
+                .toString(36)
+                .substring(2, 8)}`;
+              const cr = await uploadToR2(
+                fullDataUrl,
+                "nostalgia-photobooth",
+                publicId,
+                `session_${sessionTs}`,
+              );
+              if (cr.success && cr.publicId) {
+                fullCloudPublicId = cr.publicId;
+                console.log(`[Save] Capture ${idx} full frame uploaded:`, cr.url);
+              } else {
+                console.warn(
+                  `[Save] Capture ${idx} full-frame upload failed:`,
+                  cr.error,
+                );
+              }
+            } catch (e) {
+              console.error(`[Save] Capture ${idx} full-frame upload error:`, e);
+            }
+          } else if (cloudPublicId) {
+            fullCloudPublicId = cloudPublicId;
+          }
+
           return {
             idx,
             dataUrl: photo.dataUrl,
+            fullDataUrl,
             localPath,
             cloudUrl,
             cloudPublicId,
+            fullCloudPublicId,
           };
         }),
       );
@@ -1303,7 +1395,10 @@ async function saveComposite() {
       const successfulIds = captureResults
         .map((r) => r.cloudPublicId)
         .filter((id): id is string => !!id);
-      const [compositePublicId, videoIds] = await Promise.all([
+      const successfulFullIds = captureResults
+        .map((r) => r.fullCloudPublicId)
+        .filter((id): id is string => !!id);
+      const [compositePublicId, highlightIds] = await Promise.all([
         compositeUploadPromise,
         highlightUploadPromise,
       ]);
@@ -1312,7 +1407,9 @@ async function saveComposite() {
         galleryShortCode,
         successfulIds,
         compositePublicId,
-        videoIds,
+        highlightIds.stripIds,
+        successfulFullIds,
+        highlightIds.fullVidIds,
       );
       if (sessionShareableUrl) {
         console.log("[Save] Gallery URL for QR:", sessionShareableUrl);

@@ -32,6 +32,8 @@ const nextTemplate = computed(
 const INACTIVITY_TIMEOUT = 60000;
 const WARNING_COUNTDOWN = 10; // seconds before auto-return
 
+let isUnmounted = false;
+
 function resetInactivityTimer() {
   // Clear existing timers
   if (inactivityTimer) {
@@ -51,15 +53,26 @@ function resetInactivityTimer() {
   showInactivityWarning.value = false;
   inactivityCountdown.value = WARNING_COUNTDOWN;
 
+  if (isUnmounted) return;
+
   // Start new inactivity timer
   inactivityTimer = setTimeout(() => {
+    if (isUnmounted) return;
     showInactivityWarning.value = true;
     inactivityCountdown.value = WARNING_COUNTDOWN;
 
     // Start countdown after a small delay to ensure UI is updated
     warningTimer = setTimeout(() => {
       warningTimer = null;
+      if (isUnmounted) return;
       countdownInterval = setInterval(() => {
+        if (isUnmounted) {
+          if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+          }
+          return;
+        }
         inactivityCountdown.value--;
 
         if (inactivityCountdown.value <= 0) {
@@ -75,7 +88,7 @@ function resetInactivityTimer() {
 }
 
 function returnToHome() {
-  // Clear all timers before navigating
+  if (isUnmounted) return;
   resetInactivityTimer();
   router.push("/");
 }
@@ -139,6 +152,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  isUnmounted = true;
   // Clear all timers immediately
   if (inactivityTimer) {
     clearTimeout(inactivityTimer);

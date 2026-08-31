@@ -57,8 +57,11 @@
   const cloud = session.cloud;
   const tag = session.tag;
   const ids = session.ids;
+  const fullIds =
+    session.fullIds && session.fullIds.length ? session.fullIds : ids;
   const printId = session.printId;
   const vids = session.vids;
+  const fullVids = session.fullVids || [];
   const layoutSlots = session.layoutSlots;
   const printAspect = session.printAspect;
   const gridRows = session.rows;
@@ -99,6 +102,7 @@
   }
 
   const highlightUrls = vids.map((id) => imageUrl(id));
+  const fullHighlightUrls = fullVids.map((id) => imageUrl(id));
 
   function framedStripUrl() {
     const named = highlightUrls.find((u) => /highlight-strip/i.test(u));
@@ -176,7 +180,7 @@
     });
   }
 
-  if (highlightUrls.length) {
+  if (highlightUrls.length || fullHighlightUrls.length) {
     individualToggle.innerHTML =
       '<span aria-hidden="true">✂</span> save photos & videos';
   }
@@ -190,7 +194,7 @@
 
   function buildIndividualPanel() {
     individualPanelBuilt = true;
-    ids.forEach((id, i) => {
+    fullIds.forEach((id, i) => {
       const url = imageUrl(id);
       const downloadUrl = imageUrl(id, {
         download: true,
@@ -222,18 +226,45 @@
       individualPanel.appendChild(btn);
     });
 
-    highlightUrls.forEach((url, i) => {
-      const isStrip = /highlight-strip/i.test(url) || highlightUrls.length === 1;
-      const downloadName = isStrip
-        ? "nostalgia_strip.mp4"
-        : highlightDownloadName(url, i + 1);
+    const shotUrls = fullHighlightUrls.length ? fullHighlightUrls : [];
+    const stripUrl = framedStripUrl();
+    const videoItems = [];
+    shotUrls.forEach((url, i) => {
+      videoItems.push({
+        url,
+        downloadName: highlightDownloadName(url, i + 1),
+        label: "Save highlight " + (i + 1),
+      });
+    });
+    if (stripUrl && !shotUrls.includes(stripUrl)) {
+      videoItems.push({
+        url: stripUrl,
+        downloadName: "nostalgia_strip.mp4",
+        label: "Save strip highlight",
+      });
+    }
+    if (!videoItems.length) {
+      highlightUrls.forEach((url, i) => {
+        const isStrip =
+          /highlight-strip/i.test(url) || highlightUrls.length === 1;
+        videoItems.push({
+          url,
+          downloadName: isStrip
+            ? "nostalgia_strip.mp4"
+            : highlightDownloadName(url, i + 1),
+          label: "Save highlight " + (i + 1),
+        });
+      });
+    }
+
+    videoItems.forEach((item) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "individual-thumb is-video";
-      btn.setAttribute("aria-label", "Save highlight " + (i + 1));
+      btn.setAttribute("aria-label", item.label);
 
       const vid = document.createElement("video");
-      vid.src = url;
+      vid.src = item.url;
       vid.muted = true;
       vid.playsInline = true;
       vid.setAttribute("playsinline", "");
@@ -253,7 +284,7 @@
       btn.appendChild(check);
 
       btn.addEventListener("click", async () => {
-        await saveByUrl(url, downloadName);
+        await saveByUrl(item.url, item.downloadName);
         btn.classList.add("saved");
       });
 
@@ -1520,9 +1551,17 @@
         if (!res.ok) continue;
         const data = await res.json();
         const sessionIds = [].concat(data.ids || []).map(String).filter(Boolean);
+        const sessionFullIds = [].concat(data.fullIds || []).map(String).filter(Boolean);
         const sessionVids = [].concat(data.vids || []).map(String).filter(Boolean);
+        const sessionFullVids = [].concat(data.fullVids || []).map(String).filter(Boolean);
         const sessionPrint = String(data.print || "").trim();
-        if (!sessionIds.length && !sessionPrint && !sessionVids.length) {
+        if (
+          !sessionIds.length &&
+          !sessionFullIds.length &&
+          !sessionPrint &&
+          !sessionVids.length &&
+          !sessionFullVids.length
+        ) {
           continue;
         }
         return {
@@ -1530,8 +1569,10 @@
           cloud: "",
           tag: code,
           ids: sessionIds,
+          fullIds: sessionFullIds,
           printId: sessionPrint,
           vids: sessionVids,
+          fullVids: sessionFullVids,
           layoutSlots: parseSlots(String(data.slots || "")),
           printAspect: parsePrintAspect(String(data.par || "")),
           rows: parseGridAxis(data.rows),
@@ -1565,8 +1606,10 @@
       cloud: legacyCloud,
       tag: (searchParams.get("tag") || "").trim(),
       ids: sessionIds,
+      fullIds: [],
       printId: sessionPrint,
       vids: sessionVids,
+      fullVids: [],
       layoutSlots: parseSlots((searchParams.get("slots") || "").trim()),
       printAspect: parsePrintAspect((searchParams.get("par") || "").trim()),
       rows: parseGridAxis(searchParams.get("rows")),

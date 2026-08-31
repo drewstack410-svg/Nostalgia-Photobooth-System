@@ -131,7 +131,10 @@ export interface Template {
 
 export interface CapturedPhoto {
   id: string;
+  /** Viewfinder-cropped still used for print / strip / Grid. */
   dataUrl: string;
+  /** Full uncropped camera frame (filters applied). Gallery + disk/cloud. */
+  fullDataUrl?: string;
   timestamp: Date;
 }
 
@@ -244,6 +247,12 @@ export const BLEND_MODES: { value: BlendMode; label: string }[] = [
   { value: "luminosity", label: "Luminosity" },
 ];
 
+const BLEND_MODE_VALUES = new Set<string>(BLEND_MODES.map((m) => m.value));
+
+export function isBlendMode(value: unknown): value is BlendMode {
+  return typeof value === "string" && BLEND_MODE_VALUES.has(value);
+}
+
 /**
  * A colour wash composited over the photo, exactly like a Photoshop fill
  * layer set to a blend mode with an opacity.
@@ -262,6 +271,23 @@ export interface FilterOverlay {
   opacity: number;
 }
 
+export type OverlayMediaKind = "image" | "video";
+
+/**
+ * A PNG / JPEG / MOV (or MP4) layer composited over the filtered photo,
+ * the same idea as dropping a file onto a Photoshop layer and setting
+ * blend mode + opacity. Lives *above* the colour wash and *below*
+ * vignette/grain. The file itself is stored on disk (not in this
+ * object) — only the layer settings and a filename for the UI live here.
+ */
+export interface FilterMediaOverlay {
+  blendMode: BlendMode;
+  /** 0..1, matching Photoshop's Opacity field. */
+  opacity: number;
+  mediaType: OverlayMediaKind;
+  mediaName: string;
+}
+
 export interface CameraFilter {
   id: string;
   name: string;
@@ -269,6 +295,8 @@ export interface CameraFilter {
   isActive: boolean;
   /** Optional colour wash composited over the result. */
   overlay?: FilterOverlay;
+  /** Optional image/video layer composited over the result. */
+  mediaOverlay?: FilterMediaOverlay;
   /** LUT data for .cube filters (when effectType === "cube") */
   cubeData?: string;
   /**
@@ -974,6 +1002,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
               merged.grainEnabled = saved.grainEnabled;
             }
             if (saved.overlay) merged.overlay = saved.overlay;
+            if (saved.mediaOverlay) merged.mediaOverlay = saved.mediaOverlay;
             if (saved.adjustments) merged.adjustments = clampAdjustments(saved.adjustments);
             return merged;
           });
@@ -1318,6 +1347,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (isDefaultFilter(id)) return;
     filters.value = filters.value.filter((f) => f.id !== id);
     saveFilters();
+    void clearFilterMediaOverlay(id);
   }
   function toggleFilterActive(id: string) {
     const f = filters.value.find((x) => x.id === id);
@@ -1373,6 +1403,190 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     }
     saveFilters();
   }
+
+  /** Default layer settings when the operator first drops a PNG/MOV onto a filter. */
+  const DEFAULT_MEDIA_OVERLAY: Pick<FilterMediaOverlay, "blendMode" | "opacity"> = {
+    blendMode: "normal",
+    opacity: 1,
+  };
+
+  type OverlayMediaRuntime = { url: string; type: OverlayMediaKind };
+  const overlayMediaRuntime = ref<Record<string, OverlayMediaRuntime>>({});
+  const overlayMediaObjectUrls = new Map<string, string>();
+
+  function overlayMediaFor(filterId: string): OverlayMediaRuntime | null {
+    return overlayMediaRuntime.value[filterId] ?? null;
+  }
+
+  function setOverlayMediaRuntime(
+    filterId: string,
+    type: OverlayMediaKind,
+    blob: Blob,
+  ) {
+    const prev = overlayMediaObjectUrls.get(filterId);
+    if (prev) URL.revokeObjectURL(prev);
+    const url = URL.createObjectURL(blob);
+    overlayMediaObjectUrls.set(filterId, url);
+    overlayMediaRuntime.value = {
+      ...overlayMediaRuntime.value,
+      [filterId]: { url, type },
+    };
+  }
+
+  function dropOverlayMediaRuntime(filterId: string) {
+    const prev = overlayMediaObjectUrls.get(filterId);
+    if (prev) URL.revokeObjectURL(prev);
+    overlayMediaObjectUrls.delete(filterId);
+    if (!(filterId in overlayMediaRuntime.value)) return;
+    const next = { ...overlayMediaRuntime.value };
+    delete next[filterId];
+    overlayMediaRuntime.value = next;
+  }
+
+  function clampOverlayOpacity(value: number): number {
+    return Math.max(0, Math.min(1, value));
+  }
+
+  function sanitizeMediaOverlay(
+    raw: Partial<FilterMediaOverlay> &
+      Pick<FilterMediaOverlay, "mediaType" | "mediaName">,
+  ): FilterMediaOverlay {
+    return {
+      blendMode: isBlendMode(raw.blendMode)
+        ? raw.blendMode
+        : DEFAULT_MEDIA_OVERLAY.blendMode,
+      opacity: clampOverlayOpacity(
+        typeof raw.opacity === "number"
+          ? raw.opacity
+          : DEFAULT_MEDIA_OVERLAY.opacity,
+      ),
+      mediaType: raw.mediaType === "video" ? "video" : "image",
+      mediaName: raw.mediaName.trim() || "overlay",
+    };
+  }
+
+  function setFilterMediaOverlay(id: string, overlay: FilterMediaOverlay | null) {
+    const f = filters.value.find((x) => x.id === id);
+    if (!f) return;
+    if (overlay) {
+      f.mediaOverlay = sanitizeMediaOverlay(overlay);
+    } else {
+      delete f.mediaOverlay;
+      dropOverlayMediaRuntime(id);
+    }
+    saveFilters();
+  }
+
+  function guessOverlayMediaKind(file: File): OverlayMediaKind | null {
+    const name = file.name || "";
+    if (
+      file.type.startsWith("video/") ||
+      /\.(mp4|webm|ogg|ogv|mov|m4v)$/i.test(name)
+    ) {
+      return "video";
+    }
+    if (
+      file.type.startsWith("image/") ||
+      /\.(png|jpe?g|webp|gif)$/i.test(name)
+    ) {
+      return "image";
+    }
+    return null;
+  }
+
+  function overlayMimeFor(file: File, kind: OverlayMediaKind): string {
+    if (file.type) {
+      if (file.type === "video/quicktime") return "video/mp4";
+      return file.type;
+    }
+    if (kind === "video") {
+      if (/\.webm$/i.test(file.name)) return "video/webm";
+      return "video/mp4";
+    }
+    if (/\.png$/i.test(file.name)) return "image/png";
+    if (/\.webp$/i.test(file.name)) return "image/webp";
+    if (/\.gif$/i.test(file.name)) return "image/gif";
+    return "image/jpeg";
+  }
+
+  /**
+   * Upload a PNG/JPEG/MOV (etc.) as the Photoshop-style media layer for a
+   * filter. The file is persisted under userData in Electron; the renderer
+   * only keeps a blob: URL (CSP media-src cannot play a data: video).
+   */
+  async function setFilterMediaOverlayFile(
+    id: string,
+    file: File,
+  ): Promise<boolean> {
+    const f = filters.value.find((x) => x.id === id);
+    if (!f) return false;
+    const kind = guessOverlayMediaKind(file);
+    if (!kind) return false;
+    const mime = overlayMimeFor(file, kind);
+    const buf = new Uint8Array(await file.arrayBuffer());
+    setOverlayMediaRuntime(id, kind, new Blob([buf], { type: mime }));
+    f.mediaOverlay = sanitizeMediaOverlay({
+      blendMode: f.mediaOverlay?.blendMode ?? DEFAULT_MEDIA_OVERLAY.blendMode,
+      opacity: f.mediaOverlay?.opacity ?? DEFAULT_MEDIA_OVERLAY.opacity,
+      mediaType: kind,
+      mediaName: file.name,
+    });
+    saveFilters();
+
+    if (window.electronAPI?.saveFilterOverlayMedia) {
+      const res = await window.electronAPI.saveFilterOverlayMedia({
+        filterId: id,
+        bytes: buf,
+        mime,
+        filename: file.name,
+      });
+      if (!res.success) {
+        console.error("[Store] Failed to save filter overlay media:", res.error);
+      }
+      return res.success;
+    }
+    console.warn(
+      "[Store] Filter overlay media can't persist outside Electron — preview only.",
+    );
+    return true;
+  }
+
+  async function clearFilterMediaOverlay(id: string) {
+    const f = filters.value.find((x) => x.id === id);
+    if (f) delete f.mediaOverlay;
+    dropOverlayMediaRuntime(id);
+    saveFilters();
+    if (window.electronAPI?.clearFilterOverlayMedia) {
+      try {
+        await window.electronAPI.clearFilterOverlayMedia(id);
+      } catch (e) {
+        console.error("[Store] Failed to clear filter overlay media:", e);
+      }
+    }
+  }
+
+  async function loadFilterOverlayMediaFromDisk() {
+    if (!window.electronAPI?.getFilterOverlayMedia) return;
+    for (const f of filters.value) {
+      if (!f.mediaOverlay) continue;
+      try {
+        const result = await window.electronAPI.getFilterOverlayMedia(f.id);
+        if (result.success && result.bytes && result.mediaType) {
+          const mime =
+            result.mime ||
+            (result.mediaType === "video" ? "video/mp4" : "image/png");
+          setOverlayMediaRuntime(
+            f.id,
+            result.mediaType,
+            new Blob([result.bytes], { type: mime }),
+          );
+        }
+      } catch (e) {
+        console.error("[Store] Failed to load filter overlay media:", f.id, e);
+      }
+    }
+  }
+
   /**
    * Whether film grain should be applied for a given filter — reads the
    * explicit per-filter toggle when set, otherwise falls back to the
@@ -1578,10 +1792,11 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     currentPhotoIndex.value = 0;
   }
 
-  function addPhoto(dataUrl: string) {
+  function addPhoto(dataUrl: string, fullDataUrl?: string) {
     const photo: CapturedPhoto = {
       id: `photo_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       dataUrl,
+      fullDataUrl: fullDataUrl || dataUrl,
       timestamp: new Date(),
     };
     capturedPhotos.value.push(photo);
@@ -1659,6 +1874,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     capturedPhotos.value = captures.map((c, i) => ({
       id: c.id ?? `reprint_${Date.now()}_${i}`,
       dataUrl: c.dataUrl,
+      fullDataUrl: c.dataUrl,
       timestamp: new Date(),
     }));
     currentPhotoIndex.value = capturedPhotos.value.length;
@@ -1926,6 +2142,13 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     updateFilterName,
     setFilterGrain,
     setFilterOverlay,
+    setFilterMediaOverlay,
+    setFilterMediaOverlayFile,
+    clearFilterMediaOverlay,
+    loadFilterOverlayMediaFromDisk,
+    overlayMediaFor,
+    overlayMediaRuntime,
+    DEFAULT_MEDIA_OVERLAY,
     setFilterAdjustments,
     resolvedAdjustments,
     filterGrainAmount,

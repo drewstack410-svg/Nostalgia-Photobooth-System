@@ -24,9 +24,15 @@ export function buildShortGalleryUrl(shortCode: string): string {
 export type GalleryManifest = {
   v: 1;
   title: string;
+  /** Viewfinder-cropped stills (Grid tab / print-matching). */
   ids: string[];
+  /** Full uncropped stills for the gallery download row. */
+  fullIds?: string[];
   print?: string;
+  /** Framed strip highlight (and fallback clips). */
   vids?: string[];
+  /** Per-shot uncropped highlight clips. */
+  fullVids?: string[];
   slots?: string;
   par?: string;
   /** Template occupancy — gallery Grid tab uses these, not a guess from photo count. */

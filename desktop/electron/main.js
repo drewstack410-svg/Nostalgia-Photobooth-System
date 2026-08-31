@@ -5,8 +5,43 @@ const http = require('http');
 // Outbound client for the client's payment middleware (PULL mode).
 // Inert unless PAYMENT_API_URL is set — see electron/paymentMiddleware.js.
 const paymentMiddleware = require('./paymentMiddleware');
+const pocketbaseServer = require('./pocketbaseServer');
 const r2 = require('./r2Upload');
-r2.loadEnvFile(path.join(__dirname, '..', '.env'));
+
+function loadRuntimeEnv() {
+  let userEnv = "";
+  let packaged = "";
+  try {
+    userEnv = path.join(app.getPath("userData"), ".env");
+  } catch (_) { /* app path not ready */ }
+  try {
+    packaged = path.join(process.resourcesPath || "", ".env");
+  } catch (_) { /* unpackaged */ }
+  if (
+    userEnv &&
+    packaged &&
+    packaged !== "." &&
+    !fs.existsSync(userEnv) &&
+    fs.existsSync(packaged)
+  ) {
+    try {
+      fs.copyFileSync(packaged, userEnv);
+      console.log("[Main] Copied packaged .env to", userEnv);
+    } catch (err) {
+      console.warn("[Main] Could not copy .env to userData:", err.message);
+    }
+  }
+  const candidates = [
+    userEnv,
+    packaged,
+    path.join(__dirname, "..", ".env"),
+    path.join(path.dirname(process.execPath), ".env"),
+  ].filter(Boolean);
+  for (const file of candidates) {
+    if (r2.loadEnvFile(file)) console.log("[Main] Loaded env from", file);
+  }
+}
+loadRuntimeEnv();
 
 // Try to load Canon EDSDK wrapper (optional - will fallback if not available)
 let CanonCameraBrowser, Camera, CameraProperty, Option, ImageQuality;
@@ -317,7 +352,9 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await pocketbaseServer.startPocketBase();
+
   void r2.pingR2().then((status) => {
     if (status.connected) {
       console.log(
@@ -704,6 +741,7 @@ function startLumaMiddlewareListener() {
 }
 
 app.on('will-quit', () => {
+  try { pocketbaseServer.stopPocketBase(); } catch (_) { /* shutting down anyway */ }
   try { lumaApiServer?.close(); } catch (_) { /* shutting down anyway */ }
 });
 
@@ -937,6 +975,107 @@ ipcMain.handle("clear-title-background", async (event, arg) => {
     return { success: true };
   } catch (error) {
     console.error("[Main] Error clearing title background:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+// ── Filter overlay media (PNG / JPEG / MOV per camera filter) ───────────────
+// Same reason as title backgrounds: a MOV can be tens of MB as base64 and
+// must not go through localStorage. One file per filter id, replaced on
+// upload. Blob URLs are built in the renderer from the raw bytes.
+function filterOverlayMediaDir() {
+  return path.join(app.getPath("userData"), "filter-overlays");
+}
+
+function safeFilterOverlayId(id) {
+  return String(id || "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "filter";
+}
+
+function overlayExtFromMimeOrName(mime, filename) {
+  if (filename) {
+    const ext = path.extname(filename).toLowerCase().replace(".", "");
+    if (ext) return ext === "jpeg" ? "jpg" : ext;
+  }
+  const raw = String(mime || "")
+    .split("/")[1]
+    ?.split(";")[0]
+    ?.toLowerCase() || "bin";
+  if (raw === "jpeg") return "jpg";
+  if (raw === "quicktime") return "mov";
+  if (raw === "x-m4v") return "m4v";
+  return raw;
+}
+
+function overlayMimeFromExt(ext) {
+  const e = String(ext || "").toLowerCase();
+  if (e === "png") return "image/png";
+  if (e === "jpg" || e === "jpeg") return "image/jpeg";
+  if (e === "webp") return "image/webp";
+  if (e === "gif") return "image/gif";
+  if (e === "webm") return "video/webm";
+  if (e === "mov" || e === "mp4" || e === "m4v") return "video/mp4";
+  return "application/octet-stream";
+}
+
+function overlayMediaTypeFromExt(ext) {
+  const e = String(ext || "").toLowerCase();
+  return ["mp4", "webm", "ogg", "ogv", "mov", "m4v"].includes(e) ? "video" : "image";
+}
+
+function overlayFilesForFilter(dir, filterId) {
+  const prefix = `${safeFilterOverlayId(filterId)}.`;
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter((name) => name.startsWith(prefix));
+}
+
+ipcMain.handle("save-filter-overlay-media", async (_event, { filterId, bytes, mime, filename }) => {
+  try {
+    if (!filterId || !bytes) return { success: false, error: "Missing filterId or bytes" };
+    const dir = filterOverlayMediaDir();
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    for (const name of overlayFilesForFilter(dir, filterId)) {
+      fs.unlinkSync(path.join(dir, name));
+    }
+    const ext = overlayExtFromMimeOrName(mime, filename);
+    const filePath = path.join(dir, `${safeFilterOverlayId(filterId)}.${ext}`);
+    fs.writeFileSync(filePath, Buffer.from(bytes));
+    console.log(`[Main] Filter overlay media saved (${bytes.length} bytes):`, filePath);
+    return { success: true, path: filePath };
+  } catch (error) {
+    console.error("[Main] Error saving filter overlay media:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("get-filter-overlay-media", async (_event, { filterId }) => {
+  const empty = { success: true, bytes: null, mime: null, mediaType: null, filename: null };
+  try {
+    if (!filterId) return empty;
+    const dir = filterOverlayMediaDir();
+    const files = overlayFilesForFilter(dir, filterId);
+    if (files.length === 0) return empty;
+    const filePath = path.join(dir, files[0]);
+    const buffer = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase().slice(1);
+    const mediaType = overlayMediaTypeFromExt(ext);
+    const mime = overlayMimeFromExt(ext);
+    return { success: true, bytes: buffer, mime, mediaType, filename: files[0] };
+  } catch (error) {
+    console.error("[Main] Error reading filter overlay media:", error);
+    return { success: false, error: error.message, bytes: null, mime: null, mediaType: null, filename: null };
+  }
+});
+
+ipcMain.handle("clear-filter-overlay-media", async (_event, { filterId }) => {
+  try {
+    if (!filterId) return { success: true };
+    const dir = filterOverlayMediaDir();
+    for (const name of overlayFilesForFilter(dir, filterId)) {
+      fs.unlinkSync(path.join(dir, name));
+    }
+    return { success: true };
+  } catch (error) {
+    console.error("[Main] Error clearing filter overlay media:", error);
     return { success: false, error: error.message };
   }
 });
@@ -1297,7 +1436,6 @@ $pd  = New-Object System.Drawing.Printing.PrintDocument
 $pd.PrinterSettings.PrinterName = '${safePrinter}'
 $pd.PrinterSettings.Copies      = ${copiesVal}
 $wantLandscape = $${isLandscape ? 'true' : 'false'}
-$pd.DefaultPageSettings.Landscape = $wantLandscape
 $pd.DefaultPageSettings.Margins   = New-Object System.Drawing.Printing.Margins(0,0,0,0)
 $pd.OriginAtMargins = $false
 
@@ -1306,6 +1444,7 @@ $pd.OriginAtMargins = $false
 # vs "(2x6)" vs "2x6*2"). Logs are returned via stdout.
 Write-Output 'AVAILABLE_PAPER_SIZES:'
 $pd.PrinterSettings.PaperSizes | ForEach-Object { Write-Output ("  - " + $_.PaperName) }
+Write-Output ("IMAGE=$($img.Width)x$($img.Height)")
 
 $cutMode = '${safeCutMode}'
 $paperFamily = '${paperFamily}'
@@ -1314,25 +1453,26 @@ $paperSelected = $false
 # Paper preference order depends on cut mode AND orientation. On the
 # DS-RX1 the "PR (…)" sizes are PORTRAIT-oriented (dimensions listed
 # tall, e.g. "PR (4x6)" = 4" wide × 6" tall) and the plain "(…)"
-# sizes are LANDSCAPE (e.g. "(6x4)" = 6" wide × 4" tall). Sending a
-# portrait composite to a landscape paper size makes the driver
-# rotate it → sideways prints, which is exactly the bug we hit. So:
-#   - cut jobs           → PR (4x6) (cut fires on the PR size)
-#   - portrait, no cut   → PR (4x6) (native portrait, no rotation)
-#   - landscape, no cut  → (6x4)
+# sizes are LANDSCAPE (e.g. "(6x4)" = 6" wide × 4" tall).
 #
-# Driver-side prerequisite for the cut: Devices and Printers →
-# DS-RX1 → Printing Preferences → Advanced → Printer Features →
-# "2 inch cut: Enable" (persists as the printer default). Keep that
-# toggle OFF for portrait grid templates (2×2 etc.) or they'll be
-# cut too — it's a global driver setting, not per-job.
+# Do NOT set Landscape until AFTER a paper size is chosen. Setting
+# Landscape=$true and then picking "(6x4)" / "(8x6)" — papers whose
+# native Width>Height is already landscape — flips PageBounds to
+# portrait. DrawImage then STRETCHES the landscape composite onto
+# that portrait rect (circles become tall ovals). That is the
+# 4×6 / 6×8 landscape print distortion.
 if ($paperFamily -eq '6x8') {
-    # 6x8 media (DS620-class). The DNP driver exposes it as "(6x8)";
-    # the 8x6 variants cover a landscape-mounted build.
-    $preferredPaperNames = @(
-        '(6x8)', '6x8', 'PC (6x8)', 'PC(6x8)', 'PR (6x8)', 'PR(6x8)',
-        '(8x6)', '8x6', 'PC (8x6)', 'PC(8x6)'
-    )
+    if ($wantLandscape) {
+        $preferredPaperNames = @(
+            '(8x6)', '8x6', 'PC (8x6)', 'PC(8x6)', 'PR (8x6)', 'PR(8x6)',
+            '(6x8)', '6x8', 'PC (6x8)', 'PC(6x8)', 'PR (6x8)', 'PR(6x8)'
+        )
+    } else {
+        $preferredPaperNames = @(
+            '(6x8)', '6x8', 'PC (6x8)', 'PC(6x8)', 'PR (6x8)', 'PR(6x8)',
+            '(8x6)', '8x6', 'PC (8x6)', 'PC(8x6)', 'PR (8x6)', 'PR(8x6)'
+        )
+    }
 } elseif ($cutMode -eq 'dnp-2-inch-cut') {
     $preferredPaperNames = @(
         'PR (4x6)', 'PR(4x6)', 'PR (6x4)', 'PR(6x4)',
@@ -1358,7 +1498,7 @@ foreach ($name in $preferredPaperNames) {
     $paper = $pd.PrinterSettings.PaperSizes | Where-Object { $_.PaperName -eq $name } | Select-Object -First 1
     if ($paper) {
         $pd.DefaultPageSettings.PaperSize = $paper
-        Write-Output "PAPER_SIZE=$($paper.PaperName)"
+        Write-Output "PAPER_SIZE=$($paper.PaperName) WH=$($paper.Width)x$($paper.Height)"
         $paperSelected = $true
         break
     }
@@ -1377,11 +1517,22 @@ if (-not $paperSelected) {
             Select-Object -First 1
         if ($paper) {
             $pd.DefaultPageSettings.PaperSize = $paper
-            Write-Output "PAPER_SIZE_FALLBACK=$($paper.PaperName)"
+            Write-Output "PAPER_SIZE_FALLBACK=$($paper.PaperName) WH=$($paper.Width)x$($paper.Height)"
             $paperSelected = $true
         }
     }
 }
+
+# Flip Landscape only when the paper's NATIVE aspect disagrees with
+# the image. Landscape image + already-landscape "(6x4)" → false.
+# Landscape image + portrait "PR (4x6)" → true.
+$imgIsLandscape = $img.Width -gt $img.Height
+$pw = $pd.DefaultPageSettings.PaperSize.Width
+$ph = $pd.DefaultPageSettings.PaperSize.Height
+$paperIsLandscape = $pw -gt $ph
+$pd.DefaultPageSettings.Landscape = ($imgIsLandscape -xor $paperIsLandscape)
+Write-Output ("LANDSCAPE=$($pd.DefaultPageSettings.Landscape) imgLandscape=$imgIsLandscape paperWH=$pw x $ph")
+
 if ($cutMode -eq 'dnp-2-inch-cut') {
     Write-Output 'CUT_MODE_NOTE: PR(4x6) selected; driver must have "2 inch cut: Enable" toggled on (Printer Preferences → Advanced → Printer Features) for the physical cut to fire.'
 }
@@ -1390,7 +1541,31 @@ $pd.add_PrintPage({
     param($s,$e)
     $e.Graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
     $e.Graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-    $e.Graphics.DrawImage($img, $e.PageBounds)
+    $dst = $e.PageBounds
+    Write-Output ("PAGEBOUNDS=$($dst.Width)x$($dst.Height)")
+    $imgA = $img.Width / [double]$img.Height
+    $pageA = $dst.Width / [double]$dst.Height
+    # Stretch-to-fill is correct when aspects agree (dye-sub has no
+    # usable "letterbox"). If the page is the other orientation —
+    # driver ignored Landscape — stretching would squash faces into
+    # ovals. Contain-fit instead so proportions stay true.
+    if ($pageA -gt 0 -and [Math]::Abs($imgA - $pageA) / $pageA -gt 0.08) {
+        Write-Output "ASPECT_MISMATCH img=$imgA page=$pageA contain-fit"
+        if ($imgA -gt $pageA) {
+            $w = $dst.Width
+            $h = [int]($w / $imgA)
+            $x = $dst.X
+            $y = $dst.Y + [int](($dst.Height - $h) / 2)
+        } else {
+            $h = $dst.Height
+            $w = [int]($h * $imgA)
+            $y = $dst.Y
+            $x = $dst.X + [int](($dst.Width - $w) / 2)
+        }
+        $e.Graphics.DrawImage($img, (New-Object System.Drawing.Rectangle $x,$y,$w,$h))
+    } else {
+        $e.Graphics.DrawImage($img, $dst)
+    }
     $e.HasMorePages = $false
 })
 $pd.Print()
@@ -1399,7 +1574,10 @@ Write-Output 'PRINT_OK'
 `;
 
   const tmpPs = path.join(os.tmpdir(), `nostalgia_print_${Date.now()}.ps1`);
-  fs.writeFileSync(tmpPs, psScript, 'utf8');
+  // UTF-8 BOM: Windows PowerShell 5.x otherwise reads the file as ANSI
+  // and any em-dash / unicode in comments or strings becomes a stray
+  // quote (TerminatorExpectedAtEndOfString).
+  fs.writeFileSync(tmpPs, `\uFEFF${psScript}`, 'utf8');
 
   console.log(`[Main] Printing via .NET: printer="${targetPrinter}", copies=${copiesVal}, landscape=${isLandscape}, cutMode=${safeCutMode}, paperSize=${paperSize || '(unset)'} -> family ${paperFamily}`);
 

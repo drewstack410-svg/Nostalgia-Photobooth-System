@@ -113,6 +113,17 @@ try {
       return ipcRenderer.invoke('clear-title-background', { slot });
     },
 
+    saveFilterOverlayMedia: ({ filterId, bytes, mime, filename }) => {
+      console.log(`[Preload] saveFilterOverlayMedia (${filterId}, ${bytes?.length} bytes, ${mime})`);
+      return ipcRenderer.invoke('save-filter-overlay-media', { filterId, bytes, mime, filename });
+    },
+    getFilterOverlayMedia: (filterId) => {
+      return ipcRenderer.invoke('get-filter-overlay-media', { filterId });
+    },
+    clearFilterOverlayMedia: (filterId) => {
+      return ipcRenderer.invoke('clear-filter-overlay-media', { filterId });
+    },
+
     getPrinters: () => {
       console.log('[Preload] getPrinters called');
       return ipcRenderer.invoke('get-printers');

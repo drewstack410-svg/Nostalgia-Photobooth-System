@@ -99,6 +99,20 @@ If you see a white screen after running the app, this has been fixed in the late
 - **Application:** `dist-electron\win-unpacked\`
 - **Photos saved to:** `C:\Users\[Username]\Pictures\NostalgiaPhotobooth\`
 - **Application data:** Stored in Electron's app data directory
+- **PocketBase database:** `%APPDATA%\nostalgia-photobooth\pocketbase\` (survives app updates)
+
+## PocketBase (bundled)
+
+The installer includes `pocketbase.exe`. The kiosk starts it automatically on `http://127.0.0.1:8090` and stops it when the app quits.
+
+1. Install and run **Nostalgia Photobooth**.
+2. On first launch, open `http://127.0.0.1:8090/_/` in a browser on the kiosk and create the admin account (same email as `VITE_ADMIN_EMAIL` in the build).
+3. Dashboard collections are created by the bundled migration.
+4. In the app: Admin → Settings → Booth — leave **PocketBase server** blank (this machine). Set a unique Booth ID.
+
+To use a shared PocketBase on another PC, set PocketBase server to that URL. The kiosk will not start a local copy.
+
+Do not keep the database inside `win-unpacked` — reinstalls would wipe it. Back up the AppData `pocketbase` folder.
 
 ## System Requirements
 

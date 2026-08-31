@@ -5,6 +5,7 @@
  */
 
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
+import { highlightedViewRect } from "./viewfinderCrop";
 
 export type StripSlot = {
   x: number;
@@ -67,22 +68,24 @@ function drawCover(
   y: number,
   w: number,
   h: number,
+  cropBarPct = 0,
 ) {
   const iw = media.videoWidth || media.naturalWidth || 0;
   const ih = media.videoHeight || media.naturalHeight || 0;
   if (!iw || !ih || w <= 0 || h <= 0) return;
-  const imgAspect = iw / ih;
+  const src = highlightedViewRect(iw, ih, cropBarPct);
+  const imgAspect = src.sw / src.sh;
   const cellAspect = w / h;
-  let sx = 0;
-  let sy = 0;
-  let sw = iw;
-  let sh = ih;
+  let sx = src.sx;
+  let sy = src.sy;
+  let sw = src.sw;
+  let sh = src.sh;
   if (imgAspect > cellAspect) {
-    sw = ih * cellAspect;
-    sx = (iw - sw) / 2;
+    sw = sh * cellAspect;
+    sx = src.sx + (src.sw - sw) / 2;
   } else {
-    sh = iw / cellAspect;
-    sy = (ih - sh) / 2;
+    sh = sw / cellAspect;
+    sy = src.sy + (src.sh - sh) / 2;
   }
   ctx.drawImage(media, sx, sy, sw, sh, x, y, w, h);
 }
@@ -183,6 +186,8 @@ export async function composeStripVideo(opts: {
   slots: StripSlot[];
   /** Knocked-out PNG frame overlay. When set, clips go under it. */
   overlayDataUrl?: string;
+  /** Viewfinder side-bar % so uncropped clips match printed stills. */
+  cropBarPercent?: number;
 }): Promise<string | null> {
   const clips = opts.clipDataUrls.filter(Boolean);
   if (!opts.frameDataUrl || !clips.length) {
@@ -262,7 +267,7 @@ export async function composeStripVideo(opts: {
       ctx.beginPath();
       ctx.rect(x, y, w, h);
       ctx.clip();
-      drawCover(ctx, v, x, y, w, h);
+      drawCover(ctx, v, x, y, w, h, opts.cropBarPercent ?? 0);
       ctx.restore();
     });
     if (overlay) drawPngOverlay(ctx, overlay, width, height);

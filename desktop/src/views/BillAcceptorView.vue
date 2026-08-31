@@ -124,6 +124,7 @@ let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
 let warningTimer: ReturnType<typeof setTimeout> | null = null;
 let countdownInterval: ReturnType<typeof setInterval> | null = null;
 let eventListeners: Array<{ event: string; handler: () => void }> = [];
+let isUnmounted = false;
 
 // Inactivity timer: 1 minute (60000ms)
 const INACTIVITY_TIMEOUT = 60000;
@@ -148,15 +149,26 @@ function resetInactivityTimer() {
   showInactivityWarning.value = false;
   inactivityCountdown.value = WARNING_COUNTDOWN;
 
+  if (isUnmounted) return;
+
   // Start new inactivity timer
   inactivityTimer = setTimeout(() => {
+    if (isUnmounted) return;
     showInactivityWarning.value = true;
     inactivityCountdown.value = WARNING_COUNTDOWN;
 
     // Start countdown after a small delay to ensure UI is updated
     warningTimer = setTimeout(() => {
       warningTimer = null;
+      if (isUnmounted) return;
       countdownInterval = setInterval(() => {
+        if (isUnmounted) {
+          if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+          }
+          return;
+        }
         inactivityCountdown.value--;
 
         if (inactivityCountdown.value <= 0) {
@@ -172,7 +184,7 @@ function resetInactivityTimer() {
 }
 
 function returnToHome() {
-  // Clear all timers before navigating
+  if (isUnmounted) return;
   resetInactivityTimer();
   router.push("/");
 }
@@ -230,6 +242,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  isUnmounted = true;
   // Detach the bill-acceptor adapter so it stops forwarding credit
   // once we've left the screen.
   billAcceptor?.stop();

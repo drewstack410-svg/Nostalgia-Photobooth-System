@@ -73,6 +73,7 @@ onMounted(async () => {
   await store.loadSavedPhotos();
   await store.loadTitleBackgroundFromDisk();
   await store.loadPaymentBackgroundFromDisk();
+  await store.loadFilterOverlayMediaFromDisk();
 });
 </script>
 

@@ -217,9 +217,9 @@ const activeCells = computed(() => {
 <style scoped>
 .tlp {
   position: relative;
-  /* Transparent sheet so PNG alpha (and knocked-out white gutters)
-     reveal the page behind, matching the digital gallery. */
-  background: transparent;
+  /* White paper so knocked-out window gutters still read as paper,
+     while remaining white ink (logos, type, borders) stays visible. */
+  background: #fff;
   overflow: hidden;
   box-shadow: var(--shadow-medium);
 }

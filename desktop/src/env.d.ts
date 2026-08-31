@@ -260,6 +260,28 @@ interface ElectronAPI {
   clearTitleBackground: (
     slot?: "title" | "payment",
   ) => Promise<{ success: boolean; error?: string }>;
+  /**
+   * PNG/JPEG/MOV layer for a camera filter, stored on disk in userData
+   * (same reason as title backgrounds — video must not go through
+   * localStorage or a data: URL).
+   */
+  saveFilterOverlayMedia: (payload: {
+    filterId: string;
+    bytes: Uint8Array;
+    mime: string;
+    filename?: string;
+  }) => Promise<SaveResult>;
+  getFilterOverlayMedia: (filterId: string) => Promise<{
+    success: boolean;
+    bytes: Uint8Array | null;
+    mime: string | null;
+    mediaType: "image" | "video" | null;
+    filename?: string | null;
+    error?: string;
+  }>;
+  clearFilterOverlayMedia: (
+    filterId: string,
+  ) => Promise<{ success: boolean; error?: string }>;
   getPrinters: () => Promise<PrintersResult>;
   printPhoto: (opts: PrintPhotoOptions) => Promise<PrintPhotoResult>;
   /**

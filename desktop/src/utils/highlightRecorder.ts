@@ -1,9 +1,8 @@
 /**
  * Session highlight clips: ~15s MP4 — last 10s of live view before the
- * shutter, then 5s of the frozen last frame. Frames are drawn to a
- * canvas and encoded with WebCodecs + mp4-muxer so the freeze has real
- * duration (MediaRecorder drops identical canvas frames). Clips also
- * go to Videos/NostalgiaPhotobooth.
+ * shutter, then 5s of the frozen last frame. Encoded at the FULL camera
+ * frame (not the viewfinder crop). Strip compose cover-fits these clips
+ * into print windows. Clips also go to Videos/NostalgiaPhotobooth.
  */
 
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
@@ -15,16 +14,12 @@ const MAX_WIDTH = 1280;
 const FPS = 30;
 const FRAME_MS = 1000 / FPS;
 const TARGET_MS = HIGHLIGHT_LEAD_MS + HIGHLIGHT_PREVIEW_MS;
-/** Same 3:2 viewfinder the live crop bars are measured against. */
-const VIEW_ASPECT = 3 / 2;
 
 export type HighlightCaptureOpts = {
   stream?: MediaStream | null;
   video?: HTMLVideoElement | null;
   getStillUrl?: () => string | null;
   getMirror?: () => boolean;
-  /** Percent cropped off each side of the 3:2 view (the dimmed bars). */
-  getCropBarPercent?: () => number;
   /** Bake the booth filter onto each live frame (not the freeze blit). */
   applyLook?: (ctx: CanvasRenderingContext2D) => void;
 };
@@ -40,7 +35,6 @@ let frozen = false;
 let sourceVideo: HTMLVideoElement | null = null;
 let getStillUrl: (() => string | null) | null = null;
 let getMirror: (() => boolean) | null = null;
-let getCropBarPercent: (() => number) | null = null;
 let applyLook: ((ctx: CanvasRenderingContext2D) => void) | null = null;
 let stillImg: HTMLImageElement | null = null;
 let lastStillUrl = "";
@@ -79,34 +73,23 @@ function even(n: number): number {
   return Math.max(2, n & ~1);
 }
 
-/** Source rectangle matching the lit center of the live preview. */
-function highlightedRect(
+/** Draw the entire source onto the canvas (no viewfinder crop). */
+function drawFull(
+  target: CanvasImageSource,
   srcW: number,
   srcH: number,
-  cropBarPct: number,
-): { sx: number; sy: number; sw: number; sh: number } {
-  let sx = 0;
-  let sy = 0;
-  let sw = srcW;
-  let sh = srcH;
-  const srcAspect = srcW / srcH;
-  if (srcAspect > VIEW_ASPECT + 0.001) {
-    sw = srcH * VIEW_ASPECT;
-    sx = (srcW - sw) / 2;
-  } else if (srcAspect < VIEW_ASPECT - 0.001) {
-    sh = srcW / VIEW_ASPECT;
-    sy = (srcH - sh) / 2;
+) {
+  if (!canvas || !ctx || srcW < 1 || srcH < 1) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  const mirror = currentMirror();
+  if (mirror) {
+    ctx.save();
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
   }
-  const bar = Math.max(0, Math.min(0.45, cropBarPct / 100));
-  if (bar > 0) {
-    sx += sw * bar;
-    sw *= 1 - 2 * bar;
-  }
-  sx = Math.max(0, Math.round(sx));
-  sy = Math.max(0, Math.round(sy));
-  sw = Math.max(1, Math.min(srcW - sx, Math.round(sw)));
-  sh = Math.max(1, Math.min(srcH - sy, Math.round(sh)));
-  return { sx, sy, sw, sh };
+  ctx.drawImage(target, 0, 0, srcW, srcH, 0, 0, w, h);
+  if (mirror) ctx.restore();
 }
 
 function sizeFromSources(): { width: number; height: number } | null {
@@ -117,26 +100,6 @@ function sizeFromSources(): { width: number; height: number } | null {
     return { width: stillImg.naturalWidth, height: stillImg.naturalHeight };
   }
   return null;
-}
-
-function drawCover(
-  target: CanvasImageSource,
-  srcW: number,
-  srcH: number,
-) {
-  if (!canvas || !ctx || srcW < 1 || srcH < 1) return;
-  const crop = getCropBarPercent?.() ?? 0;
-  const r = highlightedRect(srcW, srcH, crop);
-  const w = canvas.width;
-  const h = canvas.height;
-  const mirror = currentMirror();
-  if (mirror) {
-    ctx.save();
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
-  }
-  ctx.drawImage(target, r.sx, r.sy, r.sw, r.sh, 0, 0, w, h);
-  if (mirror) ctx.restore();
 }
 
 function pullStill() {
@@ -155,9 +118,9 @@ function drawLiveOrFreeze() {
   }
   pullStill();
   if (sourceVideo && sourceVideo.readyState >= 2 && sourceVideo.videoWidth >= 2) {
-    drawCover(sourceVideo, sourceVideo.videoWidth, sourceVideo.videoHeight);
+    drawFull(sourceVideo, sourceVideo.videoWidth, sourceVideo.videoHeight);
   } else if (stillImg && stillImg.complete && stillImg.naturalWidth >= 2) {
-    drawCover(stillImg, stillImg.naturalWidth, stillImg.naturalHeight);
+    drawFull(stillImg, stillImg.naturalWidth, stillImg.naturalHeight);
   }
   if (ctx) {
     try {
@@ -322,7 +285,6 @@ function startCanvasCapture(opts: HighlightCaptureOpts): boolean {
   sourceVideo = opts.video ?? null;
   getStillUrl = opts.getStillUrl ?? null;
   getMirror = opts.getMirror ?? null;
-  getCropBarPercent = opts.getCropBarPercent ?? null;
   applyLook = opts.applyLook ?? null;
   pullStill();
 
@@ -332,17 +294,14 @@ function startCanvasCapture(opts: HighlightCaptureOpts): boolean {
     sourceVideo = null;
     getStillUrl = null;
     getMirror = null;
-    getCropBarPercent = null;
     applyLook = null;
     return false;
   }
 
-  const crop = getCropBarPercent?.() ?? 0;
-  const vis = highlightedRect(size.width, size.height, crop);
-  const scale = Math.min(1, MAX_WIDTH / Math.max(vis.sw, vis.sh));
+  const scale = Math.min(1, MAX_WIDTH / Math.max(size.width, size.height));
   canvas = document.createElement("canvas");
-  canvas.width = even(Math.round(vis.sw * scale));
-  canvas.height = even(Math.round(vis.sh * scale));
+  canvas.width = even(Math.round(size.width * scale));
+  canvas.height = even(Math.round(size.height * scale));
   canvas.setAttribute("aria-hidden", "true");
   canvas.style.cssText =
     "position:fixed;left:0;top:0;width:4px;height:4px;opacity:0.02;pointer-events:none;z-index:0";
@@ -405,7 +364,6 @@ function resetState() {
   sourceVideo = null;
   getStillUrl = null;
   getMirror = null;
-  getCropBarPercent = null;
   applyLook = null;
   stillImg = null;
   lastStillUrl = "";

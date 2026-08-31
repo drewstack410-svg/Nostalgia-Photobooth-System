@@ -10,6 +10,7 @@ import type {
   PrintCutMode,
   CameraFilter,
   FilterOverlay,
+  FilterMediaOverlay,
   FilterAdjustments,
   BlendMode,
 } from "@/stores/photobooth";
@@ -17,7 +18,7 @@ import { BLEND_MODES } from "@/stores/photobooth";
 import { applyBoothConfig, saveBoothConfig } from "@/lib/boothConfig";
 import { getPaperSizePx } from "@/utils/printLayout";
 import type { PaperSize } from "@/utils/printLayout";
-import { prepareFrameCanvas, prepareFrameDataUrl } from "@/utils/pngAlpha";
+import { prepareFrameCanvas } from "@/utils/pngAlpha";
 import TemplatePreview from "@/components/TemplatePreview.vue";
 import TemplateLayoutEditor from "@/components/TemplateLayoutEditor.vue";
 import OnScreenKeyboard from "@/components/OnScreenKeyboard.vue";
@@ -515,6 +516,58 @@ function updateOverlay(f: CameraFilter, patch: Partial<FilterOverlay>) {
   if (!f.overlay) return;
   store.setFilterOverlay(f.id, { ...f.overlay, ...patch });
 }
+
+const FILTER_MEDIA_ACCEPT =
+  "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,video/quicktime,video/mp4,.mov,.mp4,.m4v";
+const filterMediaInputRef = ref<HTMLInputElement | null>(null);
+const filterMediaError = ref("");
+const filterMediaBusy = ref(false);
+
+const editingMediaRuntime = computed(() => {
+  const id = editingFilter.value?.id;
+  if (!id) return null;
+  return store.overlayMediaRuntime[id] ?? null;
+});
+
+async function onFilterMediaChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  filterMediaError.value = "";
+  const f = editingFilter.value;
+  if (!file || !f) return;
+  const looksRight =
+    file.type.startsWith("image/") ||
+    file.type.startsWith("video/") ||
+    /\.(png|jpe?g|webp|gif|mp4|mov|m4v|webm)$/i.test(file.name);
+  if (!looksRight) {
+    filterMediaError.value = `Use a PNG, JPEG, or MOV file (${file.name}).`;
+    return;
+  }
+  filterMediaBusy.value = true;
+  try {
+    const ok = await store.setFilterMediaOverlayFile(f.id, file);
+    if (!ok) filterMediaError.value = "Couldn't save the overlay file.";
+  } catch (e) {
+    console.error("[Settings] Filter overlay media upload failed:", e);
+    filterMediaError.value = e instanceof Error ? e.message : "Upload failed.";
+  } finally {
+    filterMediaBusy.value = false;
+  }
+}
+
+function updateMediaOverlay(
+  f: CameraFilter,
+  patch: Partial<FilterMediaOverlay>,
+) {
+  if (!f.mediaOverlay) return;
+  store.setFilterMediaOverlay(f.id, { ...f.mediaOverlay, ...patch });
+}
+
+function removeFilterMedia(f: CameraFilter) {
+  filterMediaError.value = "";
+  void store.clearFilterMediaOverlay(f.id);
+}
 function toggleFilterActive(id: string) {
   store.toggleFilterActive(id);
 }
@@ -540,6 +593,11 @@ watch(showFiltersModal, (open) => {
   if (open && store.filters[0] && !editingFilterId.value) {
     editingFilterId.value = store.filters[0].id;
   }
+  if (!open) filterMediaError.value = "";
+});
+
+watch(editingFilterId, () => {
+  filterMediaError.value = "";
 });
 
 function selectFilterRow(id: string) {
@@ -1047,13 +1105,8 @@ function onFrameImageChange(event: Event) {
   const file = input.files?.[0];
   if (!file || !file.type.startsWith("image/")) return;
   const reader = new FileReader();
-  reader.onload = async () => {
-    const raw = reader.result as string;
-    try {
-      newTemplateFrameImageUrl.value = await prepareFrameDataUrl(raw);
-    } catch {
-      newTemplateFrameImageUrl.value = raw;
-    }
+  reader.onload = () => {
+    newTemplateFrameImageUrl.value = reader.result as string;
   };
   reader.readAsDataURL(file);
 }
@@ -2415,6 +2468,13 @@ function submitEditTemplateDetails() {
                       </span>
                     </label>
                   </template>
+                  <span
+                    v-if="f.mediaOverlay"
+                    class="filter-overlay-media-tag"
+                    :title="f.mediaOverlay.mediaName"
+                  >
+                    {{ f.mediaOverlay.mediaType === "video" ? "MOV" : "IMG" }}
+                  </span>
                 </div>
               </td>
               <td>
@@ -2440,6 +2500,103 @@ function submitEditTemplateDetails() {
           v-if="showFiltersModal"
           :filter="editingFilter"
         />
+        <div v-if="editingFilter" class="filter-adjust">
+          <h3 class="filter-adjust-title">Media overlay</h3>
+          <p class="filter-adjust-hint">
+            Place a PNG, JPEG, or MOV on top of {{ editingFilter.name }}. Blend
+            mode and opacity work like a Photoshop layer.
+          </p>
+          <label
+            class="upload-card upload-card--thumb"
+            :class="{
+              'upload-card--filled': !!editingMediaRuntime,
+              'upload-card--busy': filterMediaBusy,
+            }"
+          >
+            <input
+              ref="filterMediaInputRef"
+              type="file"
+              :accept="FILTER_MEDIA_ACCEPT"
+              class="upload-card-input"
+              aria-label="Upload PNG, JPEG, or MOV overlay"
+              @change="onFilterMediaChange"
+            />
+            <template v-if="editingMediaRuntime">
+              <video
+                v-if="editingMediaRuntime.type === 'video'"
+                :src="editingMediaRuntime.url"
+                class="upload-card-preview"
+                muted
+                loop
+                autoplay
+                playsinline
+              />
+              <img
+                v-else
+                :src="editingMediaRuntime.url"
+                alt=""
+                class="upload-card-preview"
+              />
+              <button
+                type="button"
+                class="upload-card-remove"
+                aria-label="Remove overlay file"
+                @click.prevent.stop="removeFilterMedia(editingFilter)"
+              >
+                ×
+              </button>
+            </template>
+            <template v-else>
+              <span class="upload-card-icon" aria-hidden="true">+</span>
+              <span class="upload-card-text">
+                {{ filterMediaBusy ? "Saving…" : "Upload PNG, JPEG, or MOV" }}
+              </span>
+              <span class="upload-card-hint">H.264 MOV / MP4 plays most reliably</span>
+            </template>
+          </label>
+          <p v-if="filterMediaError" class="booth-warning">{{ filterMediaError }}</p>
+          <p
+            v-else-if="editingFilter.mediaOverlay"
+            class="filter-adjust-hint"
+          >
+            {{ editingFilter.mediaOverlay.mediaName }}
+          </p>
+          <template v-if="editingFilter.mediaOverlay">
+            <label class="filter-media-blend">
+              <span>Blend</span>
+              <select
+                class="filter-overlay-mode"
+                :value="editingFilter.mediaOverlay.blendMode"
+                aria-label="Media overlay blend mode"
+                @change="updateMediaOverlay(editingFilter, { blendMode: ($event.target as HTMLSelectElement).value as BlendMode })"
+              >
+                <option
+                  v-for="m in BLEND_MODES"
+                  :key="m.value"
+                  :value="m.value"
+                >
+                  {{ m.label }}
+                </option>
+              </select>
+            </label>
+            <label class="filter-adjust-row">
+              <span>Opacity</span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                :value="Math.round(editingFilter.mediaOverlay.opacity * 100)"
+                :style="{ '--range-pct': `${Math.round(editingFilter.mediaOverlay.opacity * 100)}%` }"
+                aria-label="Media overlay opacity"
+                @input="updateMediaOverlay(editingFilter, { opacity: Number(($event.target as HTMLInputElement).value) / 100 })"
+              />
+              <span class="filter-adjust-value">
+                {{ Math.round(editingFilter.mediaOverlay.opacity * 100) }}%
+              </span>
+            </label>
+          </template>
+        </div>
         <div v-if="editingFilter" class="filter-adjust">
           <h3 class="filter-adjust-title">Advanced adjustments</h3>
           <p class="filter-adjust-hint">
@@ -4104,8 +4261,30 @@ function submitEditTemplateDetails() {
 
 .filter-overlay-opacity-value {
   font-variant-numeric: tabular-nums;
+  min-width: 2.4rem;
+}
+
+.filter-overlay-media-tag {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--color-brown-dark);
+  color: var(--color-cream);
+}
+
+.filter-media-blend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
   font-size: 0.8rem;
-  min-width: 3ch;
+  font-weight: 600;
+  color: var(--color-brown-dark);
+}
+
+.filter-media-blend .filter-overlay-mode {
+  width: 100%;
 }
 
 .filters-table-status {
@@ -4702,6 +4881,11 @@ function submitEditTemplateDetails() {
 
 .upload-card--filled:hover {
   border-color: var(--color-brown);
+}
+
+.upload-card--busy {
+  opacity: 0.7;
+  pointer-events: none;
 }
 
 .upload-card-input {

@@ -1,7 +1,7 @@
 /**
  * Bake a camera look onto a canvas — same order as still capture:
- * tone/LUT → overlay → levels/vignette. Used by highlight clips so
- * the video matches the live preview / print filter.
+ * tone/LUT → colour wash → media overlay → levels/vignette. Used by
+ * highlight clips so the video matches the live preview / print filter.
  */
 
 import { applyLutToImageData } from "./lut";
@@ -17,11 +17,18 @@ export type LookOverlay = {
   opacity: number;
 };
 
+export type LookMedia = {
+  source: CanvasImageSource;
+  blendMode: string;
+  opacity: number;
+};
+
 export type CaptureLook = {
   effectType: string;
   baseFilter?: string;
   lut: ParsedLut | null;
   overlay: LookOverlay | null;
+  media?: LookMedia | null;
   adjustments: FilterAdjustments | null;
 };
 
@@ -61,6 +68,56 @@ function applyPixelFilter(imageData: ImageData, type: string): void {
   }
 }
 
+function mediaSourceSize(
+  source: CanvasImageSource,
+): { w: number; h: number } | null {
+  if (source instanceof HTMLVideoElement) {
+    if (source.readyState < 2 || source.videoWidth < 2) return null;
+    return { w: source.videoWidth, h: source.videoHeight };
+  }
+  if (source instanceof HTMLImageElement) {
+    if (!source.complete || source.naturalWidth < 2) return null;
+    return { w: source.naturalWidth, h: source.naturalHeight };
+  }
+  if (source instanceof HTMLCanvasElement) {
+    if (source.width < 2 || source.height < 2) return null;
+    return { w: source.width, h: source.height };
+  }
+  return null;
+}
+
+/** object-fit: cover — fills the canvas, cropping overflow. */
+export function drawCoverMedia(
+  ctx: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  destW: number,
+  destH: number,
+): boolean {
+  const size = mediaSourceSize(source);
+  if (!size) return false;
+  const scale = Math.max(destW / size.w, destH / size.h);
+  const dw = size.w * scale;
+  const dh = size.h * scale;
+  ctx.drawImage(source, (destW - dw) / 2, (destH - dh) / 2, dw, dh);
+  return true;
+}
+
+export function drawLookMedia(
+  ctx: CanvasRenderingContext2D,
+  media: CanvasImageSource,
+  blendMode: string,
+  opacity: number,
+): void {
+  if (opacity <= 0) return;
+  ctx.save();
+  ctx.globalCompositeOperation = (
+    blendMode === "normal" ? "source-over" : blendMode
+  ) as GlobalCompositeOperation;
+  ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
+  drawCoverMedia(ctx, media, ctx.canvas.width, ctx.canvas.height);
+  ctx.restore();
+}
+
 export function applyCaptureLook(
   ctx: CanvasRenderingContext2D,
   look: CaptureLook,
@@ -95,6 +152,15 @@ export function applyCaptureLook(
     ctx.fillStyle = overlay.color;
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
+  }
+
+  if (look.media && look.media.opacity > 0) {
+    drawLookMedia(
+      ctx,
+      look.media.source,
+      look.media.blendMode || "normal",
+      look.media.opacity,
+    );
   }
 
   if (look.adjustments) {

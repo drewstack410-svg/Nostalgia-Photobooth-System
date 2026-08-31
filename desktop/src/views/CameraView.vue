@@ -6,7 +6,7 @@ import { usePhotoboothStore } from "@/stores/photobooth";
 import type { CameraFilter } from "@/stores/photobooth";
 import { loadLut, applyLutToImageData } from "@/utils/lut";
 import type { ParsedLut } from "@/utils/lut";
-import { applyCaptureLook } from "@/utils/applyCaptureLook";
+import { applyCaptureLook, drawLookMedia } from "@/utils/applyCaptureLook";
 import {
   BW_MATRIX,
   FUJIFILM_MATRIX,
@@ -19,8 +19,12 @@ import {
   vignettePreviewStyle,
 } from "@/utils/filterPreview";
 import type { CubePreview } from "@/utils/filterPreview";
-import { getPaperSizePx, occupancyFill } from "@/utils/printLayout";
+import {
+  cropBarPercentForTemplate,
+  highlightedViewRect,
+} from "@/utils/viewfinderCrop";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
+import FilterOverlayLayers from "@/components/FilterOverlayLayers.vue";
 import {
   HIGHLIGHT_LEAD_MS,
   HIGHLIGHT_PREVIEW_MS,
@@ -31,6 +35,11 @@ import {
   stopHighlightCapture,
   waitForHighlightLead,
 } from "@/utils/highlightRecorder";
+import {
+  openVideoStream as requestVideoStream,
+  stopWebcamTracks,
+  webcamErrorMessage,
+} from "@/utils/openCamera";
 
 const router = useRouter();
 const store = usePhotoboothStore();
@@ -45,38 +54,11 @@ const effectiveFrameStyle = computed(() =>
 // ── Live-preview crop bars ─────────────────────────────────────────
 // The faded bars mark how much of the camera's 3:2 capture gets
 // trimmed for the SELECTED template, so the guest poses inside what
-// actually prints. Width per side is derived from the template's cell
-// aspect (sheet ÷ grid, minus margin/gap) and cellZoom — NOT a fixed
-// guess. cover-fit a 3:2 photo into a cell of aspect A: the surviving
-// width fraction is A / (1.5 × zoom) (capped at 1). All current
-// templates have cells taller than 3:2 → side crop, so left/right
-// bars are correct; a cell WIDER than 3:2 yields 0 here (its crop is
-// top/bottom — add that case if such a template is ever introduced).
-const PHOTO_ASPECT = 3600 / 2400; // 1.5 — the 3:2 camera capture
-const cropBarPercent = computed(() => {
-  const t = store.sessionTemplate ?? store.selectedTemplate;
-  if (!t) return 16.6667; // legacy default before a template is chosen
-  const sheet = getPaperSizePx(t.paperSize);
-  let cellW: number;
-  let cellH: number;
-  // Occupancy canvas first: the admin layout-editor slot (or the first
-  // saved cell) is what the capture must fill, not the even grid.
-  if (t.cells?.[0]) {
-    cellW = t.cells[0].w * sheet.width;
-    cellH = t.cells[0].h * sheet.height;
-  } else {
-    const cols = Math.max(1, t.frameCols ?? 1);
-    const rows = Math.max(1, t.frameRows ?? 1);
-    const margin = t.cellMargin ?? 24;
-    const gap = t.cellGap ?? 24;
-    cellW = (sheet.width - margin * 2 - gap * (cols - 1)) / cols;
-    cellH = (sheet.height - margin * 2 - gap * (rows - 1)) / rows;
-  }
-  if (cellW <= 0 || cellH <= 0) return 16.6667;
-  const { zoom } = occupancyFill(t, (t.cells?.length ?? 0) > 0);
-  const visibleW = Math.min(1, cellW / cellH / (PHOTO_ASPECT * zoom));
-  return Math.max(0, (1 - visibleW) / 2) * 100;
-});
+// actually prints. The cropped still is what prints; the full frame
+// is saved for the gallery download row.
+const cropBarPercent = computed(() =>
+  cropBarPercentForTemplate(store.sessionTemplate ?? store.selectedTemplate),
+);
 
 const videoRef = ref<HTMLVideoElement | null>(null);
 const videoBlurRef = ref<HTMLVideoElement | null>(null);
@@ -95,6 +77,7 @@ const showFlash = ref(false);
 const cameraReady = ref(false);
 const showInactivityWarning = ref(false);
 const inactivityCountdown = ref(10);
+const WARNING_COUNTDOWN = 10;
 const showBackWarning = ref(false);
 const showCameraError = ref(false);
 const cameraErrorMessage = ref<string>('');
@@ -278,6 +261,52 @@ const overlayStyle = computed(() => {
   } as Record<string, string>;
 });
 
+const selectedMediaRuntime = computed(() => {
+  const id = selectedFilter.value?.id;
+  if (!id) return null;
+  return store.overlayMediaRuntime[id] ?? null;
+});
+
+const mediaOverlayStyle = computed(() => {
+  const o = selectedFilter.value?.mediaOverlay;
+  if (!o || !selectedMediaRuntime.value || o.opacity <= 0) return null;
+  return {
+    mixBlendMode: o.blendMode,
+    opacity: String(o.opacity),
+  } as Record<string, string>;
+});
+
+const overlayLayersRef = ref<{
+  mediaEl: HTMLImageElement | HTMLVideoElement | null;
+} | null>(null);
+
+const overlayDecodeRef = ref<HTMLImageElement | HTMLVideoElement | null>(null);
+
+function lookMediaSource(): CanvasImageSource | null {
+  const decode = overlayDecodeRef.value;
+  if (decode instanceof HTMLVideoElement && decode.readyState >= 2) {
+    return decode;
+  }
+  if (
+    decode instanceof HTMLImageElement &&
+    decode.complete &&
+    decode.naturalWidth >= 2
+  ) {
+    return decode;
+  }
+  return overlayLayersRef.value?.mediaEl ?? null;
+}
+
+watch(selectedMediaRuntime, async () => {
+  await nextTick();
+  const el = overlayDecodeRef.value;
+  if (el instanceof HTMLVideoElement) {
+    el.muted = true;
+    el.loop = true;
+    await el.play().catch(() => {});
+  }
+});
+
 const grainOverlayStyle = computed(() => {
   const opacity = grainPreviewOpacity(selectedAdjustments.value.grain);
   if (opacity <= 0) return null;
@@ -396,93 +425,10 @@ async function initCanonCamera() {
   }
 }
 
-function webcamErrorMessage(err: unknown): string {
-  const name = err instanceof DOMException ? err.name : "";
-  const msg = err instanceof Error ? err.message : String(err);
-  if (name === "NotReadableError" || /could not start video source/i.test(msg)) {
-    return "Could not start this computer's camera. Close other apps using it (Camera, Teams, Zoom, Chrome), then retry. On Windows: Settings → Privacy & security → Camera → allow desktop apps.";
-  }
-  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-    return "Camera permission was denied. Allow camera access for this app and retry.";
-  }
-  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
-    return "No camera was found on this computer.";
-  }
-  if (name === "OverconstrainedError") {
-    return "This camera does not support the requested resolution. Retry to try a simpler mode.";
-  }
-  return msg || "Failed to start the camera.";
-}
-
-function stopWebcamTracks(media?: MediaStream | null) {
-  media?.getTracks().forEach((track) => track.stop());
-}
-
 async function openVideoStream(): Promise<MediaStream> {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    throw new Error("Camera access is not available in this environment.");
-  }
-
-  stopWebcamTracks(stream.value);
+  const media = await requestVideoStream(stream.value);
   stream.value = null;
-
-  const attempts: MediaStreamConstraints[] = [
-    { audio: false, video: { width: { ideal: 1920 }, height: { ideal: 1080 } } },
-    { audio: false, video: { facingMode: "user" } },
-    { audio: false, video: true },
-  ];
-
-  let lastError: unknown;
-  for (const constraints of attempts) {
-    try {
-      console.log("[Camera] getUserMedia", JSON.stringify(constraints));
-      const media = await navigator.mediaDevices.getUserMedia(constraints);
-      const label = media.getVideoTracks()[0]?.label || "(unnamed)";
-      console.log("[Camera] Webcam started:", label);
-      return media;
-    } catch (err) {
-      lastError = err;
-      console.warn(
-        "[Camera] getUserMedia failed:",
-        err instanceof Error ? `${err.name}: ${err.message}` : err,
-      );
-      stopWebcamTracks(
-        err && typeof err === "object" && "stream" in (err as object)
-          ? ((err as { stream?: MediaStream }).stream ?? null)
-          : null,
-      );
-    }
-  }
-
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cams = devices.filter((d) => d.kind === "videoinput");
-    console.log(
-      "[Camera] Video devices:",
-      cams.map((c) => c.label || c.deviceId.slice(0, 8)),
-    );
-    for (const cam of cams) {
-      try {
-        const media = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: { deviceId: { exact: cam.deviceId } },
-        });
-        console.log("[Camera] Webcam started on", cam.label || cam.deviceId);
-        return media;
-      } catch (err) {
-        lastError = err;
-        console.warn(
-          "[Camera] Device failed:",
-          cam.label || cam.deviceId,
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-  } catch (err) {
-    lastError = err;
-  }
-
-  throw new Error(webcamErrorMessage(lastError));
+  return media;
 }
 
 async function initWebcam() {
@@ -573,11 +519,17 @@ async function startLiveView() {
   }
 }
 
-async function stopLiveView() {
+async function stopLiveView(opts?: { keepFrame?: boolean }) {
   if (!window.electronAPI?.canonStopLiveView) return;
   window.electronAPI.offLiveViewFrame?.();
   liveViewActive.value = false;
-  liveViewFrame.value = null;
+  // Webcam freeze is video.pause() — the last frame stays on screen.
+  // Canon EVF is an <img :src="liveViewFrame">; clearing it here is
+  // why the review after a Canon shot went blank ("Starting preview…")
+  // while webcam still showed the pose.
+  if (!opts?.keepFrame) {
+    liveViewFrame.value = null;
+  }
   try {
     await window.electronAPI.canonStopLiveView();
   } catch (_) {}
@@ -660,6 +612,8 @@ function cancelHighlightLead() {
 
 function applyHighlightLook(ctx: CanvasRenderingContext2D) {
   const f = selectedFilter.value;
+  const media = f?.mediaOverlay;
+  const mediaEl = lookMediaSource();
   applyCaptureLook(ctx, {
     effectType: f?.effectType ?? "original",
     baseFilter: f?.baseFilter,
@@ -670,6 +624,14 @@ function applyHighlightLook(ctx: CanvasRenderingContext2D) {
             color: f.overlay.color,
             blendMode: f.overlay.blendMode,
             opacity: f.overlay.opacity,
+          }
+        : null,
+    media:
+      media && mediaEl && media.opacity > 0
+        ? {
+            source: mediaEl,
+            blendMode: media.blendMode,
+            opacity: media.opacity,
           }
         : null,
     adjustments: f ? store.resolvedAdjustments(f) : null,
@@ -690,7 +652,6 @@ function armHighlightRecording(countdownSeconds: number) {
         video: videoRef.value,
         getStillUrl: () => liveViewFrame.value,
         getMirror: () => store.mirrorMode,
-        getCropBarPercent: () => cropBarPercent.value,
         applyLook: applyHighlightLook,
       });
     } catch (e) {
@@ -885,7 +846,7 @@ async function capturePhoto(): Promise<boolean> {
     `[Camera] capture ${store.capturedPhotos.length + 1}/${store.requiredPhotos} — ` +
       `liveViewActive=${liveViewActive.value}, restoreLiveView=${restoreLiveView}, canonConnected=${canonCameraConnected.value}`,
   );
-  if (liveViewActive.value) await stopLiveView();
+  if (liveViewActive.value) await stopLiveView({ keepFrame: true });
 
   try {
     await capturePhotoInner(restoreLiveView);
@@ -1099,6 +1060,15 @@ async function capturePhotoInner(hadLiveView: boolean) {
           ctx.restore();
         }
 
+        const mediaLayer = filter?.mediaOverlay;
+        const mediaEl = lookMediaSource();
+        if (mediaLayer && mediaEl && mediaLayer.opacity > 0) {
+          console.log(
+            `[Camera] Applying media overlay ${mediaLayer.mediaName} ${mediaLayer.blendMode} @ ${Math.round(mediaLayer.opacity * 100)}%`,
+          );
+          drawLookMedia(ctx, mediaEl, mediaLayer.blendMode, mediaLayer.opacity);
+        }
+
         // Bake levels / contrast / shadows / vignette AFTER overlay and
         // BEFORE grain — same stack as the live preview.
         if (filter) {
@@ -1113,14 +1083,20 @@ async function capturePhotoInner(hadLiveView: boolean) {
           }
         }
 
-        // Keep only the lit center of the live view (inside the crop
-        // bars). That is what the guest composed, and what the left
-        // strip should show — not the full wide camera frame.
+        // Full uncropped frame (filters already baked) for local/cloud
+        // gallery downloads. Print / left strip still use the lit center.
+        const fullImageData = canvas.toDataURL("image/jpeg", 0.92);
+        const fullW = canvas.width;
+        const fullH = canvas.height;
         cropCanvasToHighlightedView(canvas, ctx, cropBarPercent.value);
-
-        const finalImageData = canvas.toDataURL("image/jpeg", 0.92);
-        console.log(`[Camera] Image processed: ${Math.round(finalImageData.length / 1024)}KB (${canvas.width}x${canvas.height})`);
-        store.addPhoto(finalImageData);
+        const croppedImageData =
+          canvas.width === fullW && canvas.height === fullH
+            ? fullImageData
+            : canvas.toDataURL("image/jpeg", 0.92);
+        console.log(
+          `[Camera] Image processed: cropped ${Math.round(croppedImageData.length / 1024)}KB (${canvas.width}x${canvas.height}), full ${Math.round(fullImageData.length / 1024)}KB (${fullW}x${fullH})`,
+        );
+        store.addPhoto(croppedImageData, fullImageData);
 
         // Do not restart Canon EVF here — that would un-freeze the
         // viewfinder. Restore after the 5s pause in showShotReview.
@@ -1149,38 +1125,15 @@ function cropCanvasToHighlightedView(
   const srcH = canvas.height;
   if (srcW < 2 || srcH < 2) return;
 
-  const VIEW_ASPECT = 3 / 2;
-  const srcAspect = srcW / srcH;
-  let sx = 0;
-  let sy = 0;
-  let sw = srcW;
-  let sh = srcH;
-  if (srcAspect > VIEW_ASPECT + 0.001) {
-    sw = srcH * VIEW_ASPECT;
-    sx = (srcW - sw) / 2;
-  } else if (srcAspect < VIEW_ASPECT - 0.001) {
-    sh = srcW / VIEW_ASPECT;
-    sy = (srcH - sh) / 2;
-  }
+  const r = highlightedViewRect(srcW, srcH, cropBarPct);
+  if (r.sw >= srcW && r.sh >= srcH) return;
 
-  const bar = Math.max(0, Math.min(0.45, cropBarPct / 100));
-  if (bar > 0) {
-    sx += sw * bar;
-    sw *= 1 - 2 * bar;
-  }
-
-  sx = Math.max(0, Math.round(sx));
-  sy = Math.max(0, Math.round(sy));
-  sw = Math.max(1, Math.min(srcW - sx, Math.round(sw)));
-  sh = Math.max(1, Math.min(srcH - sy, Math.round(sh)));
-  if (sw >= srcW && sh >= srcH) return;
-
-  const cropped = ctx.getImageData(sx, sy, sw, sh);
-  canvas.width = sw;
-  canvas.height = sh;
+  const cropped = ctx.getImageData(r.sx, r.sy, r.sw, r.sh);
+  canvas.width = r.sw;
+  canvas.height = r.sh;
   ctx.putImageData(cropped, 0, 0);
   console.log(
-    `[Camera] Cropped to highlighted view ${sw}x${sh} (bars ${cropBarPct.toFixed(1)}% / side)`,
+    `[Camera] Cropped to highlighted view ${r.sw}x${r.sh} (bars ${cropBarPct.toFixed(1)}% / side)`,
   );
 }
 
@@ -1194,10 +1147,6 @@ function toggleMirror() {
   resetInactivityTimer();
   store.setMirror(!store.mirrorMode);
 }
-
-// Inactivity timer: 1 minute (60000ms)
-const INACTIVITY_TIMEOUT = 60000;
-const WARNING_COUNTDOWN = 10; // seconds before auto-return
 
 function stopCameraStream() {
   stopLiveView();
@@ -1242,46 +1191,24 @@ function clearInactivityTimers() {
 function resetInactivityTimer() {
   clearInactivityTimers();
 
-  // Hide warning if shown
   showInactivityWarning.value = false;
   inactivityCountdown.value = WARNING_COUNTDOWN;
 
-  // No inactivity clock at all while a shoot is in flight.
-  if (sequenceActive || isCountingDown.value || isCapturing.value) return;
-
-  // Start new inactivity timer
-  inactivityTimer = setTimeout(() => {
-    // Re-check: a sequence may have started since this was armed.
-    if (sequenceActive || isCountingDown.value || isCapturing.value || isUnmounted) return;
-    showInactivityWarning.value = true;
-    inactivityCountdown.value = WARNING_COUNTDOWN;
-
-    // Start countdown after a small delay to ensure UI is updated
-    warningStartTimer = setTimeout(() => {
-      warningStartTimer = null;
-      countdownInterval = setInterval(() => {
-        if (sequenceActive || isCountingDown.value || isCapturing.value || isUnmounted) {
-          return;
-        }
-        inactivityCountdown.value--;
-
-        if (inactivityCountdown.value <= 0) {
-          if (countdownInterval) {
-            clearInterval(countdownInterval);
-            countdownInterval = null;
-          }
-          returnToHome();
-        }
-      }, 1000);
-    }, 100);
-  }, INACTIVITY_TIMEOUT);
+  // The shooting screen must never auto-return. Guests (and operators
+  // lining up a shot) stand in front of the live view without touching
+  // anything — the 60s idle clock kept sending them home mid-compose.
+  // Sequence / countdown / shutter guards were not enough: the timer
+  // still fired before Start, after a failed frame, and during review.
 }
 
 function returnToHome() {
-  // A leaked timer from another screen (QR auto-return, printing
-  // auto-advance) must never abort an in-progress shoot.
   if (isUnmounted) return;
-  if (sequenceActive || isCountingDown.value || isCapturing.value) {
+  if (
+    sequenceActive ||
+    isCountingDown.value ||
+    isCapturing.value ||
+    isReviewing.value
+  ) {
     console.warn("[Camera] Ignored auto-return — shoot is in progress");
     return;
   }
@@ -1345,9 +1272,6 @@ watch(
   },
 );
 
-// Store event listeners for cleanup
-let eventListeners: Array<{ event: string; handler: () => void }> = [];
-
 onMounted(() => {
   if (!store.selectedTemplate) {
     router.push("/templates");
@@ -1355,14 +1279,6 @@ onMounted(() => {
   }
   initCamera();
   resetInactivityTimer();
-
-  // Track user interactions
-  const events = ["click", "touchstart", "keydown", "mousemove"];
-  events.forEach((event) => {
-    const handler = resetInactivityTimer;
-    eventListeners.push({ event, handler });
-    document.addEventListener(event, handler, { passive: true });
-  });
 });
 
 onUnmounted(() => {
@@ -1380,10 +1296,6 @@ onUnmounted(() => {
     reviewSleepTimer = null;
   }
   clearInactivityTimers();
-  eventListeners.forEach(({ event, handler }) => {
-    document.removeEventListener(event, handler);
-  });
-  eventListeners = [];
   stopLiveView();
   window.electronAPI?.offLiveViewFrame?.();
   stopCameraStream();
@@ -1483,39 +1395,54 @@ onUnmounted(() => {
                 : {}
           "
         >
-        <!-- Blur style: full-size blurred layer (Canon live view) -->
+        <!-- Blur style: full-size blurred layer (Canon live view).
+             Tone/LUT lives on the feed pixels only so the PNG/MOV overlay
+             can sit ON TOP of the filter, matching capture. -->
         <div
           v-if="effectiveFrameStyle === 'blur'"
           class="camera-feed camera-feed-blur"
-          :style="{ filter: livePreviewFilterBlurred }"
-        ><video
-          v-if="stream"
-          ref="videoBlurRef"
-          class="liveview-img"
-          :class="{ mirror: store.mirrorMode }"
-          :srcObject="stream"
-          autoplay
-          muted
-          playsinline
-        /><img v-else-if="liveViewFrame" :src="liveViewFrame" class="liveview-img" :class="{ mirror: store.mirrorMode }" /><div v-if="overlayStyle" class="filter-overlay" :style="overlayStyle" aria-hidden="true"></div><div v-if="vignetteOverlayStyle" class="liveview-vignette" :style="vignetteOverlayStyle" aria-hidden="true"></div><div v-if="grainOverlayStyle" class="film-grain-overlay" :style="grainOverlayStyle" aria-hidden="true"></div></div>
+        >
+          <video
+            v-if="stream"
+            ref="videoBlurRef"
+            class="liveview-img"
+            :class="{ mirror: store.mirrorMode }"
+            :srcObject="stream"
+            :style="{ filter: livePreviewFilter }"
+            autoplay
+            muted
+            playsinline
+          />
+          <img
+            v-else-if="liveViewFrame"
+            :src="liveViewFrame"
+            class="liveview-img"
+            :class="{ mirror: store.mirrorMode }"
+            :style="{ filter: livePreviewFilter }"
+          />
+        </div>
         <!-- Blur style: sharp feed in centered window with white border -->
         <template v-if="effectiveFrameStyle === 'blur'">
           <div class="camera-feed-sharp-wrap">
-            <div
-              class="camera-feed camera-feed-sharp camera-feed-liveview"
-              :style="{ filter: livePreviewFilter }"
-            >
+            <div class="camera-feed camera-feed-sharp camera-feed-liveview">
               <video
                 v-if="stream"
                 ref="videoRef"
                 class="liveview-img"
                 :class="{ mirror: store.mirrorMode }"
                 :srcObject="stream"
+                :style="{ filter: livePreviewFilter }"
                 autoplay
                 muted
                 playsinline
               />
-              <img v-else-if="liveViewFrame" :src="liveViewFrame" class="liveview-img" :class="{ mirror: store.mirrorMode }" />
+              <img
+                v-else-if="liveViewFrame"
+                :src="liveViewFrame"
+                class="liveview-img"
+                :class="{ mirror: store.mirrorMode }"
+                :style="{ filter: livePreviewFilter }"
+              />
               <!-- Crop indicator: faded bars marking how much of the
                    3:2 capture the SELECTED template trims off each
                    side (see `cropBarPercent`). The lit central window
@@ -1529,23 +1456,38 @@ onUnmounted(() => {
                 <div class="liveview-crop-bar liveview-crop-bar--left"></div>
                 <div class="liveview-crop-bar liveview-crop-bar--right"></div>
               </div>
-              <div v-if="overlayStyle" class="filter-overlay" :style="overlayStyle" aria-hidden="true"></div><div v-if="vignetteOverlayStyle" class="liveview-vignette" :style="vignetteOverlayStyle" aria-hidden="true"></div><div v-if="grainOverlayStyle" class="film-grain-overlay" :style="grainOverlayStyle" aria-hidden="true"></div>
+              <FilterOverlayLayers
+                ref="overlayLayersRef"
+                :overlay-style="overlayStyle"
+                :media-url="selectedMediaRuntime?.url"
+                :media-kind="selectedMediaRuntime?.type"
+                :media-style="mediaOverlayStyle"
+                :vignette-style="vignetteOverlayStyle"
+                :grain-style="grainOverlayStyle"
+              />
             </div>
           </div>
         </template>
         <!-- Non-blur: Canon live view or placeholder -->
-        <div v-else class="camera-feed camera-feed-liveview" :style="{ filter: livePreviewFilter }">
+        <div v-else class="camera-feed camera-feed-liveview">
           <video
             v-if="stream"
             ref="videoRef"
             class="liveview-img"
             :class="{ mirror: store.mirrorMode }"
             :srcObject="stream"
+            :style="{ filter: livePreviewFilter }"
             autoplay
             muted
             playsinline
           />
-          <img v-else-if="liveViewFrame" :src="liveViewFrame" class="liveview-img" :class="{ mirror: store.mirrorMode }" />
+          <img
+            v-else-if="liveViewFrame"
+            :src="liveViewFrame"
+            class="liveview-img"
+            :class="{ mirror: store.mirrorMode }"
+            :style="{ filter: livePreviewFilter }"
+          />
           <div v-else class="liveview-placeholder">
             <div class="liveview-placeholder-text">{{ !store.cameraDetectionEnabled ? "Test mode — starting camera..." : cameraReady ? 'Starting preview...' : 'Connecting camera...' }}</div>
           </div>
@@ -1561,8 +1503,36 @@ onUnmounted(() => {
             <div class="liveview-crop-bar liveview-crop-bar--left"></div>
             <div class="liveview-crop-bar liveview-crop-bar--right"></div>
           </div>
-          <div v-if="overlayStyle" class="filter-overlay" :style="overlayStyle" aria-hidden="true"></div><div v-if="vignetteOverlayStyle" class="liveview-vignette" :style="vignetteOverlayStyle" aria-hidden="true"></div><div v-if="grainOverlayStyle" class="film-grain-overlay" :style="grainOverlayStyle" aria-hidden="true"></div>
+          <FilterOverlayLayers
+            ref="overlayLayersRef"
+            :overlay-style="overlayStyle"
+            :media-url="selectedMediaRuntime?.url"
+            :media-kind="selectedMediaRuntime?.type"
+            :media-style="mediaOverlayStyle"
+            :vignette-style="vignetteOverlayStyle"
+            :grain-style="grainOverlayStyle"
+          />
         </div>
+
+        <!-- Decodes the overlay file so capture/highlight can sample it
+             even if the visible layer has not painted yet. -->
+        <video
+          v-if="selectedMediaRuntime?.type === 'video'"
+          ref="overlayDecodeRef"
+          class="overlay-media-decode"
+          :src="selectedMediaRuntime.url"
+          autoplay
+          muted
+          loop
+          playsinline
+        />
+        <img
+          v-else-if="selectedMediaRuntime?.type === 'image'"
+          ref="overlayDecodeRef"
+          class="overlay-media-decode"
+          :src="selectedMediaRuntime.url"
+          alt=""
+        />
 
         <!-- Hidden canvas for capture -->
         <canvas ref="canvasRef" class="capture-canvas"></canvas>
@@ -2078,6 +2048,15 @@ onUnmounted(() => {
 
 .capture-canvas {
   display: none;
+}
+
+.overlay-media-decode {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
 }
 
 /* Flash */

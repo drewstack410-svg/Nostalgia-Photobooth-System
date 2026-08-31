@@ -697,7 +697,7 @@ body.hl-lightbox-open {
 .individual-panel {
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   gap: 8px;
 }
 
@@ -707,7 +707,7 @@ body.hl-lightbox-open {
   border: 2px solid var(--thumb-border);
   border-radius: 10px;
   overflow: hidden;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 3 / 2;
   cursor: pointer;
   padding: 0;
   transition: border-color 0.15s ease, transform 0.15s ease;
@@ -725,7 +725,7 @@ body.hl-lightbox-open {
 .individual-thumb video {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
 }
 

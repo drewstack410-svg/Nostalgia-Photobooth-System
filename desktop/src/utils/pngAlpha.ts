@@ -1,15 +1,21 @@
 /**
- * PNG frame alpha — imported layouts are often authored on a white
- * canvas, so "empty" gutters land as opaque #FFFFFF instead of holes.
- * Near-white pixels are knocked out to true transparency so only the
- * layout's real ink (black film, hearts, borders) sits on the page.
+ * PNG/JPEG frame alpha — imported layouts are often authored on a white
+ * canvas, so empty photo WINDOWS land as opaque #FFFFFF instead of holes.
  *
- * Cream/beige film stock is left alone: it is warm (wide RGB spread),
- * not a neutral white.
+ * Only those windows (and edge-connected sheet background) are knocked
+ * out. White ink that is part of the artwork — text, logos, borders,
+ * hearts — is left opaque so it shows in the live preview. Cream/beige
+ * film stock is left alone: it is warm (wide RGB spread), not a
+ * neutral white.
  */
 
 const WHITE_MIN = 238;
 const WHITE_CHROMA = 18;
+/** Same floor as frameWindows: specks and letterforms are not slots. */
+const MIN_WINDOW_AREA_FRACTION = 0.004;
+/** File already has real transparent windows — don't eat white artwork. */
+const EXISTING_ALPHA_FRACTION = 0.02;
+const ALPHA_HOLE = 40;
 
 function isKnockoutWhite(r: number, g: number, b: number): boolean {
   const max = Math.max(r, g, b);
@@ -17,14 +23,110 @@ function isKnockoutWhite(r: number, g: number, b: number): boolean {
   return min >= WHITE_MIN && max - min <= WHITE_CHROMA;
 }
 
-/** Sets near-white opaque pixels to alpha 0. Returns whether anything changed. */
+/**
+ * Sets photo-window / sheet-background near-white pixels to alpha 0.
+ * Small interior white blobs (artwork) stay. Returns whether anything
+ * changed.
+ */
 export function knockoutWhiteToTransparent(imageData: ImageData): boolean {
+  const w = imageData.width;
+  const h = imageData.height;
   const d = imageData.data;
+  const n = w * h;
+  if (n < 4) return false;
+
+  const white = new Uint8Array(n);
+  let alreadyHole = 0;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (d[p + 3]! <= ALPHA_HOLE) {
+      alreadyHole++;
+      continue;
+    }
+    if (isKnockoutWhite(d[p]!, d[p + 1]!, d[p + 2]!)) white[i] = 1;
+  }
+
+  if (alreadyHole / n >= EXISTING_ALPHA_FRACTION) return false;
+
+  const seen = new Uint8Array(n);
+  const kill = new Uint8Array(n);
+  const stack = new Int32Array(n);
+  const minArea = n * MIN_WINDOW_AREA_FRACTION;
+
+  const flood = (start: number, applyKill: boolean): number => {
+    let sp = 0;
+    let area = 0;
+    stack[sp++] = start;
+    seen[start] = 1;
+    while (sp > 0) {
+      const p = stack[--sp]!;
+      area++;
+      if (applyKill) kill[p] = 1;
+      const x = p % w;
+      const y = (p / w) | 0;
+      const push = (np: number) => {
+        if (!seen[np] && white[np]) {
+          seen[np] = 1;
+          stack[sp++] = np;
+        }
+      };
+      if (x > 0) push(p - 1);
+      if (x < w - 1) push(p + 1);
+      if (y > 0) push(p - w);
+      if (y < h - 1) push(p + w);
+    }
+    return area;
+  };
+
+  const collect = (start: number): number[] => {
+    const cells: number[] = [];
+    let sp = 0;
+    stack[sp++] = start;
+    seen[start] = 1;
+    while (sp > 0) {
+      const p = stack[--sp]!;
+      cells.push(p);
+      const x = p % w;
+      const y = (p / w) | 0;
+      const push = (np: number) => {
+        if (!seen[np] && white[np]) {
+          seen[np] = 1;
+          stack[sp++] = np;
+        }
+      };
+      if (x > 0) push(p - 1);
+      if (x < w - 1) push(p + 1);
+      if (y > 0) push(p - w);
+      if (y < h - 1) push(p + w);
+    }
+    return cells;
+  };
+
+  // White touching the sheet edge is canvas background, not artwork.
+  for (let x = 0; x < w; x++) {
+    if (white[x] && !seen[x]) flood(x, true);
+    const bottom = (h - 1) * w + x;
+    if (white[bottom] && !seen[bottom]) flood(bottom, true);
+  }
+  for (let y = 0; y < h; y++) {
+    const left = y * w;
+    if (white[left] && !seen[left]) flood(left, true);
+    const right = left + w - 1;
+    if (white[right] && !seen[right]) flood(right, true);
+  }
+
+  // Interior white: large blobs are photo windows; small ones are ink.
+  for (let i = 0; i < n; i++) {
+    if (!white[i] || seen[i]) continue;
+    const cells = collect(i);
+    if (cells.length >= minArea) {
+      for (const p of cells) kill[p] = 1;
+    }
+  }
+
   let changed = false;
-  for (let i = 0; i < d.length; i += 4) {
-    if (d[i + 3] === 0) continue;
-    if (isKnockoutWhite(d[i]!, d[i + 1]!, d[i + 2]!)) {
-      d[i + 3] = 0;
+  for (let i = 0, p = 3; i < n; i++, p += 4) {
+    if (kill[i]) {
+      d[p] = 0;
       changed = true;
     }
   }
@@ -45,7 +147,7 @@ const canvasCache = new Map<string, Promise<HTMLCanvasElement>>();
 const dataUrlCache = new Map<string, Promise<string>>();
 
 /**
- * Raster of a frame PNG with authored-white knocked out to alpha.
+ * Raster of a frame PNG with authored-white windows knocked out to alpha.
  * Cached per source URL / data URL.
  */
 export function prepareFrameCanvas(src: string): Promise<HTMLCanvasElement> {

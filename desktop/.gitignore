@@ -69,3 +69,8 @@ NOSTALGIA CUBE-*/
 public/backgrounds/*.mp4
 public/backgrounds/*.webm
 public/backgrounds/*.mov
+
+# Downloaded PocketBase binary (npm run pb:ensure)
+vendor/pocketbase/*
+!vendor/pocketbase/.gitkeep
+

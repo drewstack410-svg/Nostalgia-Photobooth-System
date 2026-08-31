@@ -10,11 +10,17 @@ const crypto = require("crypto");
 const { URL } = require("url");
 
 function envFileCandidates() {
-  return [
+  const out = [
     path.join(__dirname, "..", ".env"),
     path.join(process.cwd(), ".env"),
     path.join(process.cwd(), "desktop", ".env"),
   ];
+  try {
+    if (process.resourcesPath) {
+      out.push(path.join(process.resourcesPath, ".env"));
+    }
+  } catch (_) { /* ignore */ }
+  return out;
 }
 
 function loadEnvFile(filePath) {

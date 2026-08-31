@@ -7,6 +7,11 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import type { CameraFilter } from "@/stores/photobooth";
 import { usePhotoboothStore } from "@/stores/photobooth";
+import {
+  openVideoStream,
+  stopWebcamTracks,
+  webcamErrorMessage,
+} from "@/utils/openCamera";
 import { loadLut } from "@/utils/lut";
 import {
   BW_MATRIX,
@@ -18,6 +23,7 @@ import {
   vignettePreviewStyle,
 } from "@/utils/filterPreview";
 import type { CubePreview } from "@/utils/filterPreview";
+import FilterOverlayLayers from "@/components/FilterOverlayLayers.vue";
 
 const props = defineProps<{
   filter: CameraFilter | null;
@@ -26,6 +32,8 @@ const props = defineProps<{
 const store = usePhotoboothStore();
 const videoRef = ref<HTMLVideoElement | null>(null);
 const stream = ref<MediaStream | null>(null);
+const liveViewFrame = ref("");
+const usingCanon = ref(false);
 const cameraError = ref("");
 const FILTER_ID = "filter-studio-preview";
 
@@ -72,6 +80,21 @@ const overlayStyle = computed(() => {
   } as Record<string, string>;
 });
 
+const mediaRuntime = computed(() => {
+  const id = props.filter?.id;
+  if (!id) return null;
+  return store.overlayMediaRuntime[id] ?? null;
+});
+
+const mediaStyle = computed(() => {
+  const o = props.filter?.mediaOverlay;
+  if (!o || !mediaRuntime.value || o.opacity <= 0) return null;
+  return {
+    mixBlendMode: o.blendMode,
+    opacity: String(o.opacity),
+  } as Record<string, string>;
+});
+
 const grainStyle = computed(() => {
   const opacity = grainPreviewOpacity(adj.value.grain);
   if (opacity <= 0) return null;
@@ -97,27 +120,76 @@ watch(
   { immediate: true, deep: true },
 );
 
-onMounted(async () => {
+async function startCanonPreview(): Promise<boolean> {
+  const api = window.electronAPI;
+  if (!api?.canonCheckAvailable || !store.cameraDetectionEnabled) return false;
   try {
-    const media = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    });
-    stream.value = media;
-    await nextTick();
-    if (videoRef.value) {
-      videoRef.value.srcObject = media;
-      await videoRef.value.play();
+    const available = await api.canonCheckAvailable();
+    if (!available.available) return false;
+    const listed = await api.canonListCameras();
+    if (!listed.success || !listed.cameras?.length) {
+      console.log("[FilterPreview] No Canon cameras found");
+      return false;
     }
+    const connected = await api.canonConnect(0);
+    if (!connected.success) {
+      console.warn("[FilterPreview] Canon connect failed:", connected.error);
+      return false;
+    }
+    const live = await api.canonStartLiveView();
+    if (!live.success) {
+      console.warn("[FilterPreview] Canon live view failed:", live.error);
+      return false;
+    }
+    api.onLiveViewFrame((dataUrl: string) => {
+      liveViewFrame.value = dataUrl;
+    });
+    usingCanon.value = true;
+    console.log("[FilterPreview] Canon live view:", connected.cameraName);
+    return true;
   } catch (err) {
-    cameraError.value =
-      err instanceof Error ? err.message : "Could not open the camera.";
+    console.warn("[FilterPreview] Canon detection failed:", err);
+    return false;
   }
+}
+
+async function startWebcamPreview() {
+  const media = await openVideoStream(stream.value);
+  stream.value = media;
+  await nextTick();
+  if (videoRef.value) {
+    videoRef.value.srcObject = media;
+    videoRef.value.muted = true;
+    await videoRef.value.play().catch(() => {});
+  }
+}
+
+async function startPreview() {
+  cameraError.value = "";
+  liveViewFrame.value = "";
+  usingCanon.value = false;
+  if (store.cameraDetectionEnabled) {
+    if (await startCanonPreview()) return;
+    console.log("[FilterPreview] No Canon camera — falling back to webcam");
+  }
+  try {
+    await startWebcamPreview();
+  } catch (err) {
+    cameraError.value = webcamErrorMessage(err);
+  }
+}
+
+onMounted(() => {
+  void startPreview();
 });
 
 onUnmounted(() => {
-  stream.value?.getTracks().forEach((t) => t.stop());
+  stopWebcamTracks(stream.value);
   stream.value = null;
+  if (usingCanon.value) {
+    window.electronAPI?.offLiveViewFrame?.();
+    void window.electronAPI?.canonStopLiveView?.();
+  }
 });
 </script>
 
@@ -144,8 +216,15 @@ onUnmounted(() => {
           </feComponentTransfer>
         </filter>
       </svg>
+      <img
+        v-if="liveViewFrame"
+        class="flp-video"
+        :src="liveViewFrame"
+        :style="{ filter: liveFilter }"
+        alt=""
+      />
       <video
-        v-if="stream"
+        v-else-if="stream"
         ref="videoRef"
         class="flp-video"
         :srcObject="stream"
@@ -157,9 +236,14 @@ onUnmounted(() => {
       <p v-else class="flp-placeholder">
         {{ cameraError || "Opening camera…" }}
       </p>
-      <div v-if="overlayStyle" class="flp-overlay" :style="overlayStyle" />
-      <div v-if="vignetteStyle" class="flp-vignette" :style="vignetteStyle" />
-      <div v-if="grainStyle" class="flp-grain" :style="grainStyle" />
+      <FilterOverlayLayers
+        :overlay-style="overlayStyle"
+        :media-url="mediaRuntime?.url"
+        :media-kind="mediaRuntime?.type"
+        :media-style="mediaStyle"
+        :vignette-style="vignetteStyle"
+        :grain-style="grainStyle"
+      />
     </div>
     <p class="flp-hint">
       {{ filter ? filter.name : "Select a filter" }}
@@ -220,20 +304,6 @@ onUnmounted(() => {
   text-align: center;
   color: rgba(255, 255, 255, 0.55);
   font-size: 0.85rem;
-}
-
-.flp-overlay,
-.flp-vignette,
-.flp-grain {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.flp-grain {
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 140px 140px;
 }
 
 .flp-hint {
