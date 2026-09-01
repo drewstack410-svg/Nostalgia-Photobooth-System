@@ -1066,19 +1066,8 @@
   async function saveFiles(files) {
     const list = files.filter(Boolean);
     if (!list.length) return;
-    const hasVideo = list.some((f) => String(f.type || "").startsWith("video/"));
-    const hasImage = list.some((f) => String(f.type || "").startsWith("image/"));
-    // iOS Photos drops the video when image+video go in one share sheet.
-    if (!(isIOS() && hasVideo && hasImage) && navigator.share && navigator.canShare && typeof File !== "undefined") {
-      try {
-        if (navigator.canShare({ files: list })) {
-          await navigator.share({ files: list, title });
-          return;
-        }
-      } catch (err) {
-        if (err && err.name === "AbortError") return;
-      }
-    }
+    // Direct download, same as “save individual photos” — no share
+    // sheet / permission prompt.
     for (let i = 0; i < list.length; i++) {
       await saveBlob(list[i], list[i].name, list[i].type);
       if (i < list.length - 1) {
@@ -1263,17 +1252,6 @@
       : "Save to Camera Roll";
   }
 
-  // Detect iOS (incl. iPadOS, which reports as "MacIntel" with touch).
-  // On iOS the ONLY way to land an image in the Photos library is the
-  // share sheet â€” a normal download drops it into Files instead.
-  function isIOS() {
-    const ua = navigator.userAgent || "";
-    return (
-      /iPad|iPhone|iPod/.test(ua) ||
-      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
-    );
-  }
-
   // Save a hosted asset by URL â€” Template / individual captures.
   // R2 has no attachment transform, so we fetch as a blob when CORS
   // allows (required for the gallery Grid/GIF canvas too).
@@ -1303,12 +1281,9 @@
   }
 
   // Save a blob we already built client-side (the composited Grid
-  // image) â€” no fetch needed, just route to share-sheet or download.
-  async function saveBlob(blob, filename, mimeType) {
-    if (isIOS() && navigator.share && navigator.canShare && typeof File !== "undefined") {
-      const shared = await trySaveBlobViaShare(blob, filename, mimeType);
-      if (shared) return;
-    }
+  // image) — no fetch needed. Always a silent <a download>, matching
+  // the individual-photo links (no share-sheet permission prompt).
+  async function saveBlob(blob, filename, _mimeType) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1318,21 +1293,6 @@
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
-  }
-
-  async function trySaveBlobViaShare(blob, filename, mimeType) {
-    try {
-      const file = new File([blob], filename, {
-        type: mimeType || blob.type || "image/jpeg",
-      });
-      if (navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title });
-        return true;
-      }
-    } catch (err) {
-      if (err && err.name === "AbortError") return true; // user cancelled â€” don't fall through to a second prompt
-    }
-    return false;
   }
 
   // Composite every capture into one grid image, client-side. Cloudinary's
