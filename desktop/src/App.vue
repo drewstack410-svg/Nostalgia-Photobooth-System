@@ -26,7 +26,9 @@ const store = usePhotoboothStore();
  */
 const screenHasOwnBackground = computed(
   () =>
-    (route.name === "title" && !!store.effectiveTitleBackgroundUrl) ||
+    (route.name === "title" &&
+      (store.welcomeBackgroundFill === "color" ||
+        !!store.effectiveTitleBackgroundUrl)) ||
     (route.name === "bill-acceptor" && !!store.effectivePaymentBackgroundUrl),
 );
 
@@ -48,7 +50,9 @@ const showVintageBg = computed(() => !screenHasOwnBackground.value);
 // return if a background is somehow unavailable.
 const showFilmRoll = computed(
   () =>
-    (route.name === "title" && !store.effectiveTitleBackgroundUrl) ||
+    (route.name === "title" &&
+      store.welcomeBackgroundFill !== "color" &&
+      !store.effectiveTitleBackgroundUrl) ||
     (route.name === "bill-acceptor" && !store.effectivePaymentBackgroundUrl),
 );
 

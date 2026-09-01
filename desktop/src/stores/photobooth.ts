@@ -17,6 +17,17 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { revokeMediaUrl } from "@/utils/mediaBytes";
+import {
+  clampBox,
+  defaultWelcomeLayout,
+  parseWelcomeLayout,
+  WELCOME_CANVAS_W,
+  WELCOME_LOGO_NATIVE_W,
+  WELCOME_START_NATIVE_W,
+  type WelcomeBox,
+  type WelcomeItemId,
+  type WelcomeLayout,
+} from "@/utils/welcomeLayout";
 
 /** IPC Uint8Array is ArrayBufferLike; Blob wants a plain ArrayBuffer. */
 function blobFromIpcBytes(bytes: Uint8Array, type: string): Blob {
@@ -197,6 +208,7 @@ export interface SavedPhotoStrip {
 }
 
 export type TitleBackgroundType = "image" | "video" | null;
+export type WelcomeBackgroundFill = "media" | "color";
 export type FilterEffectType =
   | "sepia"
   | "bw"
@@ -351,6 +363,9 @@ const STORAGE_KEY_PAYMENT_ENABLED = "nostalgia-payment-enabled";
 const STORAGE_KEY_LOGO_SCALE = "nostalgia-logo-scale";
 const STORAGE_KEY_QR_SCALE = "nostalgia-qr-scale";
 const STORAGE_KEY_START_BTN_SCALE = "nostalgia-start-btn-scale";
+const STORAGE_KEY_WELCOME_LAYOUT = "nostalgia-welcome-layout";
+const STORAGE_KEY_WELCOME_BG_COLOR = "nostalgia-welcome-bg-color";
+const STORAGE_KEY_WELCOME_BG_FILL = "nostalgia-welcome-bg-fill";
 const STORAGE_KEY_BG_TYPE = "nostalgia-title-bg-type";
 const STORAGE_KEY_BG_URL = "nostalgia-title-bg-url";
 const STORAGE_KEY_FILTERS = "nostalgia-camera-filters";
@@ -933,10 +948,16 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   function setStartButtonScale(n: number) {
     startButtonScale.value = clampScale(n);
     localStorage.setItem(STORAGE_KEY_START_BTN_SCALE, String(startButtonScale.value));
+    if (welcomeLayout.value) {
+      scaleWelcomeItem("start", startButtonScale.value, WELCOME_START_NATIVE_W);
+    }
   }
   function setTitleLogoScale(n: number) {
     titleLogoScale.value = clampScale(n);
     localStorage.setItem(STORAGE_KEY_LOGO_SCALE, String(titleLogoScale.value));
+    if (welcomeLayout.value) {
+      scaleWelcomeItem("logo", titleLogoScale.value, WELCOME_LOGO_NATIVE_W);
+    }
   }
   function setPaymentQrScale(n: number) {
     paymentQrScale.value = clampScale(n);
@@ -945,6 +966,122 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   function setPaymentEnabled(enabled: boolean) {
     paymentEnabled.value = enabled;
     localStorage.setItem(STORAGE_KEY_PAYMENT_ENABLED, String(enabled));
+  }
+  const welcomeLayout = ref<WelcomeLayout | null>(null);
+
+  function persistWelcomeLayout() {
+    if (!welcomeLayout.value) {
+      localStorage.removeItem(STORAGE_KEY_WELCOME_LAYOUT);
+      return;
+    }
+    localStorage.setItem(
+      STORAGE_KEY_WELCOME_LAYOUT,
+      JSON.stringify(welcomeLayout.value),
+    );
+  }
+
+  function loadWelcomeLayout() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_WELCOME_LAYOUT);
+      if (!raw) return;
+      welcomeLayout.value = parseWelcomeLayout(JSON.parse(raw));
+    } catch {
+      welcomeLayout.value = null;
+    }
+  }
+
+  function scaleWelcomeItem(
+    id: WelcomeItemId,
+    scale: number,
+    nativeW: number,
+  ) {
+    const layout = welcomeLayout.value;
+    if (!layout) return;
+    const cur = layout[id];
+    const aspect = cur.h / cur.w || 1;
+    const w = (nativeW * scale) / WELCOME_CANVAS_W;
+    const h = w * aspect;
+    const cx = cur.x + cur.w / 2;
+    const cy = cur.y + cur.h / 2;
+    welcomeLayout.value = {
+      ...layout,
+      [id]: clampBox({ x: cx - w / 2, y: cy - h / 2, w, h }),
+    };
+    persistWelcomeLayout();
+  }
+
+  function ensureWelcomeLayout(): WelcomeLayout {
+    if (!welcomeLayout.value) {
+      welcomeLayout.value = defaultWelcomeLayout(
+        titleLogoScale.value,
+        startButtonScale.value,
+      );
+      persistWelcomeLayout();
+    }
+    return welcomeLayout.value;
+  }
+
+  function setWelcomeItem(id: WelcomeItemId, box: WelcomeBox) {
+    const layout = ensureWelcomeLayout();
+    const next = clampBox(box);
+    welcomeLayout.value = { ...layout, [id]: next };
+    persistWelcomeLayout();
+    if (id === "logo") {
+      titleLogoScale.value = clampScale(
+        (next.w * WELCOME_CANVAS_W) / WELCOME_LOGO_NATIVE_W,
+      );
+      localStorage.setItem(STORAGE_KEY_LOGO_SCALE, String(titleLogoScale.value));
+    } else {
+      startButtonScale.value = clampScale(
+        (next.w * WELCOME_CANVAS_W) / WELCOME_START_NATIVE_W,
+      );
+      localStorage.setItem(
+        STORAGE_KEY_START_BTN_SCALE,
+        String(startButtonScale.value),
+      );
+    }
+  }
+
+  function resetWelcomeLayout() {
+    welcomeLayout.value = defaultWelcomeLayout(
+      titleLogoScale.value,
+      startButtonScale.value,
+    );
+    persistWelcomeLayout();
+  }
+
+  const DEFAULT_WELCOME_BG_COLOR = "#f4ead5";
+  const welcomeBackgroundColor = ref(DEFAULT_WELCOME_BG_COLOR);
+  const welcomeBackgroundFill = ref<WelcomeBackgroundFill>("media");
+
+  function normalizeHexColor(raw: string): string | null {
+    const t = raw.trim().replace(/^#/, "");
+    if (/^[0-9a-fA-F]{3}$/.test(t)) {
+      return `#${t[0]}${t[0]}${t[1]}${t[1]}${t[2]}${t[2]}`.toLowerCase();
+    }
+    if (/^[0-9a-fA-F]{6}$/.test(t)) return `#${t.toLowerCase()}`;
+    return null;
+  }
+
+  function loadWelcomeBackgroundFill() {
+    const color = normalizeHexColor(
+      localStorage.getItem(STORAGE_KEY_WELCOME_BG_COLOR) || "",
+    );
+    if (color) welcomeBackgroundColor.value = color;
+    const fill = localStorage.getItem(STORAGE_KEY_WELCOME_BG_FILL);
+    if (fill === "color" || fill === "media") welcomeBackgroundFill.value = fill;
+  }
+
+  function setWelcomeBackgroundColor(raw: string) {
+    const color = normalizeHexColor(raw);
+    if (!color) return;
+    welcomeBackgroundColor.value = color;
+    localStorage.setItem(STORAGE_KEY_WELCOME_BG_COLOR, color);
+  }
+
+  function setWelcomeBackgroundFill(fill: WelcomeBackgroundFill) {
+    welcomeBackgroundFill.value = fill;
+    localStorage.setItem(STORAGE_KEY_WELCOME_BG_FILL, fill);
   }
   const titleBackgroundType = ref<TitleBackgroundType>(null);
   const titleBackgroundUrl = ref<string | null>(null);
@@ -1225,6 +1362,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
    * string in the renderer.
    */
   async function setTitleBackgroundFile(type: TitleBackgroundType, file: File) {
+    setWelcomeBackgroundFill("media");
     const buf = new Uint8Array(await file.arrayBuffer());
     const mime = file.type || (type === "video" ? "video/mp4" : "image/jpeg");
     setTitleBackgroundBlob(type, new Blob([buf], { type: mime }));
@@ -2054,6 +2192,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   loadCameraDetection();
   loadPaymentEnabled();
   loadScales();
+  loadWelcomeLayout();
+  loadWelcomeBackgroundFill();
 
   return {
     // -----------------------------
@@ -2159,6 +2299,14 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     setTitleLogoScale,
     setPaymentQrScale,
     setStartButtonScale,
+    welcomeLayout,
+    ensureWelcomeLayout,
+    setWelcomeItem,
+    resetWelcomeLayout,
+    welcomeBackgroundColor,
+    welcomeBackgroundFill,
+    setWelcomeBackgroundColor,
+    setWelcomeBackgroundFill,
     setTitleBackground,
     setTitleBackgroundFile,
     clearTitleBackground,

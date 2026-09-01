@@ -6,21 +6,17 @@ import { usePhotoboothStore } from "@/stores/photobooth";
 import SettingsView from "./SettingsView.vue";
 import DashboardView from "./DashboardView.vue";
 import GalleryView from "./GalleryView.vue";
+import ScreenEditorView from "./ScreenEditorView.vue";
 
-// Login was removed — the admin panel is reached directly via the
-// three-tap badge gesture on the Title screen. No `authStore` here
-// because there's nothing to authenticate against.
 const router = useRouter();
 const dashboardStore = useDashboardStore();
-const activeTab = ref<"settings" | "dashboard" | "gallery">("dashboard");
+const activeTab = ref<"settings" | "dashboard" | "gallery" | "screens">("dashboard");
 
 function goBack() {
   router.push("/");
 }
 
 onMounted(() => {
-  // Ensure photobooth has loaded (template id migration runs on
-  // store creation) before dashboard applies it.
   usePhotoboothStore();
   dashboardStore.initFromPocketBase();
 });
@@ -69,6 +65,14 @@ onMounted(() => {
         <button
           type="button"
           class="admin-sidebar__item"
+          :class="{ active: activeTab === 'screens' }"
+          @click="activeTab = 'screens'"
+        >
+          Screen Editor
+        </button>
+        <button
+          type="button"
+          class="admin-sidebar__item"
           :class="{ active: activeTab === 'settings' }"
           @click="activeTab = 'settings'"
         >
@@ -88,7 +92,9 @@ onMounted(() => {
               ? "Dashboard"
               : activeTab === "settings"
                 ? "Settings"
-                : "Gallery"
+                : activeTab === "screens"
+                  ? "Screen Editor"
+                  : "Gallery"
           }}
         </h1>
       </header>
@@ -96,6 +102,7 @@ onMounted(() => {
       <DashboardView v-show="activeTab === 'dashboard'" />
       <SettingsView v-show="activeTab === 'settings'" />
       <GalleryView v-show="activeTab === 'gallery'" />
+      <ScreenEditorView v-show="activeTab === 'screens'" />
     </main>
   </div>
 </template>
@@ -211,5 +218,13 @@ onMounted(() => {
   flex-shrink: 0;
   padding: 1.25rem;
   border-bottom: 2px solid var(--color-brown-light);
+}
+
+.admin-main > :not(.admin-main__header) {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 </style>
