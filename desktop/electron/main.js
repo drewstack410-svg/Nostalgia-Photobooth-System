@@ -1279,7 +1279,7 @@ ipcMain.handle("templates:save", async (event, data) => {
 //
 //   NostalgiaPhotobooth/
 //     08-06-26/
-//       Session 1/   strip.png · photo-1.jpg … · session.gif
+//       Session 1/   strip.png · photo-1.jpg · photo-1-print.jpg · photo-1-original.jpg · session.gif
 //       Session 2/
 //     08-07-26/
 //       Session 1/

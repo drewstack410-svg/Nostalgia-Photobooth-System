@@ -162,6 +162,11 @@ export interface CapturedPhoto {
   dataUrl: string;
   /** Full uncropped camera frame (filters applied). Gallery + disk/cloud. */
   fullDataUrl?: string;
+  /**
+   * Full uncropped camera frame with no filter, overlay, or grain.
+   * Written to the local session folder only — never uploaded for QR.
+   */
+  originalDataUrl?: string;
   timestamp: Date;
 }
 
@@ -2133,11 +2138,16 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     currentPhotoIndex.value = 0;
   }
 
-  function addPhoto(dataUrl: string, fullDataUrl?: string) {
+  function addPhoto(
+    dataUrl: string,
+    fullDataUrl?: string,
+    originalDataUrl?: string,
+  ) {
     const photo: CapturedPhoto = {
       id: `photo_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       dataUrl,
       fullDataUrl: fullDataUrl || dataUrl,
+      originalDataUrl,
       timestamp: new Date(),
     };
     capturedPhotos.value.push(photo);

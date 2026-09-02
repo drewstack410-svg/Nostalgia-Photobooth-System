@@ -349,18 +349,22 @@
       const layout = resolveShotGrid(view.ids.length);
       grid.style.gridTemplateColumns = `repeat(${layout.cols}, 1fr)`;
       grid.style.gridTemplateRows = `repeat(${layout.rows}, 1fr)`;
-      if (printAspect && printAspect.w > 0 && printAspect.h > 0) {
-        stageEl.style.aspectRatio = `${printAspect.w} / ${printAspect.h}`;
-      } else {
-        stageEl.style.aspectRatio = `${layout.cols} / ${layout.rows}`;
+      stageEl.style.aspectRatio = `${layout.cols} / ${layout.rows}`;
+      const cellCount = layout.cols * layout.rows;
+      for (let i = 0; i < cellCount; i++) {
+        if (i < view.ids.length) {
+          const img = document.createElement("img");
+          img.alt = `Capture ${i + 1}`;
+          img.loading = "lazy";
+          img.src = imageUrl(view.ids[i]);
+          grid.appendChild(img);
+        } else {
+          const empty = document.createElement("div");
+          empty.className = "stage-grid-empty";
+          empty.setAttribute("aria-hidden", "true");
+          grid.appendChild(empty);
+        }
       }
-      view.ids.forEach((id, i) => {
-        const img = document.createElement("img");
-        img.alt = `Capture ${i + 1}`;
-        img.loading = "lazy";
-        img.src = imageUrl(id);
-        grid.appendChild(img);
-      });
       stageInner.appendChild(grid);
       updateSaveLabel(view);
       return;
@@ -596,34 +600,16 @@
     return { cols, rows };
   }
 
-  // Template rows × cols from the kiosk session. Unique shots fill that
-  // column count; extra copy-cells on the print are not shown twice.
+  // Grid tab: square layout from how many photos this sitting has.
+  // 4 → 2×2, 6 → 3×3, 8 → 4×4. Extra cells stay empty.
   function resolveShotGrid(shotCount) {
-    const n = Math.max(1, shotCount);
-    const cols = parseGridAxis(gridCols);
-    const rows = parseGridAxis(gridRows);
-    if (cols && rows) {
-      return {
-        cols,
-        rows: n === rows * cols ? rows : Math.ceil(n / cols),
-      };
-    }
-    if (cols) {
-      return { cols, rows: Math.ceil(n / cols) };
-    }
-    if (rows) {
-      return { rows, cols: Math.ceil(n / rows) };
-    }
-    const fromSlots = inferGridFromSlots(layoutSlots);
-    if (fromSlots) {
-      const uniqueRows = Math.ceil(n / fromSlots.cols);
-      return {
-        cols: fromSlots.cols,
-        rows: Math.min(fromSlots.rows, uniqueRows),
-      };
-    }
-    const fallbackCols = n <= 1 ? 1 : n === 3 ? 3 : 2;
-    return { cols: fallbackCols, rows: Math.ceil(n / fallbackCols) };
+    const sessionShots = parseGridAxis(session.shots);
+    const n = Math.max(1, shotCount, sessionShots || 0);
+    if (n <= 4) return { cols: 2, rows: 2 };
+    if (n <= 6) return { cols: 3, rows: 3 };
+    if (n <= 8) return { cols: 4, rows: 4 };
+    const side = Math.ceil(Math.sqrt(n));
+    return { cols: side, rows: side };
   }
 
   function defaultSlots(n, portrait) {
@@ -1306,23 +1292,10 @@
     const layout = resolveShotGrid(imgs.length);
     const cols = layout.cols;
     const rows = layout.rows;
-    let cellW = 900;
-    let cellH = 900;
-    if (printAspect && printAspect.w > 0 && printAspect.h > 0) {
-      const templateCols = parseGridAxis(gridCols) || cols;
-      const templateRows = parseGridAxis(gridRows) || rows;
-      cellW = printAspect.w / templateCols;
-      cellH = printAspect.h / templateRows;
-      const maxEdge = 1800;
-      const sheetW = cellW * cols;
-      const sheetH = cellH * rows;
-      const scale = Math.min(1, maxEdge / Math.max(sheetW, sheetH));
-      cellW = Math.max(1, Math.round(cellW * scale));
-      cellH = Math.max(1, Math.round(cellH * scale));
-    }
+    const cell = 600;
     const gap = 10;
-    const W = cols * cellW + (cols - 1) * gap;
-    const H = rows * cellH + (rows - 1) * gap;
+    const W = cols * cell + (cols - 1) * gap;
+    const H = rows * cell + (rows - 1) * gap;
 
     const canvas = document.createElement("canvas");
     canvas.width = W;
@@ -1334,9 +1307,9 @@
     imgs.forEach((img, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
-      const x = col * (cellW + gap);
-      const y = row * (cellH + gap);
-      drawCoverFit(ctx, img, x, y, cellW, cellH);
+      const x = col * (cell + gap);
+      const y = row * (cell + gap);
+      drawCoverFit(ctx, img, x, y, cell, cell);
     });
 
     return new Promise((resolve, reject) => {

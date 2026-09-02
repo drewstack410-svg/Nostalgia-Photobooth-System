@@ -1333,6 +1333,35 @@ async function saveComposite() {
             }
           }
 
+          // Unfiltered original stays on disk only — never sent with the
+          // QR gallery upload.
+          if (photo.originalDataUrl && window.electronAPI?.savePhoto) {
+            try {
+              const r = await window.electronAPI.savePhoto(
+                photo.originalDataUrl,
+                sessionFolder
+                  ? `${sessionFolder}/photo-${idx + 1}-original.jpg`
+                  : `nostalgia_${sessionTs}_${idx + 1}-original.jpg`,
+              );
+              if (r.success && r.path) {
+                console.log(
+                  `[Save] Capture ${idx} original (no filter) saved to:`,
+                  r.path,
+                );
+              } else {
+                console.warn(
+                  `[Save] Capture ${idx} original disk save failed:`,
+                  r.error,
+                );
+              }
+            } catch (e) {
+              console.error(
+                `[Save] Capture ${idx} original disk save error:`,
+                e,
+              );
+            }
+          }
+
           // Cloudflare R2: guest-facing stills are the FULL live preview.
           let cloudUrl: string | undefined;
           let cloudPublicId: string | undefined;

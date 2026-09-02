@@ -954,6 +954,9 @@ async function capturePhotoInner(hadLiveView: boolean) {
           throw new Error(`Canvas is ${canvas.width}x${canvas.height} — image did not load correctly (source was ${srcW}x${srcH})`);
         }
 
+        // Unfiltered full frame for the local session folder only.
+        const originalImageData = canvas.toDataURL("image/jpeg", 0.92);
+
         // Apply colour filter
         const filter = selectedFilter.value;
         const effectType = filter?.effectType ?? "original";
@@ -1084,7 +1087,7 @@ async function capturePhotoInner(hadLiveView: boolean) {
         console.log(
           `[Camera] Image processed: cropped ${Math.round(croppedImageData.length / 1024)}KB (${canvas.width}x${canvas.height}), full ${Math.round(fullImageData.length / 1024)}KB (${fullW}x${fullH})`,
         );
-        store.addPhoto(croppedImageData, fullImageData);
+        store.addPhoto(croppedImageData, fullImageData, originalImageData);
 
         // Do not restart Canon EVF here — that would un-freeze the
         // viewfinder. Restore after the 5s pause in showShotReview.
