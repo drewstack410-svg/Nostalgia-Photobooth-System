@@ -18,8 +18,14 @@ import { ref, computed } from "vue";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { revokeMediaUrl } from "@/utils/mediaBytes";
 import {
+  assetItemId,
+  assetKey,
   clampBox,
   defaultWelcomeLayout,
+  isAssetId,
+  moveLayerOrder,
+  normalizeWelcomeLayout,
+  parseTextStyle,
   parseWelcomeLayout,
   WELCOME_CANVAS_W,
   WELCOME_LOGO_NATIVE_W,
@@ -27,6 +33,8 @@ import {
   type WelcomeBox,
   type WelcomeItemId,
   type WelcomeLayout,
+  type WelcomeAssetKind,
+  type WelcomeTextStyle,
 } from "@/utils/welcomeLayout";
 
 /** IPC Uint8Array is ArrayBufferLike; Blob wants a plain ArrayBuffer. */
@@ -358,6 +366,7 @@ export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
 const CUSTOM_TEMPLATES_KEY = "nostalgia-custom-templates";
 const RECENT_STRIPS_KEY = "nostalgia-recent-strips";
 const STORAGE_KEY_LOGO = "nostalgia-custom-logo";
+const STORAGE_KEY_START_BTN = "nostalgia-custom-start-button";
 const STORAGE_KEY_PAYMENT_QR = "nostalgia-payment-qr";
 const STORAGE_KEY_PAYMENT_ENABLED = "nostalgia-payment-enabled";
 const STORAGE_KEY_LOGO_SCALE = "nostalgia-logo-scale";
@@ -913,6 +922,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   // ---- Customize (logo, title bg, fonts, camera filters) ----
   const customLogoUrl = ref<string | null>(null);
+  const customStartButtonUrl = ref<string | null>(null);
   // Operator-supplied payment QR (e.g. GCash/Maya), shown inside the
   // frame on the payment screen. Null = show the amount/hint instead.
   const paymentQrUrl = ref<string | null>(null);
@@ -968,30 +978,62 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     localStorage.setItem(STORAGE_KEY_PAYMENT_ENABLED, String(enabled));
   }
   const welcomeLayout = ref<WelcomeLayout | null>(null);
+  const lastPersistedWelcomeLayout = ref("");
+
+  function layoutSnapshot(layout: WelcomeLayout | null): string {
+    return layout ? JSON.stringify(layout) : "";
+  }
 
   function persistWelcomeLayout() {
     if (!welcomeLayout.value) {
       localStorage.removeItem(STORAGE_KEY_WELCOME_LAYOUT);
+      lastPersistedWelcomeLayout.value = "";
       return;
     }
-    localStorage.setItem(
-      STORAGE_KEY_WELCOME_LAYOUT,
-      JSON.stringify(welcomeLayout.value),
-    );
+    const raw = JSON.stringify(welcomeLayout.value);
+    localStorage.setItem(STORAGE_KEY_WELCOME_LAYOUT, raw);
+    lastPersistedWelcomeLayout.value = raw;
   }
+
+  const welcomeLayoutDirty = computed(
+    () => layoutSnapshot(welcomeLayout.value) !== lastPersistedWelcomeLayout.value,
+  );
 
   function loadWelcomeLayout() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY_WELCOME_LAYOUT);
-      if (!raw) return;
+      if (!raw) {
+        lastPersistedWelcomeLayout.value = "";
+        return;
+      }
       welcomeLayout.value = parseWelcomeLayout(JSON.parse(raw));
+      lastPersistedWelcomeLayout.value = layoutSnapshot(welcomeLayout.value);
+    } catch {
+      welcomeLayout.value = null;
+      lastPersistedWelcomeLayout.value = "";
+    }
+  }
+
+  function saveWelcomeLayout() {
+    persistWelcomeLayout();
+  }
+
+  function revertWelcomeLayout() {
+    if (!lastPersistedWelcomeLayout.value) {
+      welcomeLayout.value = null;
+      return;
+    }
+    try {
+      welcomeLayout.value = parseWelcomeLayout(
+        JSON.parse(lastPersistedWelcomeLayout.value),
+      );
     } catch {
       welcomeLayout.value = null;
     }
   }
 
   function scaleWelcomeItem(
-    id: WelcomeItemId,
+    id: "logo" | "start",
     scale: number,
     nativeW: number,
   ) {
@@ -1003,11 +1045,10 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     const h = w * aspect;
     const cx = cur.x + cur.w / 2;
     const cy = cur.y + cur.h / 2;
-    welcomeLayout.value = {
+    welcomeLayout.value = normalizeWelcomeLayout({
       ...layout,
       [id]: clampBox({ x: cx - w / 2, y: cy - h / 2, w, h }),
-    };
-    persistWelcomeLayout();
+    });
   }
 
   function ensureWelcomeLayout(): WelcomeLayout {
@@ -1016,7 +1057,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
         titleLogoScale.value,
         startButtonScale.value,
       );
-      persistWelcomeLayout();
+    } else {
+      welcomeLayout.value = normalizeWelcomeLayout(welcomeLayout.value);
     }
     return welcomeLayout.value;
   }
@@ -1024,22 +1066,126 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   function setWelcomeItem(id: WelcomeItemId, box: WelcomeBox) {
     const layout = ensureWelcomeLayout();
     const next = clampBox(box);
-    welcomeLayout.value = { ...layout, [id]: next };
-    persistWelcomeLayout();
-    if (id === "logo") {
-      titleLogoScale.value = clampScale(
-        (next.w * WELCOME_CANVAS_W) / WELCOME_LOGO_NATIVE_W,
-      );
-      localStorage.setItem(STORAGE_KEY_LOGO_SCALE, String(titleLogoScale.value));
-    } else {
-      startButtonScale.value = clampScale(
-        (next.w * WELCOME_CANVAS_W) / WELCOME_START_NATIVE_W,
-      );
-      localStorage.setItem(
-        STORAGE_KEY_START_BTN_SCALE,
-        String(startButtonScale.value),
-      );
+    if (id === "logo" || id === "start") {
+      welcomeLayout.value = normalizeWelcomeLayout({ ...layout, [id]: next });
+      if (id === "logo") {
+        titleLogoScale.value = clampScale(
+          (next.w * WELCOME_CANVAS_W) / WELCOME_LOGO_NATIVE_W,
+        );
+        localStorage.setItem(STORAGE_KEY_LOGO_SCALE, String(titleLogoScale.value));
+      } else {
+        startButtonScale.value = clampScale(
+          (next.w * WELCOME_CANVAS_W) / WELCOME_START_NATIVE_W,
+        );
+        localStorage.setItem(
+          STORAGE_KEY_START_BTN_SCALE,
+          String(startButtonScale.value),
+        );
+      }
+      return;
     }
+    if (!isAssetId(id)) return;
+    const key = assetKey(id);
+    welcomeLayout.value = normalizeWelcomeLayout({
+      ...layout,
+      assets: layout.assets.map((a) =>
+        a.id === key ? { ...a, ...next } : a,
+      ),
+    });
+  }
+
+  function addWelcomeAsset(
+    src: string,
+    name = "Image",
+    box?: WelcomeBox,
+    kind: WelcomeAssetKind = "image",
+    text?: WelcomeTextStyle,
+  ): string {
+    const layout = ensureWelcomeLayout();
+    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const placed = clampBox(box ?? { x: 0.34, y: 0.3, w: 0.28, h: 0.22 });
+    const itemId = assetItemId(id);
+    const label =
+      name ||
+      (kind === "video" ? "Video" : kind === "text" ? "Text" : "Image");
+    welcomeLayout.value = normalizeWelcomeLayout({
+      ...layout,
+      assets: [
+        ...layout.assets,
+        {
+          id,
+          src,
+          name: label,
+          kind,
+          ...(kind === "text" ? { text: parseTextStyle(text) } : {}),
+          ...placed,
+        },
+      ],
+      order: [...layout.order, itemId],
+    });
+    return itemId;
+  }
+
+  function removeWelcomeAsset(id: WelcomeItemId) {
+    if (!isAssetId(id)) return;
+    const layout = ensureWelcomeLayout();
+    const key = assetKey(id);
+    welcomeLayout.value = normalizeWelcomeLayout({
+      ...layout,
+      assets: layout.assets.filter((a) => a.id !== key),
+    });
+  }
+
+  function replaceWelcomeAssetSrc(
+    id: WelcomeItemId,
+    src: string,
+    kind?: "image" | "video",
+  ) {
+    if (!isAssetId(id)) return;
+    const layout = ensureWelcomeLayout();
+    const key = assetKey(id);
+    welcomeLayout.value = normalizeWelcomeLayout({
+      ...layout,
+      assets: layout.assets.map((a) =>
+        a.id === key
+          ? { ...a, src, kind: kind ?? a.kind ?? "image", text: undefined }
+          : a,
+      ),
+    });
+  }
+
+  function updateWelcomeAssetText(
+    id: WelcomeItemId,
+    patch: Partial<WelcomeTextStyle>,
+  ) {
+    if (!isAssetId(id)) return;
+    const layout = ensureWelcomeLayout();
+    const key = assetKey(id);
+    welcomeLayout.value = normalizeWelcomeLayout({
+      ...layout,
+      assets: layout.assets.map((a) => {
+        if (a.id !== key || a.kind !== "text") return a;
+        const text = parseTextStyle({ ...a.text, ...patch });
+        const line = text.content.split("\n")[0].trim();
+        return { ...a, text, name: line.slice(0, 32) || "Text" };
+      }),
+    });
+  }
+
+  function sendWelcomeLayer(
+    id: WelcomeItemId,
+    dir: "back" | "front" | "backward" | "forward",
+  ) {
+    const layout = ensureWelcomeLayout();
+    welcomeLayout.value = normalizeWelcomeLayout({
+      ...layout,
+      order: moveLayerOrder(layout.order, id, dir),
+    });
+  }
+
+  function setWelcomeLayerOrder(order: string[]) {
+    const layout = ensureWelcomeLayout();
+    welcomeLayout.value = normalizeWelcomeLayout({ ...layout, order });
   }
 
   function resetWelcomeLayout() {
@@ -1047,7 +1193,17 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       titleLogoScale.value,
       startButtonScale.value,
     );
-    persistWelcomeLayout();
+  }
+
+  function applyWelcomeLayout(layout: WelcomeLayout) {
+    const next = normalizeWelcomeLayout(layout);
+    welcomeLayout.value = next;
+    titleLogoScale.value = clampScale(
+      (next.logo.w * WELCOME_CANVAS_W) / WELCOME_LOGO_NATIVE_W,
+    );
+    startButtonScale.value = clampScale(
+      (next.start.w * WELCOME_CANVAS_W) / WELCOME_START_NATIVE_W,
+    );
   }
 
   const DEFAULT_WELCOME_BG_COLOR = "#f4ead5";
@@ -1127,6 +1283,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     try {
       const logo = localStorage.getItem(STORAGE_KEY_LOGO);
       if (logo) customLogoUrl.value = logo;
+      const startBtn = localStorage.getItem(STORAGE_KEY_START_BTN);
+      if (startBtn) customStartButtonUrl.value = startBtn;
       const payQr = localStorage.getItem(STORAGE_KEY_PAYMENT_QR);
       if (payQr) paymentQrUrl.value = payQr;
       const bgType = localStorage.getItem(STORAGE_KEY_BG_TYPE);
@@ -1250,6 +1408,14 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   function clearCustomLogo() {
     customLogoUrl.value = null;
     localStorage.removeItem(STORAGE_KEY_LOGO);
+  }
+  function setCustomStartButton(dataUrl: string) {
+    customStartButtonUrl.value = dataUrl;
+    localStorage.setItem(STORAGE_KEY_START_BTN, dataUrl);
+  }
+  function clearCustomStartButton() {
+    customStartButtonUrl.value = null;
+    localStorage.removeItem(STORAGE_KEY_START_BTN);
   }
   function setPaymentQr(dataUrl: string) {
     paymentQrUrl.value = dataUrl;
@@ -2225,6 +2391,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // Customize (Logo, Title BG, Fonts, Filters)
     // -----------------------------
     customLogoUrl,
+    customStartButtonUrl,
     paymentQrUrl,
     titleBackgroundType,
     titleBackgroundUrl,
@@ -2289,6 +2456,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // -----------------------------
     setCustomLogo,
     clearCustomLogo,
+    setCustomStartButton,
+    clearCustomStartButton,
     setPaymentQr,
     clearPaymentQr,
     paymentEnabled,
@@ -2300,9 +2469,19 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     setPaymentQrScale,
     setStartButtonScale,
     welcomeLayout,
+    welcomeLayoutDirty,
     ensureWelcomeLayout,
     setWelcomeItem,
     resetWelcomeLayout,
+    applyWelcomeLayout,
+    addWelcomeAsset,
+    removeWelcomeAsset,
+    replaceWelcomeAssetSrc,
+    updateWelcomeAssetText,
+    sendWelcomeLayer,
+    setWelcomeLayerOrder,
+    saveWelcomeLayout,
+    revertWelcomeLayout,
     welcomeBackgroundColor,
     welcomeBackgroundFill,
     setWelcomeBackgroundColor,
