@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 // Cloudinary unsigned uploads are parked. Guest copies now go to Cloudflare R2.
@@ -29,9 +29,17 @@ import {
   buildShortGalleryUrl,
   galleryManifestDataUrl,
 } from "@/utils/gallerySession";
+import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
 
 const router = useRouter();
 const store = usePhotoboothStore();
+
+const printTemplate = computed(
+  () => store.sessionTemplate ?? store.selectedTemplate,
+);
+const capturedPhotoUrls = computed(() =>
+  store.capturedPhotos.map((p) => p.dataUrl),
+);
 
 const countdownSeconds = ref(store.printingCountdownSeconds);
 const isSaving = ref(false);
@@ -1735,15 +1743,17 @@ onUnmounted(() => {
             <!-- Photo strip on top, centered — falls into slot on appear -->
             <div class="slot-screen-content">
               <div
-                class="falling-photo-strip mini-strip"
-                v-if="store.capturedPhotos.length > 0"
+                v-if="printTemplate && store.capturedPhotos.length > 0"
+                class="falling-photo-strip print-strip"
               >
-                <img
-                  v-for="photo in store.capturedPhotos"
-                  :key="photo.id"
-                  :src="photo.dataUrl"
-                  alt="Photo"
-                />
+                <div class="print-strip-cq">
+                  <TemplateLivePreview
+                    :template="printTemplate"
+                    :photos="capturedPhotoUrls"
+                    :active-index="-1"
+                    fluid
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -1779,21 +1789,26 @@ onUnmounted(() => {
       </div>
 
       <!-- Delivery Message -->
-      <div class="delivery-plaque">
+      <div class="delivery-plaque" role="status">
         <span class="plaque-bolt plaque-bolt--tl" aria-hidden="true"></span>
         <span class="plaque-bolt plaque-bolt--tr" aria-hidden="true"></span>
         <span class="plaque-bolt plaque-bolt--bl" aria-hidden="true"></span>
         <span class="plaque-bolt plaque-bolt--br" aria-hidden="true"></span>
         <div class="plaque-content">
-          <div class="plaque-arrow">↑</div>
-          <div class="plaque-text">
-            <em>Please wait</em>
-            <span>for your photos</span>
-            <span>to print</span>
-          </div>
-          <div class="plaque-countdown">
-            Continuing in <strong>{{ countdownSeconds }}</strong> sec
-          </div>
+          <svg
+            class="plaque-arrow"
+            viewBox="0 0 64 40"
+            aria-hidden="true"
+          >
+            <path d="M32 2 62 28h-16v10H18V28H2z" />
+          </svg>
+          <p class="plaque-photos">Photos</p>
+          <p class="plaque-line">Delivered</p>
+          <p class="plaque-line">Here</p>
+          <p class="plaque-seconds">
+            In {{ countdownSeconds }}
+            {{ countdownSeconds === 1 ? "Second" : "Seconds" }}
+          </p>
         </div>
       </div>
     </div>
@@ -1900,8 +1915,9 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 250px;
-  padding: 24px;
+  height: 280px;
+  min-height: 280px;
+  padding: 20px 48px 28px;
 }
 
 /* Falling animation: strip drops into the slot, loops for ~10s then
@@ -1929,20 +1945,22 @@ onUnmounted(() => {
   }
 }
 
-.mini-strip {
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  background: var(--color-cream);
-  border-radius: 4px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+.print-strip {
+  width: 72%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 
-.mini-strip img {
-  width: 100px;
-  height: 75px;
-  object-fit: cover;
-  border: 1px solid var(--color-brown-light);
+.print-strip-cq {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  container-type: size;
 }
 
 /* Print Status */
@@ -2010,34 +2028,45 @@ onUnmounted(() => {
   background: var(--color-brown-dark);
 }
 
-/* Delivery Plaque */
+/* Delivery Plaque — vintage metal sign */
 .delivery-plaque {
   position: relative;
-  background: linear-gradient(
-    180deg,
-    #c0c0c0 0%,
-    #a0a0a0 20%,
-    #808080 80%,
-    #606060 100%
-  );
-  padding: 4px;
-  border-radius: 8px;
+  width: 280px;
+  aspect-ratio: 1;
+  box-sizing: border-box;
+  padding: 1.35rem 1.1rem 1.15rem;
+  border-radius: 12px;
+  background:
+    radial-gradient(ellipse at 50% 38%, #f7f7f7 0%, #d4d4d4 52%, #b0b0b0 100%);
+  border: 2px solid #6e6e6e;
   box-shadow:
-    0 6px 20px rgba(0, 0, 0, 0.3),
-    inset 0 1px 2px rgba(255, 255, 255, 0.5);
+    0 10px 22px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.12);
 }
 
-/* Four corner bolts (v2): recessed dark screws, one per corner. */
 .plaque-bolt {
   position: absolute;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: radial-gradient(circle at 40% 35%, #6a6a6a 0%, #3a3a3a 55%, #1c1c1c 100%);
+  background:
+    radial-gradient(circle at 35% 30%, #8a8a8a 0%, #3a3a3a 58%, #141414 100%);
   box-shadow:
-    inset 0 1px 1px rgba(0, 0, 0, 0.6),
-    0 1px 0 rgba(255, 255, 255, 0.35);
+    inset 0 1px 1px rgba(0, 0, 0, 0.55),
+    0 1px 0 rgba(255, 255, 255, 0.4);
   z-index: 2;
+}
+
+.plaque-bolt::after {
+  content: "";
+  position: absolute;
+  left: 20%;
+  right: 20%;
+  top: 46%;
+  height: 2px;
+  background: #111;
+  border-radius: 1px;
 }
 
 .plaque-bolt--tl {
@@ -2058,47 +2087,54 @@ onUnmounted(() => {
 }
 
 .plaque-content {
-  background: linear-gradient(180deg, #e8e8e8 0%, #d0d0d0 50%, #b8b8b8 100%);
-  padding: 1.5rem 2rem;
-  border-radius: 6px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
+  color: #111;
 }
 
 .plaque-arrow {
-  font-size: 2rem;
-  color: #333;
-  margin-bottom: 0.5rem;
+  width: 2.4rem;
+  height: auto;
+  fill: #111;
+  margin-bottom: 0.15rem;
 }
 
-.plaque-text {
-  display: flex;
-  flex-direction: column;
-  font-family: var(--font-display);
-  color: #333;
+.plaque-photos,
+.plaque-line,
+.plaque-seconds {
+  margin: 0;
+  line-height: 1.05;
 }
 
-.plaque-text em {
-  font-size: 2rem;
-  font-weight: 700;
+.plaque-photos {
+  font-family: "Playfair Display", "Times New Roman", Times, serif;
+  font-size: 2.15rem;
+  font-weight: 800;
   font-style: italic;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin: 0.1rem 0 0.35rem;
 }
 
-.plaque-text span {
-  font-size: 1.1rem;
-  font-weight: 600;
-  letter-spacing: 2px;
+.plaque-line {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 1.05rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-.plaque-countdown {
-  margin-top: 0.75rem;
-  font-family: var(--font-display);
-  font-size: 1rem;
-  color: #333;
-}
-
-.plaque-countdown strong {
-  font-size: 1.25rem;
-  color: var(--color-brown-dark);
+.plaque-seconds {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 0.55rem;
 }
 
 /* Print Preview Modal */
