@@ -21,6 +21,7 @@ import {
   parseTextStyle,
   resizeBox,
   snapBoxToGuides,
+  startButtonCssVars,
   type SnapLine,
   type WelcomeAsset,
   type WelcomeBox,
@@ -78,6 +79,13 @@ const startBtnScale = computed(() => {
   if (laid) return (laid.start.w * WELCOME_CANVAS_W) / WELCOME_START_NATIVE_W;
   return store.startButtonScale;
 });
+
+const startBtnCss = computed(() =>
+  startButtonCssVars(store.startButtonStyle, startBtnScale.value),
+);
+const startBtnUsesArtwork = computed(
+  () => !store.startButtonStyle.label.trim(),
+);
 
 function playBgVideo() {
   const el = bgVideoRef.value;
@@ -431,12 +439,13 @@ const HANDLES: Handle[] = ["nw", "ne", "sw", "se"];
         <BoxButton
           v-else
           class="welcome-start-btn"
+          :class="{ 'welcome-start-btn--text': !startBtnUsesArtwork }"
           :margin-top="layout ? '0' : `${Math.round(77 * store.startButtonScale)}px`"
-          :style="{
-            '--start-btn-scale': startBtnScale,
-          }"
-          :svg-src="startBtnLabel"
-        />
+          :style="startBtnCss"
+          :svg-src="startBtnUsesArtwork ? startBtnLabel : undefined"
+        >
+          {{ store.startButtonStyle.label }}
+        </BoxButton>
         <span v-if="interactive" class="welcome-lock" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
             <rect
@@ -604,6 +613,7 @@ const HANDLES: Handle[] = ["nw", "ne", "sw", "se"];
 .welcome-start-btn :deep(.box-button) {
   padding: calc(20.65px * var(--start-btn-scale, 1))
     calc(33.35px * var(--start-btn-scale, 1));
+  border-radius: var(--btn-inner-radius, 2px) !important;
 }
 
 .welcome-start-btn :deep(.box-button-svg) {
@@ -611,9 +621,23 @@ const HANDLES: Handle[] = ["nw", "ne", "sw", "se"];
   height: auto;
 }
 
+.welcome-start-btn--text :deep(.box-button-svg) {
+  width: auto;
+}
+
 .welcome-start-btn {
   padding: calc(8.4px * var(--start-btn-scale, 1));
-  border-radius: calc(5.5px * var(--start-btn-scale, 1));
+  border-radius: var(--btn-radius, calc(5.5px * var(--start-btn-scale, 1)));
+}
+
+.welcome-start-btn--text {
+  max-width: 100%;
+}
+
+.welcome-start-btn--text :deep(.box-button) {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .welcome-lock {

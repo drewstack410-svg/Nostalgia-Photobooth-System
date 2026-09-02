@@ -92,6 +92,9 @@ try {
       console.log('[Preload] readPhoto called');
       return ipcRenderer.invoke('read-photo', filePath);
     },
+
+    listSessionFiles: (folder) => ipcRenderer.invoke('list-session-files', folder),
+    readSessionFile: (relOrAbs) => ipcRenderer.invoke('read-session-file', relOrAbs),
     
     deletePhoto: (filePath) => {
       console.log('[Preload] deletePhoto called');

@@ -69,6 +69,112 @@ function clampNum(v: unknown, fallback: number, min: number, max: number): numbe
   return Math.min(max, Math.max(min, n));
 }
 
+export function parseHexColor(raw: unknown, fallback: string): string {
+  if (typeof raw !== "string") return fallback;
+  const t = raw.trim();
+  if (/^#([0-9a-f]{3})$/i.test(t)) {
+    const h = t.slice(1);
+    return `#${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}`.toLowerCase();
+  }
+  if (/^#([0-9a-f]{6})$/i.test(t)) return t.toLowerCase();
+  return fallback;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  return [
+    parseInt(h.slice(0, 2), 16),
+    parseInt(h.slice(2, 4), 16),
+    parseInt(h.slice(4, 6), 16),
+  ];
+}
+
+export function mixHex(a: string, b: string, t: number): string {
+  const [ar, ag, ab] = hexToRgb(parseHexColor(a, "#000000"));
+  const [br, bg, bb] = hexToRgb(parseHexColor(b, "#ffffff"));
+  const amt = Math.min(1, Math.max(0, t));
+  const mix = (x: number, y: number) => Math.round(x + (y - x) * amt);
+  const to = (n: number) => n.toString(16).padStart(2, "0");
+  return `#${to(mix(ar, br))}${to(mix(ag, bg))}${to(mix(ab, bb))}`;
+}
+
+export function lightenHex(hex: string, amount: number): string {
+  return mixHex(hex, "#ffffff", amount);
+}
+
+/** Figma gold/brown start button. Empty label keeps the original SVG artwork. */
+export type WelcomeStartButtonStyle = {
+  label: string;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  italic: boolean;
+  labelColor: string;
+  faceColor: string;
+  bezelColor: string;
+  shadowColor: string;
+  radius: number;
+};
+
+export function defaultStartButtonStyle(): WelcomeStartButtonStyle {
+  return {
+    label: "",
+    fontFamily: "var(--font-display)",
+    fontSize: 22,
+    fontWeight: 700,
+    italic: false,
+    labelColor: "#3d2b1f",
+    faceColor: "#fcaf4a",
+    bezelColor: "#6b3b11",
+    shadowColor: "#301207",
+    radius: 5.5,
+  };
+}
+
+export function parseStartButtonStyle(raw: unknown): WelcomeStartButtonStyle {
+  const d = defaultStartButtonStyle();
+  if (!raw || typeof raw !== "object") return d;
+  const t = raw as Partial<WelcomeStartButtonStyle>;
+  return {
+    label: typeof t.label === "string" ? t.label : d.label,
+    fontFamily:
+      typeof t.fontFamily === "string" && t.fontFamily.trim()
+        ? t.fontFamily
+        : d.fontFamily,
+    fontSize: clampNum(t.fontSize, d.fontSize, 10, 64),
+    fontWeight: clampNum(t.fontWeight, d.fontWeight, 100, 900),
+    italic: !!t.italic,
+    labelColor: parseHexColor(t.labelColor, d.labelColor),
+    faceColor: parseHexColor(t.faceColor, d.faceColor),
+    bezelColor: parseHexColor(t.bezelColor, d.bezelColor),
+    shadowColor: parseHexColor(t.shadowColor, d.shadowColor),
+    radius: clampNum(t.radius, d.radius, 0, 24),
+  };
+}
+
+export function startButtonCssVars(
+  style: WelcomeStartButtonStyle,
+  scale: number,
+): Record<string, string> {
+  const s = Math.max(0.2, scale);
+  return {
+    "--start-btn-scale": String(s),
+    "--btn-bezel-from": style.bezelColor,
+    "--btn-bezel-to": lightenHex(style.bezelColor, 0.22),
+    "--btn-face-from": style.faceColor,
+    "--btn-face-mid": lightenHex(style.faceColor, 0.45),
+    "--btn-face-to": style.faceColor,
+    "--btn-shadow": style.shadowColor,
+    "--btn-label-color": style.labelColor,
+    "--btn-radius": `${style.radius * s}px`,
+    "--btn-inner-radius": `${Math.max(0, style.radius * 0.36 * s)}px`,
+    "--btn-font": style.fontFamily,
+    "--btn-font-size": `${style.fontSize * s}px`,
+    "--btn-font-weight": String(style.fontWeight),
+    "--btn-font-style": style.italic ? "italic" : "normal",
+  };
+}
+
 export function parseTextStyle(raw: unknown): WelcomeTextStyle {
   const d = defaultWelcomeText();
   if (!raw || typeof raw !== "object") return d;

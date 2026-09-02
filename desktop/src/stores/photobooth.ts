@@ -21,10 +21,12 @@ import {
   assetItemId,
   assetKey,
   clampBox,
+  defaultStartButtonStyle,
   defaultWelcomeLayout,
   isAssetId,
   moveLayerOrder,
   normalizeWelcomeLayout,
+  parseStartButtonStyle,
   parseTextStyle,
   parseWelcomeLayout,
   WELCOME_CANVAS_W,
@@ -34,8 +36,18 @@ import {
   type WelcomeItemId,
   type WelcomeLayout,
   type WelcomeAssetKind,
+  type WelcomeStartButtonStyle,
   type WelcomeTextStyle,
 } from "@/utils/welcomeLayout";
+import {
+  defaultKioskLayout,
+  KIOSK_SCREEN_IDS,
+  normalizeKioskLayout,
+  parseKioskLayout,
+  type KioskBackgroundFill,
+  type KioskLayout,
+  type KioskScreenId,
+} from "@/utils/kioskLayout";
 
 /** IPC Uint8Array is ArrayBufferLike; Blob wants a plain ArrayBuffer. */
 function blobFromIpcBytes(bytes: Uint8Array, type: string): Blob {
@@ -170,6 +182,8 @@ export interface CapturedPhoto {
   timestamp: Date;
 }
 
+export type MediaUploadStatus = "pending" | "uploading" | "done" | "failed";
+
 export interface SavedPhotoStrip {
   id: string;
   dataUrl: string;
@@ -218,6 +232,12 @@ export interface SavedPhotoStrip {
   // Same value is mirrored on every strip entry from a session, so
   // QRScanView can read it from the most recent strip.
   shareableUrl?: string;
+  /**
+   * Guest gallery upload. Missing on strips saved before this field
+   * existed — treat as "done" when shareableUrl is set, otherwise
+   * unknown/offline.
+   */
+  uploadStatus?: MediaUploadStatus;
 }
 
 export type TitleBackgroundType = "image" | "video" | null;
@@ -345,7 +365,7 @@ export interface CameraFilter {
    * sepia/bw/fujifilm, and for cube filters whose baseFilter is sepia.
    */
   grainEnabled?: boolean;
-  /** Fine-tune sliders: grain, levels, contrast, shadows, vignette. */
+  /** Fine-tune sliders: grain, levels, contrast, shadows, vignette, glow. */
   adjustments?: FilterAdjustments;
 }
 
@@ -355,6 +375,7 @@ export interface FilterAdjustments {
   contrast: number;
   shadows: number;
   vignette: number;
+  glow: number;
 }
 
 export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
@@ -363,6 +384,7 @@ export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
   contrast: 0,
   shadows: 0,
   vignette: 0,
+  glow: 0,
 };
 
 // -----------------------------------------------------------------------------
@@ -372,12 +394,14 @@ const CUSTOM_TEMPLATES_KEY = "nostalgia-custom-templates";
 const RECENT_STRIPS_KEY = "nostalgia-recent-strips";
 const STORAGE_KEY_LOGO = "nostalgia-custom-logo";
 const STORAGE_KEY_START_BTN = "nostalgia-custom-start-button";
+const STORAGE_KEY_START_BTN_STYLE = "nostalgia-start-btn-style";
 const STORAGE_KEY_PAYMENT_QR = "nostalgia-payment-qr";
 const STORAGE_KEY_PAYMENT_ENABLED = "nostalgia-payment-enabled";
 const STORAGE_KEY_LOGO_SCALE = "nostalgia-logo-scale";
 const STORAGE_KEY_QR_SCALE = "nostalgia-qr-scale";
 const STORAGE_KEY_START_BTN_SCALE = "nostalgia-start-btn-scale";
 const STORAGE_KEY_WELCOME_LAYOUT = "nostalgia-welcome-layout";
+const STORAGE_KEY_KIOSK_LAYOUT = "nostalgia-kiosk-layout-";
 const STORAGE_KEY_WELCOME_BG_COLOR = "nostalgia-welcome-bg-color";
 const STORAGE_KEY_WELCOME_BG_FILL = "nostalgia-welcome-bg-fill";
 const STORAGE_KEY_BG_TYPE = "nostalgia-title-bg-type";
@@ -928,6 +952,38 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   // ---- Customize (logo, title bg, fonts, camera filters) ----
   const customLogoUrl = ref<string | null>(null);
   const customStartButtonUrl = ref<string | null>(null);
+  const startButtonStyle = ref<WelcomeStartButtonStyle>(defaultStartButtonStyle());
+
+  function persistStartButtonStyle() {
+    localStorage.setItem(
+      STORAGE_KEY_START_BTN_STYLE,
+      JSON.stringify(startButtonStyle.value),
+    );
+  }
+  function setStartButtonStyle(patch: Partial<WelcomeStartButtonStyle>) {
+    startButtonStyle.value = parseStartButtonStyle({
+      ...startButtonStyle.value,
+      ...patch,
+    });
+    persistStartButtonStyle();
+  }
+  function applyStartButtonStyle(style: WelcomeStartButtonStyle) {
+    startButtonStyle.value = parseStartButtonStyle(style);
+    persistStartButtonStyle();
+  }
+  function resetStartButtonStyle() {
+    startButtonStyle.value = defaultStartButtonStyle();
+    localStorage.removeItem(STORAGE_KEY_START_BTN_STYLE);
+  }
+  function loadStartButtonStyle() {
+    const raw = localStorage.getItem(STORAGE_KEY_START_BTN_STYLE);
+    if (!raw) return;
+    try {
+      startButtonStyle.value = parseStartButtonStyle(JSON.parse(raw));
+    } catch {
+      startButtonStyle.value = defaultStartButtonStyle();
+    }
+  }
   // Operator-supplied payment QR (e.g. GCash/Maya), shown inside the
   // frame on the payment screen. Null = show the amount/hint instead.
   const paymentQrUrl = ref<string | null>(null);
@@ -1211,6 +1267,279 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     );
   }
 
+  const emptyKioskLayouts = (): Record<KioskScreenId, KioskLayout | null> => ({
+    templates: null,
+    payment: null,
+    camera: null,
+    printing: null,
+    qr: null,
+  });
+  const emptyKioskSnaps = (): Record<KioskScreenId, string> => ({
+    templates: "",
+    payment: "",
+    camera: "",
+    printing: "",
+    qr: "",
+  });
+
+  const kioskLayouts = ref<Record<KioskScreenId, KioskLayout | null>>(
+    emptyKioskLayouts(),
+  );
+  const lastPersistedKiosk = ref<Record<KioskScreenId, string>>(emptyKioskSnaps());
+
+  function kioskLayoutOf(id: KioskScreenId): KioskLayout | null {
+    return kioskLayouts.value[id];
+  }
+
+  function kioskSnapshot(layout: KioskLayout | null): string {
+    return layout ? JSON.stringify(layout) : "";
+  }
+
+  function kioskLayoutDirty(id: KioskScreenId): boolean {
+    return kioskSnapshot(kioskLayouts.value[id]) !== lastPersistedKiosk.value[id];
+  }
+
+  function persistKioskLayout(id: KioskScreenId) {
+    const layout = kioskLayouts.value[id];
+    const key = STORAGE_KEY_KIOSK_LAYOUT + id;
+    if (!layout) {
+      localStorage.removeItem(key);
+      lastPersistedKiosk.value = { ...lastPersistedKiosk.value, [id]: "" };
+      return;
+    }
+    const raw = JSON.stringify(layout);
+    localStorage.setItem(key, raw);
+    lastPersistedKiosk.value = { ...lastPersistedKiosk.value, [id]: raw };
+  }
+
+  function loadKioskLayouts() {
+    const next = emptyKioskLayouts();
+    const snaps = emptyKioskSnaps();
+    for (const id of KIOSK_SCREEN_IDS) {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY_KIOSK_LAYOUT + id);
+        if (!raw) continue;
+        const parsed = parseKioskLayout(id, JSON.parse(raw));
+        next[id] = parsed;
+        snaps[id] = parsed ? JSON.stringify(parsed) : "";
+      } catch {
+        next[id] = null;
+      }
+    }
+    kioskLayouts.value = next;
+    lastPersistedKiosk.value = snaps;
+  }
+
+  function saveKioskLayout(id: KioskScreenId) {
+    persistKioskLayout(id);
+  }
+
+  function revertKioskLayout(id: KioskScreenId) {
+    const raw = lastPersistedKiosk.value[id];
+    if (!raw) {
+      kioskLayouts.value = { ...kioskLayouts.value, [id]: null };
+      return;
+    }
+    try {
+      kioskLayouts.value = {
+        ...kioskLayouts.value,
+        [id]: parseKioskLayout(id, JSON.parse(raw)),
+      };
+    } catch {
+      kioskLayouts.value = { ...kioskLayouts.value, [id]: null };
+    }
+  }
+
+  function ensureKioskLayout(id: KioskScreenId): KioskLayout {
+    const cur = kioskLayouts.value[id];
+    const next = cur
+      ? normalizeKioskLayout(id, cur)
+      : defaultKioskLayout(id);
+    kioskLayouts.value = { ...kioskLayouts.value, [id]: next };
+    return next;
+  }
+
+  function setKioskLayout(id: KioskScreenId, layout: KioskLayout) {
+    kioskLayouts.value = {
+      ...kioskLayouts.value,
+      [id]: normalizeKioskLayout(id, layout),
+    };
+  }
+
+  function resetKioskLayout(id: KioskScreenId) {
+    kioskLayouts.value = {
+      ...kioskLayouts.value,
+      [id]: defaultKioskLayout(id),
+    };
+  }
+
+  function setKioskItem(id: KioskScreenId, itemId: string, box: WelcomeBox) {
+    const layout = ensureKioskLayout(id);
+    const next = clampBox(box);
+    if (isAssetId(itemId)) {
+      const key = assetKey(itemId);
+      setKioskLayout(id, {
+        ...layout,
+        assets: layout.assets.map((a) =>
+          a.id === key ? { ...a, ...next } : a,
+        ),
+      });
+      return;
+    }
+    setKioskLayout(id, {
+      ...layout,
+      items: { ...layout.items, [itemId]: next },
+    });
+  }
+
+  function addKioskAsset(
+    screenId: KioskScreenId,
+    src: string,
+    name = "Image",
+    box?: WelcomeBox,
+    kind: WelcomeAssetKind = "image",
+    text?: WelcomeTextStyle,
+  ): string {
+    const layout = ensureKioskLayout(screenId);
+    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const placed = clampBox(box ?? { x: 0.34, y: 0.3, w: 0.28, h: 0.22 });
+    const itemId = assetItemId(id);
+    const label =
+      name ||
+      (kind === "video" ? "Video" : kind === "text" ? "Text" : "Image");
+    setKioskLayout(screenId, {
+      ...layout,
+      assets: [
+        ...layout.assets,
+        {
+          id,
+          src,
+          name: label,
+          kind,
+          ...(kind === "text" ? { text: parseTextStyle(text) } : {}),
+          ...placed,
+        },
+      ],
+      order: [...layout.order, itemId],
+    });
+    return itemId;
+  }
+
+  function removeKioskAsset(screenId: KioskScreenId, id: string) {
+    if (!isAssetId(id)) return;
+    const layout = ensureKioskLayout(screenId);
+    const key = assetKey(id);
+    setKioskLayout(screenId, {
+      ...layout,
+      assets: layout.assets.filter((a) => a.id !== key),
+    });
+  }
+
+  function replaceKioskAssetSrc(
+    screenId: KioskScreenId,
+    id: string,
+    src: string,
+    kind?: "image" | "video",
+  ) {
+    if (!isAssetId(id)) return;
+    const layout = ensureKioskLayout(screenId);
+    const key = assetKey(id);
+    setKioskLayout(screenId, {
+      ...layout,
+      assets: layout.assets.map((a) =>
+        a.id === key
+          ? { ...a, src, kind: kind ?? a.kind ?? "image", text: undefined }
+          : a,
+      ),
+    });
+  }
+
+  function updateKioskAssetText(
+    screenId: KioskScreenId,
+    id: string,
+    patch: Partial<WelcomeTextStyle>,
+  ) {
+    if (!isAssetId(id)) return;
+    const layout = ensureKioskLayout(screenId);
+    const key = assetKey(id);
+    setKioskLayout(screenId, {
+      ...layout,
+      assets: layout.assets.map((a) => {
+        if (a.id !== key || a.kind !== "text") return a;
+        const text = parseTextStyle({ ...a.text, ...patch });
+        const line = text.content.split("\n")[0].trim();
+        return { ...a, text, name: line.slice(0, 32) || "Text" };
+      }),
+    });
+  }
+
+  function updateKioskText(
+    screenId: KioskScreenId,
+    itemId: string,
+    patch: Partial<WelcomeTextStyle>,
+  ) {
+    const layout = ensureKioskLayout(screenId);
+    const current = layout.texts[itemId];
+    if (!current) return;
+    setKioskLayout(screenId, {
+      ...layout,
+      texts: {
+        ...layout.texts,
+        [itemId]: parseTextStyle({ ...current, ...patch }),
+      },
+    });
+  }
+
+  function updateKioskButton(
+    screenId: KioskScreenId,
+    itemId: string,
+    label: string,
+  ) {
+    const layout = ensureKioskLayout(screenId);
+    if (!layout.buttons[itemId]) return;
+    setKioskLayout(screenId, {
+      ...layout,
+      buttons: { ...layout.buttons, [itemId]: { label } },
+    });
+  }
+
+  function sendKioskLayer(
+    screenId: KioskScreenId,
+    id: string,
+    dir: "back" | "front" | "backward" | "forward",
+  ) {
+    const layout = ensureKioskLayout(screenId);
+    setKioskLayout(screenId, {
+      ...layout,
+      order: moveLayerOrder(layout.order, id, dir),
+    });
+  }
+
+  function setKioskLayerOrder(screenId: KioskScreenId, order: string[]) {
+    const layout = ensureKioskLayout(screenId);
+    setKioskLayout(screenId, { ...layout, order });
+  }
+
+  function setKioskBackgroundFill(
+    screenId: KioskScreenId,
+    fill: KioskBackgroundFill,
+  ) {
+    const layout = ensureKioskLayout(screenId);
+    setKioskLayout(screenId, { ...layout, backgroundFill: fill });
+  }
+
+  function setKioskBackgroundColor(screenId: KioskScreenId, raw: string) {
+    const t = raw.trim().replace(/^#/, "");
+    let color = "";
+    if (/^[0-9a-fA-F]{3}$/.test(t)) {
+      color = `#${t[0]}${t[0]}${t[1]}${t[1]}${t[2]}${t[2]}`.toLowerCase();
+    } else if (/^[0-9a-fA-F]{6}$/.test(t)) {
+      color = `#${t.toLowerCase()}`;
+    } else return;
+    const layout = ensureKioskLayout(screenId);
+    setKioskLayout(screenId, { ...layout, backgroundColor: color });
+  }
+
   const DEFAULT_WELCOME_BG_COLOR = "#f4ead5";
   const welcomeBackgroundColor = ref(DEFAULT_WELCOME_BG_COLOR);
   const welcomeBackgroundFill = ref<WelcomeBackgroundFill>("media");
@@ -1290,6 +1619,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       if (logo) customLogoUrl.value = logo;
       const startBtn = localStorage.getItem(STORAGE_KEY_START_BTN);
       if (startBtn) customStartButtonUrl.value = startBtn;
+      loadStartButtonStyle();
       const payQr = localStorage.getItem(STORAGE_KEY_PAYMENT_QR);
       if (payQr) paymentQrUrl.value = payQr;
       const bgType = localStorage.getItem(STORAGE_KEY_BG_TYPE);
@@ -1525,6 +1855,108 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     } catch (e) {
       console.error("Failed to load payment background from disk:", e);
     }
+  }
+
+  type KioskBgSlot = { type: TitleBackgroundType; url: string | null };
+  const kioskBgSlots = ref<Record<"templates" | "camera" | "printing" | "qr", KioskBgSlot>>({
+    templates: { type: null, url: null },
+    camera: { type: null, url: null },
+    printing: { type: null, url: null },
+    qr: { type: null, url: null },
+  });
+  const kioskBgObjectUrls: Partial<Record<KioskScreenId, string | null>> = {};
+
+  function setKioskBackgroundBlob(
+    id: Exclude<KioskScreenId, "payment">,
+    type: TitleBackgroundType,
+    blob: Blob,
+  ) {
+    const prev = kioskBgObjectUrls[id];
+    if (prev) URL.revokeObjectURL(prev);
+    const url = URL.createObjectURL(blob);
+    kioskBgObjectUrls[id] = url;
+    kioskBgSlots.value = {
+      ...kioskBgSlots.value,
+      [id]: { type, url },
+    };
+  }
+
+  async function setKioskBackgroundFile(
+    id: KioskScreenId,
+    type: TitleBackgroundType,
+    file: File,
+  ) {
+    setKioskBackgroundFill(id, "media");
+    if (id === "payment") {
+      return setPaymentBackgroundFile(type, file);
+    }
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const mime = file.type || (type === "video" ? "video/mp4" : "image/jpeg");
+    setKioskBackgroundBlob(id, type, new Blob([buf], { type: mime }));
+    if (window.electronAPI?.saveTitleBackgroundBytes) {
+      const res = await window.electronAPI.saveTitleBackgroundBytes({
+        bytes: buf,
+        mime,
+        slot: id,
+      });
+      if (!res.success) {
+        console.error(`[Store] Failed to save ${id} background:`, res.error);
+      }
+      return res.success;
+    }
+    return true;
+  }
+
+  function clearKioskBackground(id: KioskScreenId) {
+    if (id === "payment") {
+      clearPaymentBackground();
+      return;
+    }
+    const prev = kioskBgObjectUrls[id];
+    if (prev) URL.revokeObjectURL(prev);
+    kioskBgObjectUrls[id] = null;
+    kioskBgSlots.value = {
+      ...kioskBgSlots.value,
+      [id]: { type: null, url: null },
+    };
+    void window.electronAPI?.clearTitleBackground?.(id);
+  }
+
+  async function loadKioskBackgroundsFromDisk() {
+    if (!window.electronAPI) return;
+    for (const id of ["templates", "camera", "printing", "qr"] as const) {
+      try {
+        const result = await window.electronAPI.getTitleBackground(id);
+        if (result.success && result.bytes && result.mediaType) {
+          setKioskBackgroundBlob(
+            id,
+            result.mediaType,
+            blobFromIpcBytes(
+              result.bytes,
+              result.mime ||
+                (result.mediaType === "video" ? "video/mp4" : "image/jpeg"),
+            ),
+          );
+        }
+      } catch (e) {
+        console.error(`Failed to load ${id} background from disk:`, e);
+      }
+    }
+  }
+
+  function kioskBackgroundUrl(id: KioskScreenId): string | null {
+    if (id === "payment") return effectivePaymentBackgroundUrl.value;
+    return kioskBgSlots.value[id]?.url ?? null;
+  }
+
+  function kioskBackgroundType(id: KioskScreenId): TitleBackgroundType {
+    if (id === "payment") return effectivePaymentBackgroundType.value;
+    return kioskBgSlots.value[id]?.type ?? null;
+  }
+
+  function kioskHasCustomBackground(id: KioskScreenId): boolean {
+    if (id === "payment") return !!effectivePaymentBackgroundUrl.value;
+    return !!kioskBgSlots.value[id]?.url;
   }
 
   /**
@@ -1961,6 +2393,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       contrast: n(raw.contrast, -100, 100, 0),
       shadows: n(raw.shadows, 0, 100, 0),
       vignette: n(raw.vignette, 0, 100, 0),
+      glow: n(raw.glow, 0, 100, 0),
     };
   }
 
@@ -1973,6 +2406,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       contrast: a?.contrast ?? 0,
       shadows: a?.shadows ?? 0,
       vignette: a?.vignette ?? 0,
+      glow: a?.glow ?? 0,
     };
   }
 
@@ -2295,6 +2729,29 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     persistRecentStrips();
   }
 
+  function patchRecentStripSession(
+    sessionId: string,
+    patch: Partial<
+      Pick<
+        SavedPhotoStrip,
+        | "shareableUrl"
+        | "uploadStatus"
+        | "cloudinaryUrl"
+        | "cloudinaryPublicId"
+        | "cloudinaryPhotos"
+      >
+    >,
+  ) {
+    if (!sessionId) return;
+    let changed = false;
+    recentStrips.value = recentStrips.value.map((s) => {
+      if (s.sessionId !== sessionId) return s;
+      changed = true;
+      return { ...s, ...patch };
+    });
+    if (changed) persistRecentStrips();
+  }
+
   function removeRecentStrip(id: string) {
     recentStrips.value = recentStrips.value.filter((s) => s.id !== id);
     persistRecentStrips();
@@ -2370,6 +2827,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   loadScales();
   loadWelcomeLayout();
   loadWelcomeBackgroundFill();
+  loadKioskLayouts();
 
   return {
     // -----------------------------
@@ -2402,6 +2860,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // -----------------------------
     customLogoUrl,
     customStartButtonUrl,
+    startButtonStyle,
     paymentQrUrl,
     titleBackgroundType,
     titleBackgroundUrl,
@@ -2454,6 +2913,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // Recent Strips Actions
     // -----------------------------
     addRecentStrip,
+    patchRecentStripSession,
     removeRecentStrip,
     loadRecentStrips,
     loadSavedPhotos,
@@ -2468,6 +2928,9 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     clearCustomLogo,
     setCustomStartButton,
     clearCustomStartButton,
+    setStartButtonStyle,
+    applyStartButtonStyle,
+    resetStartButtonStyle,
     setPaymentQr,
     clearPaymentQr,
     paymentEnabled,
@@ -2492,6 +2955,31 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     setWelcomeLayerOrder,
     saveWelcomeLayout,
     revertWelcomeLayout,
+    kioskLayouts,
+    kioskLayoutOf,
+    kioskLayoutDirty,
+    ensureKioskLayout,
+    setKioskLayout,
+    resetKioskLayout,
+    setKioskItem,
+    addKioskAsset,
+    removeKioskAsset,
+    replaceKioskAssetSrc,
+    updateKioskAssetText,
+    updateKioskText,
+    updateKioskButton,
+    sendKioskLayer,
+    setKioskLayerOrder,
+    saveKioskLayout,
+    revertKioskLayout,
+    setKioskBackgroundFill,
+    setKioskBackgroundColor,
+    setKioskBackgroundFile,
+    clearKioskBackground,
+    loadKioskBackgroundsFromDisk,
+    kioskBackgroundUrl,
+    kioskBackgroundType,
+    kioskHasCustomBackground,
     welcomeBackgroundColor,
     welcomeBackgroundFill,
     setWelcomeBackgroundColor,

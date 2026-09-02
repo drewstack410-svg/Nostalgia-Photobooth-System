@@ -19,6 +19,7 @@ import {
   SEPIA_MATRIX,
   buildAdjustmentTable,
   buildCubePreview,
+  glowPreviewSvg,
   grainPreviewOpacity,
   vignettePreviewStyle,
 } from "@/utils/filterPreview";
@@ -62,8 +63,14 @@ const previewMatrix = computed(() => {
 
 const adjustmentTable = computed(() => buildAdjustmentTable(adj.value));
 
+const glowSvg = computed(() => glowPreviewSvg(adj.value.glow));
+
 const hasPreviewFilter = computed(
-  () => !!previewMatrix.value || !!cubeCurves.value || !!adjustmentTable.value,
+  () =>
+    !!previewMatrix.value ||
+    !!cubeCurves.value ||
+    !!adjustmentTable.value ||
+    !!glowSvg.value,
 );
 
 const liveFilter = computed(() =>
@@ -198,7 +205,14 @@ onUnmounted(() => {
     <p class="flp-label">Live preview</p>
     <div class="flp-frame">
       <svg class="flp-defs" aria-hidden="true" focusable="false" width="0" height="0">
-        <filter :id="FILTER_ID" color-interpolation-filters="sRGB">
+        <filter
+          :id="FILTER_ID"
+          x="-30%"
+          y="-30%"
+          width="160%"
+          height="160%"
+          color-interpolation-filters="sRGB"
+        >
           <feColorMatrix
             v-if="previewMatrix"
             type="matrix"
@@ -214,6 +228,26 @@ onUnmounted(() => {
             <feFuncG type="table" :tableValues="adjustmentTable" />
             <feFuncB type="table" :tableValues="adjustmentTable" />
           </feComponentTransfer>
+          <feOffset v-if="glowSvg" dx="0" dy="0" result="preGlow" />
+          <feColorMatrix
+            v-if="glowSvg"
+            in="preGlow"
+            type="matrix"
+            :values="glowSvg.extract"
+            result="glowHi"
+          />
+          <feGaussianBlur
+            v-if="glowSvg"
+            in="glowHi"
+            :stdDeviation="glowSvg.blur"
+            result="glowBlur"
+          />
+          <feComponentTransfer v-if="glowSvg" in="glowBlur" result="glowAmt">
+            <feFuncR type="linear" :slope="glowSvg.slopeR" intercept="0" />
+            <feFuncG type="linear" :slope="glowSvg.slopeG" intercept="0" />
+            <feFuncB type="linear" :slope="glowSvg.slopeB" intercept="0" />
+          </feComponentTransfer>
+          <feBlend v-if="glowSvg" in="preGlow" in2="glowAmt" mode="screen" />
         </filter>
       </svg>
       <img

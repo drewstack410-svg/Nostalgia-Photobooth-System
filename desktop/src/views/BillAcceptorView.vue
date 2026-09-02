@@ -9,6 +9,8 @@ import {
   createBillAcceptorAdapter,
   type BillAcceptorAdapter,
 } from "@/services/billAcceptor";
+import KioskDecor from "@/components/KioskDecor.vue";
+import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 
@@ -36,6 +38,8 @@ const router = useRouter();
 const paymentStore = usePaymentStore();
 const photoboothStore = usePhotoboothStore();
 const dashboardStore = useDashboardStore();
+const { laidOut, boxStyle, textOf, textStyle, buttonLabel } =
+  useKioskScreen("payment");
 const { status, amountReceived, amountRequired, remaining, isPaid, currency, lastError } =
   storeToRefs(paymentStore);
 
@@ -278,10 +282,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="bill-acceptor-screen">
+  <div class="bill-acceptor-screen" :class="{ 'kiosk-laid-out': laidOut }">
+    <KioskDecor screen-id="payment" />
     <!-- Operator-uploaded background (Settings → Payment screen
-         background). When set it replaces the CSS film strips. -->
-    <div v-if="photoboothStore.effectivePaymentBackgroundUrl" class="pay-screen-bg">
+         background). When a Screen Editor layout is saved, KioskDecor
+         owns the background instead. -->
+    <div
+      v-if="!laidOut && photoboothStore.effectivePaymentBackgroundUrl"
+      class="pay-screen-bg"
+    >
       <img
         v-if="photoboothStore.effectivePaymentBackgroundType === 'image'"
         :src="photoboothStore.effectivePaymentBackgroundUrl"
@@ -300,24 +309,43 @@ onUnmounted(() => {
     </div>
 
     <!-- Back Button — bottom-left, cream/ghost style (v2). -->
-    <button class="ghost-btn back-btn" @click="goBack">Back</button>
+    <button
+      class="ghost-btn back-btn"
+      :style="laidOut ? boxStyle('backBtn') : undefined"
+      @click="goBack"
+    >
+      {{ buttonLabel("backBtn", "Back") }}
+    </button>
 
     <!-- Main Content -->
     <div class="bill-acceptor-content">
-      <img :src="logoSrc" alt="Nostalgia Photobooth" class="pay-wordmark" />
+      <img
+        :src="logoSrc"
+        alt="Nostalgia Photobooth"
+        class="pay-wordmark"
+        :style="laidOut ? boxStyle('logo') : undefined"
+      />
 
-      <!-- v2 instruction copy. Amount is the template's real required
-           price, so it reads "P250" when the template is priced at 250
-           but still reflects any other configured price. -->
-      <h1 class="pay-instruction">
-        Please Insert a {{ currency }}{{ amountRequired }} Bill to Operate<br />
-        or Scan the QR Code for Online Payment
+      <h1
+        class="pay-instruction"
+        :style="laidOut ? { ...boxStyle('instruction'), ...textStyle('instruction') } : undefined"
+      >
+        <template v-if="laidOut">{{
+          textOf("instruction").content.replaceAll(
+            "{amount}",
+            `${currency}${amountRequired}`,
+          )
+        }}</template>
+        <template v-else>
+          Please Insert a {{ currency }}{{ amountRequired }} Bill to Operate<br />
+          or Scan the QR Code for Online Payment
+        </template>
       </h1>
 
-      <!-- Wooden picture-frame (v2 QR frame) holding the QR / status. -->
       <div
         class="pay-frame"
         :class="{ 'is-paid': isPaid, 'is-error': status === 'error' }"
+        :style="laidOut ? boxStyle('qrFrame') : undefined"
       >
         <div class="pay-frame-inner">
           <p v-if="status === 'error'" class="pay-frame-message">
@@ -347,7 +375,11 @@ onUnmounted(() => {
       <!-- Insert progress sits BELOW the frame: the instruction above
            already states the amount, and the frame's interior belongs to
            the QR. -->
-      <div v-if="!isPaid && status !== 'error'" class="payment-progress">
+      <div
+        v-if="!isPaid && status !== 'error'"
+        class="payment-progress"
+        :style="laidOut ? boxStyle('progress') : undefined"
+      >
         <div class="payment-progress-bar">
           <div
             class="payment-progress-fill"
@@ -426,6 +458,33 @@ onUnmounted(() => {
   flex-direction: column;
   position: relative;
   overflow: hidden;
+}
+
+.kiosk-laid-out .bill-acceptor-content {
+  display: contents;
+}
+
+.kiosk-laid-out .pay-wordmark,
+.kiosk-laid-out .pay-instruction,
+.kiosk-laid-out .pay-frame,
+.kiosk-laid-out .payment-progress,
+.kiosk-laid-out .back-btn {
+  margin: 0;
+}
+
+.kiosk-laid-out .pay-instruction {
+  white-space: pre-wrap;
+}
+
+.kiosk-laid-out .pay-wordmark {
+  width: 100%;
+  height: 100%;
+}
+
+.kiosk-laid-out .pay-frame {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
 }
 
 /* Operator-uploaded payment background — sits behind everything; the

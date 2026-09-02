@@ -918,7 +918,15 @@ ipcMain.handle("save-photo", async (event, { imageData, filename }) => {
 //   payment -> the Payment screen
 // Unknown slots fall back to title so older callers keep working.
 function backgroundDir(slot) {
-  const safe = slot === "payment" ? "payment" : "title";
+  const allowed = new Set([
+    "title",
+    "payment",
+    "templates",
+    "camera",
+    "printing",
+    "qr",
+  ]);
+  const safe = allowed.has(slot) ? slot : "title";
   return path.join(app.getPath("userData"), `${safe}-background`);
 }
 
@@ -1438,6 +1446,67 @@ ipcMain.handle("read-photo", async (event, filePath) => {
   } catch (error) {
     console.error("Error reading photo:", error);
     return null;
+  }
+});
+
+function photosRoot() {
+  return path.join(app.getPath("pictures"), "NostalgiaPhotobooth");
+}
+
+function resolveUnderPhotos(relOrAbs) {
+  const root = photosRoot();
+  const filePath = path.isAbsolute(relOrAbs)
+    ? path.resolve(relOrAbs)
+    : path.resolve(root, relOrAbs);
+  if (filePath !== root && !filePath.startsWith(root + path.sep)) return null;
+  return { root, filePath };
+}
+
+function mimeForExt(ext) {
+  const e = String(ext || "").toLowerCase().replace(/^\./, "");
+  if (e === "png") return "image/png";
+  if (e === "jpg" || e === "jpeg") return "image/jpeg";
+  if (e === "gif") return "image/gif";
+  if (e === "webp") return "image/webp";
+  if (e === "mp4" || e === "m4v" || e === "mov") return "video/mp4";
+  if (e === "webm") return "video/webm";
+  return "application/octet-stream";
+}
+
+ipcMain.handle("list-session-files", async (_event, folder) => {
+  try {
+    const resolved = resolveUnderPhotos(folder || "");
+    if (!resolved) return [];
+    if (!fs.existsSync(resolved.filePath) || !fs.statSync(resolved.filePath).isDirectory()) {
+      return [];
+    }
+    return fs.readdirSync(resolved.filePath).map((name) => ({
+      name,
+      path: path.join(resolved.filePath, name),
+    }));
+  } catch (error) {
+    console.error("[Session] list-session-files failed:", error);
+    return [];
+  }
+});
+
+ipcMain.handle("read-session-file", async (_event, relOrAbs) => {
+  try {
+    const resolved = resolveUnderPhotos(relOrAbs || "");
+    if (!resolved || !fs.existsSync(resolved.filePath)) {
+      return { success: false, error: "File not found", bytes: null, mime: null };
+    }
+    const buffer = fs.readFileSync(resolved.filePath);
+    const mime = mimeForExt(path.extname(resolved.filePath));
+    return { success: true, bytes: buffer, mime, path: resolved.filePath };
+  } catch (error) {
+    console.error("[Session] read-session-file failed:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      bytes: null,
+      mime: null,
+    };
   }
 });
 

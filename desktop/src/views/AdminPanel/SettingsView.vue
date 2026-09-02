@@ -2275,7 +2275,7 @@ function submitEditTemplateDetails() {
     <AdminFormModal
       v-model:open="showFiltersModal"
       title="Filters"
-      description="Add LUT filters, then select one to fine-tune grain, levels, contrast, shadows and vignette on a live camera preview."
+      description="Add LUT filters, then select one to fine-tune grain, levels, contrast, shadows, vignette and glow on a live camera preview."
       size="wide"
     >
       <div class="filters-studio">
@@ -2666,6 +2666,19 @@ function submitEditTemplateDetails() {
               @input="updateAdjustment('vignette', Number(($event.target as HTMLInputElement).value))"
             />
             <span class="filter-adjust-value">{{ editingAdj.vignette }}</span>
+          </label>
+          <label class="filter-adjust-row">
+            <span>Glow</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              :value="editingAdj.glow"
+              :style="{ '--range-pct': `${editingAdj.glow}%` }"
+              @input="updateAdjustment('glow', Number(($event.target as HTMLInputElement).value))"
+            />
+            <span class="filter-adjust-value">{{ editingAdj.glow }}</span>
           </label>
         </div>
       </aside>

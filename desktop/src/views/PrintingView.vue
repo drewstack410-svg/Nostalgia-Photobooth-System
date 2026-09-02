@@ -2,9 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
-// Cloudinary unsigned uploads are parked. Guest copies now go to Cloudflare R2.
-// import { uploadToCloudinary } from "@/services/cloudinary";
-import { uploadToR2, uploadBytesToR2 } from "@/services/r2";
+// Guest copies go to Cloudflare R2 via the upload queue (pending + retry).
 import {
   getPaperSizePx,
   getTemplateCellRects,
@@ -24,15 +22,16 @@ import {
   prepareFrameDataUrl,
   flattenPngDataUrlToWhite,
 } from "@/utils/pngAlpha";
-import {
-  makeGalleryShortCode,
-  buildShortGalleryUrl,
-  galleryManifestDataUrl,
-} from "@/utils/gallerySession";
+import { makeGalleryShortCode } from "@/utils/gallerySession";
+import { submitGalleryUpload } from "@/services/uploadQueue";
+import type { GalleryUploadAsset } from "@/services/uploadQueue";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
+import KioskDecor from "@/components/KioskDecor.vue";
+import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 const store = usePhotoboothStore();
+const { laidOut, boxStyle, buttonLabel } = useKioskScreen("printing");
 
 const printTemplate = computed(
   () => store.sessionTemplate ?? store.selectedTemplate,
@@ -239,62 +238,6 @@ async function galleryLayoutParam(): Promise<{ slots: string; par: string } | nu
     })
     .join(",");
   return { slots, par };
-}
-
-async function publishGallerySession(
-  shortCode: string,
-  publicIds: string[],
-  printId?: string,
-  videoIds?: string[],
-  fullIds?: string[],
-  fullVids?: string[],
-): Promise<string> {
-  if (
-    publicIds.length === 0 &&
-    !printId &&
-    !(videoIds && videoIds.length) &&
-    !(fullIds && fullIds.length) &&
-    !(fullVids && fullVids.length)
-  ) {
-    return "";
-  }
-  const r2Base = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
-  if (!r2Base) {
-    console.warn("[Gallery] No VITE_R2_PUBLIC_URL set");
-    return "";
-  }
-
-  const layout = await galleryLayoutParam();
-  const template = store.sessionTemplate ?? store.selectedTemplate;
-  const grid = template ? getTemplateGrid(template) : null;
-  const shots = Math.max(
-    1,
-    template?.photoCount ?? publicIds.length,
-  );
-  const manifest = galleryManifestDataUrl({
-    v: 1,
-    title: "Nostalgia Photobooth",
-    ids: publicIds,
-    fullIds: fullIds && fullIds.length ? fullIds : undefined,
-    print: printId || undefined,
-    vids: videoIds && videoIds.length ? videoIds : undefined,
-    fullVids: fullVids && fullVids.length ? fullVids : undefined,
-    slots: layout?.slots,
-    par: layout?.par,
-    rows: grid?.rows,
-    cols: grid?.cols,
-    shots,
-  });
-  const uploaded = await uploadToR2(
-    manifest,
-    "nostalgia-photobooth",
-    `s/${shortCode}`,
-  );
-  if (!uploaded.success) {
-    console.warn("[Gallery] Manifest upload failed:", uploaded.error);
-    return "";
-  }
-  return buildShortGalleryUrl(shortCode);
 }
 
 // makePreviewDataUrl (downscale-for-localStorage) moved to
@@ -1089,37 +1032,20 @@ async function saveComposite() {
         store.selectedTemplate?.paperSize === "2x6-portrait"
           ? await cropLeftHalf(printComposite)
           : printComposite;
-      const compositeUploadPromise: Promise<string | undefined> = (async () => {
-        try {
-          if (!shareComposite) return undefined;
-          const cr = await uploadToR2(
-            shareComposite,
-            "nostalgia-photobooth",
-            `nostalgia_${sessionTs}_print`,
-          );
-          if (cr.success && cr.publicId) {
-            console.log("[Save] Templated print uploaded for gallery:", cr.url);
-            return cr.publicId;
-          }
-          console.warn("[Save] Gallery composite upload failed:", cr.error);
-          return undefined;
-        } catch (e) {
-          console.error("[Save] Gallery composite upload error:", e);
-          return undefined;
-        }
-      })();
 
-      // Bake clips into the printed strip (viewfinder crop in the
-      // windows), save locally, and upload that video plus the
-      // uncropped per-shot clips for the gallery download row.
-      const highlightUploadPromise: Promise<{
-        stripIds: string[];
-        fullVidIds: string[];
-      }> = (async () => {
+      type PreparedClip = {
+        name: string;
+        kind: "strip" | "full";
+        bytes: Uint8Array;
+        mime: string;
+        ext: string;
+      };
+
+      // Bake clips into the printed strip, save locally. Cloud upload
+      // goes through the pending queue so offline sittings can retry.
+      const highlightPreparePromise: Promise<PreparedClip[]> = (async () => {
         const clips = store.highlightClips.filter(Boolean);
-        if (!clips.length) {
-          return { stripIds: [], fullVidIds: [] };
-        }
+        if (!clips.length) return [];
         let stripDataUrl: string | null = null;
         if (shareComposite) {
         try {
@@ -1175,13 +1101,6 @@ async function saveComposite() {
           name: `highlight-${i + 1}`,
         }));
         const toSave = stripItem ? [stripItem, ...fullItems] : fullItems;
-        type PreparedClip = {
-          name: string;
-          kind: "strip" | "full";
-          bytes: Uint8Array;
-          mime: string;
-          ext: string;
-        };
         const prepared: PreparedClip[] = [];
         for (const item of toSave) {
           const parsed = await mediaUrlToBytes(item.dataUrl);
@@ -1236,52 +1155,16 @@ async function saveComposite() {
           }
         }
 
-        async function uploadClip(item: PreparedClip): Promise<string | undefined> {
-          try {
-            const publicId = `nostalgia_${sessionTs}_${item.name}_${Math.random()
-              .toString(36)
-              .substring(2, 8)}`;
-            const cr = await uploadBytesToR2(
-              item.bytes,
-              item.mime || `video/${item.ext}`,
-              "nostalgia-photobooth",
-              publicId,
-            );
-            if (cr.success && cr.publicId) {
-              console.log(`[Save] ${item.name} uploaded:`, cr.url);
-              return cr.publicId;
-            }
-            console.warn(`[Save] ${item.name} upload failed:`, cr.error);
-          } catch (e) {
-            console.error(`[Save] ${item.name} upload error:`, e);
-          }
-          return undefined;
-        }
-
-        const stripIds: string[] = [];
-        const fullVidIds: string[] = [];
-        for (const item of prepared) {
-          const id = await uploadClip(item);
-          if (!id) continue;
-          if (item.kind === "strip") stripIds.push(id);
-          else fullVidIds.push(id);
-        }
-        if (!stripIds.length && fullVidIds.length) {
-          return { stripIds: fullVidIds, fullVidIds };
-        }
-        return { stripIds, fullVidIds };
+        return prepared;
       })();
 
-      // Save+upload each capture in parallel, collect results so we
-      // can synthesise the shareable QR URL once all uploads land.
+      // Save each capture to disk. Cloud upload is queued after this
+      // so a dead connection never drops the sitting.
       type CaptureResult = {
         idx: number;
         dataUrl: string;
         fullDataUrl?: string;
         localPath?: string;
-        cloudUrl?: string;
-        cloudPublicId?: string;
-        fullCloudPublicId?: string;
       };
       const captureResults = await Promise.all(
         store.capturedPhotos.map(async (photo, idx): Promise<CaptureResult> => {
@@ -1370,93 +1253,58 @@ async function saveComposite() {
             }
           }
 
-          // Cloudflare R2: guest-facing stills are the FULL live preview.
-          let cloudUrl: string | undefined;
-          let cloudPublicId: string | undefined;
-          try {
-            const publicId = `nostalgia_${sessionTs}_${idx}_${Math.random()
-              .toString(36)
-              .substring(2, 8)}`;
-            const cr = await uploadToR2(
-              fullDataUrl,
-              "nostalgia-photobooth",
-              publicId,
-              `session_${sessionTs}`,
-            );
-            if (cr.success && cr.url && cr.publicId) {
-              cloudUrl = cr.url;
-              cloudPublicId = cr.publicId;
-              console.log(`[Save] Capture ${idx} full live view uploaded:`, cr.url);
-            } else {
-              console.warn(
-                `[Save] Capture ${idx} upload failed:`,
-                cr.error,
-              );
-            }
-          } catch (e) {
-            console.error(`[Save] Capture ${idx} upload error:`, e);
-          }
-
-          const fullCloudPublicId = cloudPublicId;
-
           return {
             idx,
             dataUrl: photo.dataUrl,
             fullDataUrl,
             localPath,
-            cloudUrl,
-            cloudPublicId,
-            fullCloudPublicId,
           };
         }),
       );
 
-      // QR encodes only a short session code. Photo/video keys live in
-      // an R2 manifest the gallery site fetches on its own.
-      const successfulIds = captureResults
-        .map((r) => r.cloudPublicId)
-        .filter((id): id is string => !!id);
-      const successfulFullIds = captureResults
-        .map((r) => r.fullCloudPublicId)
-        .filter((id): id is string => !!id);
-      const [compositePublicId, highlightIds] = await Promise.all([
-        compositeUploadPromise,
-        highlightUploadPromise,
-      ]);
-      const galleryShortCode = makeGalleryShortCode();
-      const sessionShareableUrl = await publishGallerySession(
-        galleryShortCode,
-        successfulIds,
-        compositePublicId,
-        highlightIds.stripIds,
-        successfulFullIds,
-        highlightIds.fullVidIds,
-      );
-      if (sessionShareableUrl) {
-        console.log("[Save] Gallery URL for QR:", sessionShareableUrl);
-      } else {
-        console.warn(
-          "[Save] No gallery URL — R2 uploads didn't produce any usable publicIds",
-        );
-      }
-
-      // One recent-strip entry per capture. All entries from this
-      // session share the same sessionId so a future reprint screen
-      // can pull "the photos from session X" without mixing in
-      // captures from neighbouring booths sessions. templateId tells
-      // the reprint flow which frame to re-apply when rebuilding the
-      // print sheet.
+      const preparedClips = await highlightPreparePromise;
       const sessionId = `session_${sessionTs}`;
       const templateId = store.selectedTemplate?.id;
+      const galleryShortCode = makeGalleryShortCode();
+      const layout = await galleryLayoutParam();
+      const template = store.sessionTemplate ?? store.selectedTemplate;
+      const grid = template ? getTemplateGrid(template) : null;
+      const assets: GalleryUploadAsset[] = [];
+
+      for (const r of captureResults) {
+        if (!r.fullDataUrl && !r.dataUrl) continue;
+        assets.push({
+          kind: "photo",
+          filename: `photo-${r.idx + 1}.jpg`,
+          publicId: `nostalgia_${sessionTs}_${r.idx}`,
+          mime: "image/jpeg",
+          captureIndex: r.idx,
+          dataUrl: r.fullDataUrl || r.dataUrl,
+        });
+      }
+      if (shareComposite) {
+        assets.push({
+          kind: "print",
+          filename: "strip.png",
+          publicId: `nostalgia_${sessionTs}_print`,
+          mime: "image/png",
+          dataUrl: shareComposite,
+        });
+      }
+      for (const item of preparedClips) {
+        assets.push({
+          kind: item.kind === "strip" ? "highlight-strip" : "highlight-full",
+          filename: `${item.name}.${item.ext}`,
+          publicId: `nostalgia_${sessionTs}_${item.name}`,
+          mime: item.mime || `video/${item.ext}`,
+          bytes: item.bytes,
+        });
+      }
+
+      // One recent-strip entry per capture, stamped pending so the QR
+      // screen and Admin Gallery know a sitting is waiting on R2.
       for (const r of captureResults) {
         if (!r.dataUrl) continue;
-        // Persist a DOWNSCALED preview, not the raw 3600×2400 capture:
-        // recentStrips lives in localStorage, and 8 full-res captures
-        // (~2–5 MB of base64 each) blow straight past the ~5–10 MB
-        // quota — the setItem throw used to abort the loop mid-session.
-        // Full resolution survives on disk at `path` (and on
-        // Cloudinary); the admin reprint flow re-reads the disk file
-        // when rebuilding a print sheet.
         const previewUrl = await makePreviewDataUrl(r.fullDataUrl || r.dataUrl);
         store.addRecentStrip({
           id: `strip_${sessionTs}_${r.idx}`,
@@ -1466,32 +1314,14 @@ async function saveComposite() {
           sessionId,
           templateId,
           sessionIndex: r.idx,
-          cloudinaryUrl: r.cloudUrl,
-          cloudinaryPublicId: r.cloudPublicId,
-          cloudinaryPhotos:
-            r.cloudUrl && r.cloudPublicId
-              ? [{ url: r.cloudUrl, publicId: r.cloudPublicId }]
-              : undefined,
-          shareableUrl: sessionShareableUrl,
+          uploadStatus: "pending",
         });
       }
       console.log(
         `[Save] All ${store.capturedPhotos.length} captures saved & added as individual recent strips`,
       );
 
-      // Add ONE more recent-strip entry per session for the finished
-      // TEMPLATED print (the "actual picture printed"), so the admin
-      // gallery can show it next to the individual captures. We persist
-      // a downscaled JPEG preview (not the full multi-MB PNG) to stay
-      // within the localStorage budget; reprint rebuilds full-res from
-      // the captures regardless, and `isComposite` keeps this entry out
-      // of the capture set + the title-screen film roll. Added LAST so
-      // it lands at the front of the session group. Defensive try/catch
-      // so a storage hiccup can never break the post-print flow — the
-      // print already succeeded by this point.
       try {
-        // shareComposite = single strip for 2×6 templates (cropped
-        // above), full sheet otherwise — same image the QR gallery got.
         const compositePreview = await makePreviewDataUrl(shareComposite);
         const stripPath = captureResults.find((r) => r.localPath)?.localPath
           ?.replace(/photo-\d+\.[a-z0-9]+$/i, "strip.png");
@@ -1504,12 +1334,40 @@ async function saveComposite() {
           templateId,
           sessionIndex: -1,
           isComposite: true,
-          shareableUrl: sessionShareableUrl,
+          uploadStatus: "pending",
         });
         console.log("[Save] Added templated-print preview to recent strips");
       } catch (e) {
         console.warn("[Save] Couldn't add composite preview strip:", e);
       }
+
+      const uploadedOk = assets.length
+        ? await submitGalleryUpload({
+            sessionId,
+            sessionTs,
+            sessionFolder,
+            shortCode: galleryShortCode,
+            templateId,
+            status: "pending",
+            assets,
+            layout: {
+              slots: layout?.slots,
+              par: layout?.par,
+              rows: grid?.rows,
+              cols: grid?.cols,
+              shots: Math.max(1, template?.photoCount ?? captureResults.length),
+            },
+            updatedAt: Date.now(),
+          })
+        : false;
+      if (uploadedOk) {
+        console.log("[Save] Gallery upload finished for", sessionId);
+      } else {
+        console.warn(
+          "[Save] Gallery left pending — will resume when the connection returns",
+        );
+      }
+
     } else {
       console.warn("[Save] Electron API not available or no print composite");
       if (!window.electronAPI) {
@@ -1695,20 +1553,22 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="printing-screen">
+  <div class="printing-screen" :class="{ 'kiosk-laid-out': laidOut }">
+    <KioskDecor screen-id="printing" />
     <!-- Done Button — hidden while a print job is in flight so the guest
          can't leave the screen mid-print. -->
     <button
       v-if="printStatus !== 'printing'"
       class="wood-btn done-btn"
+      :style="laidOut ? boxStyle('doneBtn') : undefined"
       @click="goToQRView"
     >
-      Done
+      {{ buttonLabel("doneBtn", "Done") }}
     </button>
 
     <!-- Photo Output Visualization -->
     <div class="output-area">
-      <div class="printer-slot">
+      <div class="printer-slot" :style="laidOut ? boxStyle('slot') : undefined">
         <div class="slot-frame">
           <div class="slot-screen">
             <!-- SVG frame in front of the slot (gradient trapezoid shape) -->
@@ -1761,7 +1621,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Print Status -->
-      <div class="print-status-area">
+      <div class="print-status-area" :style="laidOut ? boxStyle('status') : undefined">
         <div v-if="printStatus === 'printing'" class="print-status print-status--printing">
           <span class="print-icon">🖨️</span>
           <span>Printing your photo…</span>
@@ -1789,7 +1649,11 @@ onUnmounted(() => {
       </div>
 
       <!-- Delivery Message -->
-      <div class="delivery-plaque" role="status">
+      <div
+        class="delivery-plaque"
+        role="status"
+        :style="laidOut ? boxStyle('plaque') : undefined"
+      >
         <span class="plaque-bolt plaque-bolt--tl" aria-hidden="true"></span>
         <span class="plaque-bolt plaque-bolt--tr" aria-hidden="true"></span>
         <span class="plaque-bolt plaque-bolt--bl" aria-hidden="true"></span>
@@ -1850,6 +1714,21 @@ onUnmounted(() => {
   justify-content: center;
   padding: 2rem;
   position: relative;
+}
+
+.kiosk-laid-out {
+  padding: 0;
+}
+
+.kiosk-laid-out .output-area {
+  display: contents;
+}
+
+.kiosk-laid-out .printer-slot,
+.kiosk-laid-out .print-status-area,
+.kiosk-laid-out .delivery-plaque,
+.kiosk-laid-out .done-btn {
+  margin: 0;
 }
 
 /* Done Button */

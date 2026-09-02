@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * Colour wash + image/video overlay + vignette + grain, stacked in the
- * same order capture bakes them (tone/LUT is on the feed underneath).
- * Isolation on the parent (.camera-feed / .flp-frame) is what keeps
- * mix-blend-mode blending against the photo, not the page behind it.
+ * Colour wash + image/video overlay + vignette + grain, stacked
+ * in the same order capture bakes them (tone/LUT/glow is on the feed
+ * underneath). Isolation on the parent (.camera-feed / .flp-frame) is
+ * what keeps mix-blend-mode blending against the photo, not the page.
  */
 import { nextTick, ref, watch } from "vue";
 import type { OverlayMediaKind } from "@/stores/photobooth";

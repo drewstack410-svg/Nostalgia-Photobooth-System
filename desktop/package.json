@@ -19,6 +19,7 @@
     "pinia": "^2.1.7",
     "pocketbase": "^0.26.8",
     "qrcode": "^1.5.4",
+    "stackblur-canvas": "^3.0.1",
     "vue": "^3.4.21",
     "vue-router": "^4.3.0",
     "webm-muxer": "^5.1.4",
@@ -68,7 +69,10 @@
       {
         "from": "vendor/pocketbase",
         "to": "pocketbase",
-        "filter": ["pocketbase.exe", "pocketbase"]
+        "filter": [
+          "pocketbase.exe",
+          "pocketbase"
+        ]
       },
       {
         "from": "pb_migrations",

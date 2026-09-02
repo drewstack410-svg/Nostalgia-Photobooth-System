@@ -5,6 +5,7 @@ import { usePhotoboothStore } from "@/stores/photobooth";
 import { applyBoothConfig } from "@/lib/boothConfig";
 import { checkPocketBaseConnection } from "@/lib/pocketbase";
 import { checkR2Connection } from "@/services/r2";
+import { startUploadQueueWatcher } from "@/services/uploadQueue";
 import { useCustomFonts } from "@/composables/useCustomFonts";
 import VintageTheme from "@/components/VintageTheme.vue";
 
@@ -24,13 +25,30 @@ const store = usePhotoboothStore();
  * so the payment screen — and both screens once the supplied videos
  * became the defaults — kept drawing the app's frame underneath.
  */
-const screenHasOwnBackground = computed(
-  () =>
+const screenHasOwnBackground = computed(() => {
+  const name = String(route.name || "");
+  const kioskMap: Record<string, "templates" | "payment" | "camera" | "printing" | "qr"> = {
+    templates: "templates",
+    "bill-acceptor": "payment",
+    camera: "camera",
+    printing: "printing",
+    qr: "qr",
+  };
+  const kiosk = kioskMap[name];
+  if (kiosk) {
+    const layout = store.kioskLayoutOf(kiosk);
+    if (layout?.backgroundFill === "color") return true;
+    if (layout?.backgroundFill === "media" && store.kioskBackgroundUrl(kiosk)) {
+      return true;
+    }
+  }
+  return (
     (route.name === "title" &&
       (store.welcomeBackgroundFill === "color" ||
         !!store.effectiveTitleBackgroundUrl)) ||
-    (route.name === "bill-acceptor" && !!store.effectivePaymentBackgroundUrl),
-);
+    (route.name === "bill-acceptor" && !!store.effectivePaymentBackgroundUrl)
+  );
+});
 
 const showFrame = computed(
   () => route.name !== "admin" && !screenHasOwnBackground.value,
@@ -70,6 +88,7 @@ onMounted(async () => {
   // Fire-and-forget so a down PocketBase never delays the title screen.
   void checkPocketBaseConnection();
   void checkR2Connection();
+  startUploadQueueWatcher();
   // Templates next: they come off disk now (localStorage could not hold
   // them), and this must land before the operator can reach /templates.
   await store.hydrateTemplatesFromDisk();
@@ -77,6 +96,9 @@ onMounted(async () => {
   await store.loadSavedPhotos();
   await store.loadTitleBackgroundFromDisk();
   await store.loadPaymentBackgroundFromDisk();
+  if (typeof store.loadKioskBackgroundsFromDisk === "function") {
+    await store.loadKioskBackgroundsFromDisk();
+  }
   await store.loadFilterOverlayMediaFromDisk();
 });
 </script>

@@ -1,6 +1,6 @@
 /**
  * Bake a camera look onto a canvas — same order as still capture:
- * tone/LUT → colour wash → media overlay → levels/vignette. Used by
+ * tone/LUT → colour wash → media overlay → levels/glow/vignette. Used by
  * highlight clips so the video matches the live preview / print filter.
  */
 
@@ -165,7 +165,7 @@ export function applyCaptureLook(
 
   if (look.adjustments) {
     const adj = look.adjustments;
-    if (adj.levels || adj.contrast || adj.shadows || adj.vignette) {
+    if (adj.levels || adj.contrast || adj.shadows || adj.vignette || adj.glow) {
       const adjusted = ctx.getImageData(0, 0, w, h);
       applyAdjustmentsToImageData(adjusted, adj);
       ctx.putImageData(adjusted, 0, 0);

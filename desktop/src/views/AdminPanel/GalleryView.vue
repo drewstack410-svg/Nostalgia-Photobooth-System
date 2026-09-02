@@ -1,9 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
+import type { MediaUploadStatus } from "@/stores/photobooth";
 import { useDashboardStore } from "@/stores/dashboard";
 import QRCode from "qrcode";
+import {
+  jobForSession,
+  onUploadQueueChange,
+  pendingUploadCount,
+  retryPendingUploads,
+  retrySessionUpload,
+} from "@/services/uploadQueue";
 
 interface GalleryPhoto {
   id: string;
@@ -28,6 +36,7 @@ interface GalleryPhoto {
    * guest missed.
    */
   shareUrl?: string;
+  uploadStatus?: MediaUploadStatus;
 }
 
 const router = useRouter();
@@ -72,6 +81,7 @@ const displayPhotos = computed(() => {
       // cloudinaryUrl, so both fallbacks are needed.
       shareUrl:
         p.shareableUrl || p.cloudinaryUrl || p.cloudinaryPhotos?.[0]?.url || "",
+      uploadStatus: p.uploadStatus,
     }));
   }
   return savedPhotos.value;
@@ -393,10 +403,66 @@ function formatDate(date: Date) {
   }).format(date);
 }
 
+const retryBusy = ref(false);
+const queuePending = ref(pendingUploadCount());
+let stopQueueWatch: (() => void) | null = null;
+
+function sessionUploadStatus(photo: GalleryPhoto): MediaUploadStatus | "" {
+  if (resolveShareUrl(photo)) return "done";
+  const job = jobForSession(photo.sessionId);
+  return photo.uploadStatus || job?.status || "";
+}
+
+function sessionNeedsRetry(photo: GalleryPhoto): boolean {
+  if (!photo.sessionId) return false;
+  if (resolveShareUrl(photo)) return false;
+  return true;
+}
+
+const canRetryUploads = computed(
+  () =>
+    queuePending.value > 0 ||
+    store.recentStrips.some(
+      (s) => s.uploadStatus === "pending" || s.uploadStatus === "failed",
+    ),
+);
+
+async function retryUploads(sessionId?: string) {
+  if (retryBusy.value) return;
+  retryBusy.value = true;
+  try {
+    if (sessionId) {
+      const ok = await retrySessionUpload(sessionId);
+      if (!ok) {
+        console.warn("[Gallery] Retry upload failed for", sessionId);
+      } else if (qrPhoto.value?.sessionId === sessionId) {
+        const url = resolveShareUrl(qrPhoto.value);
+        if (url) {
+          qrPhoto.value.shareUrl = url;
+          qrDataUrl.value = await encodeQr(url);
+        }
+      }
+    } else {
+      await retryPendingUploads();
+    }
+    queuePending.value = pendingUploadCount();
+  } finally {
+    retryBusy.value = false;
+  }
+}
+
 onMounted(() => {
+  stopQueueWatch = onUploadQueueChange(() => {
+    queuePending.value = pendingUploadCount();
+  });
   if (isElectron.value) {
     loadSavedPhotos();
   }
+});
+
+onUnmounted(() => {
+  stopQueueWatch?.();
+  stopQueueWatch = null;
 });
 </script>
 
@@ -424,9 +490,18 @@ onMounted(() => {
           </button>
         </div>
       </div>
-      <div class="gallery-header-right" v-if="displayPhotos.length > 0">
+      <div class="gallery-header-right" v-if="displayPhotos.length > 0 || canRetryUploads">
         <template v-if="!selectionMode">
           <button
+            type="button"
+            class="btn btn-reprint"
+            :disabled="retryBusy || !canRetryUploads"
+            @click="retryUploads()"
+          >
+            {{ retryBusy ? "Uploading…" : "Retry Upload" }}
+          </button>
+          <button
+            v-if="displayPhotos.length > 0"
             type="button"
             class="btn btn-reprint"
             @click="startSelectionMode('reprint')"
@@ -434,6 +509,7 @@ onMounted(() => {
             Reprint
           </button>
           <button
+            v-if="displayPhotos.length > 0"
             type="button"
             class="btn btn-danger"
             @click="startSelectionMode('delete')"
@@ -516,7 +592,15 @@ onMounted(() => {
           @click.stop="toggleSelected(photo, $event)"
         />
         <img :src="photo.src" :alt="photo.name" class="photo-thumb" />
-        <span v-if="photo.isComposite" class="photo-badge">Printed</span>
+        <span
+          v-if="sessionUploadStatus(photo) === 'pending' || sessionUploadStatus(photo) === 'uploading'"
+          class="photo-badge photo-badge--pending"
+        >Pending upload</span>
+        <span
+          v-else-if="sessionUploadStatus(photo) === 'failed'"
+          class="photo-badge photo-badge--failed"
+        >Upload failed</span>
+        <span v-else-if="photo.isComposite" class="photo-badge">Printed</span>
         <div class="photo-overlay">
           <span class="photo-date">{{ formatDate(photo.timestamp) }}</span>
         </div>
@@ -555,6 +639,15 @@ onMounted(() => {
             Show QR
           </button>
           <button
+            v-if="sessionNeedsRetry(selectedPhoto)"
+            type="button"
+            class="btn btn-reprint"
+            :disabled="retryBusy"
+            @click="retryUploads(selectedPhoto.sessionId)"
+          >
+            {{ retryBusy ? "Uploading…" : "Retry Upload" }}
+          </button>
+          <button
             type="button"
             class="btn btn-secondary"
             @click="downloadPhoto(selectedPhoto)"
@@ -583,11 +676,20 @@ onMounted(() => {
         </template>
         <p v-else-if="qrBusy" class="gallery-qr-hint">Building QR…</p>
         <p v-else class="gallery-qr-hint">
-          No online link for this session — the upload didn't complete (the booth
-          may have been offline). The photos are still here: use Download or
-          Reprint instead.
+          No online link for this session — the upload is pending or didn't
+          complete (the booth may have been offline). Photos are still here:
+          tap Retry Upload, or use Download / Reprint.
         </p>
         <div class="modal-actions">
+          <button
+            v-if="qrPhoto && sessionNeedsRetry(qrPhoto)"
+            type="button"
+            class="btn btn-reprint"
+            :disabled="retryBusy"
+            @click="retryUploads(qrPhoto.sessionId)"
+          >
+            {{ retryBusy ? "Uploading…" : "Retry Upload" }}
+          </button>
           <button type="button" class="btn btn-secondary" @click="closeQr">Close</button>
         </div>
       </div>
@@ -905,6 +1007,16 @@ onMounted(() => {
   border-radius: 999px;
   box-shadow: var(--shadow-soft);
   pointer-events: none;
+}
+
+.photo-badge--pending {
+  background: #c9a227;
+  color: var(--color-brown-dark);
+}
+
+.photo-badge--failed {
+  background: #8a3a2a;
+  color: var(--color-cream);
 }
 
 /* Modal */

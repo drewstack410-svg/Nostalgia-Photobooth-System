@@ -55,17 +55,22 @@ function onClick() {
   height: fit-content !important;
   /* Measured off the client's Figma export (Home.svg): the bezel is a
      uniform 8.38px around the gold face, radius 5.51px, with a HORIZONTAL
-     (90deg) brown gradient and a solid #301207 shadow offset +4.6/+4.5. */
+     (90deg) brown gradient and a solid #301207 shadow offset +4.6/+4.5.
+     Screen Editor can override via --btn-* CSS variables. */
   padding: 8.4px;
-  background: linear-gradient(90deg, #6b3b11 81%, #915824 100%);
-  border-radius: 5.5px;
+  background: linear-gradient(
+    90deg,
+    var(--btn-bezel-from, #6b3b11) 81%,
+    var(--btn-bezel-to, #915824) 100%
+  );
+  border-radius: var(--btn-radius, 5.5px);
   cursor: pointer;
   overflow: hidden;
   box-shadow:
-    4.6px 4.5px 0 #301207,
-    4.6px 0px 0 #301207,
-    0px 4.5px 0 #301207,
-    0px 0px 0 rgba(48, 18, 7, 0.15);
+    4.6px 4.5px 0 var(--btn-shadow, #301207),
+    4.6px 0px 0 var(--btn-shadow, #301207),
+    0px 4.5px 0 var(--btn-shadow, #301207),
+    0px 0px 0 color-mix(in srgb, var(--btn-shadow, #301207) 15%, transparent);
   transition:
     box-shadow 0.15s ease,
     transform 0.15s ease;
@@ -88,27 +93,34 @@ function onClick() {
 
 .box-button {
   position: relative;
-  font-family: var(--font-display);
-  font-size: 1.4rem;
-  font-weight: 700;
+  font-family: var(--btn-font, var(--font-display));
+  font-size: var(--btn-font-size, 1.4rem);
+  font-weight: var(--btn-font-weight, 700);
+  font-style: var(--btn-font-style, normal);
   padding: 1.5rem 2.5rem;
-  border-radius: 2px !important;
+  border-radius: var(--btn-inner-radius, 2px) !important;
   border: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  white-space: nowrap;
 
   /* Figma: gold face shadow is #301207 at +2.98/+2.91. Gradient stops
      match the export exactly (#fcaf4a → #ffdd8f 52% → #fcaf4a); 150deg is
      the design's 330deg reversed, which is identical since the stops are
      symmetric. */
   box-shadow:
-    3px 2.9px 0 #301207,
-    3px 0px 0 #301207,
-    0px 2.9px 0 #301207,
-    0px 0px 0 rgba(48, 18, 7, 0.15);
-  background: linear-gradient(150deg, #fcaf4a 0%, #ffdd8f 52%, #fcaf4a 100%);
-  color: var(--color-brown-dark);
+    3px 2.9px 0 var(--btn-shadow, #301207),
+    3px 0px 0 var(--btn-shadow, #301207),
+    0px 2.9px 0 var(--btn-shadow, #301207),
+    0px 0px 0 color-mix(in srgb, var(--btn-shadow, #301207) 15%, transparent);
+  background: linear-gradient(
+    150deg,
+    var(--btn-face-from, #fcaf4a) 0%,
+    var(--btn-face-mid, #ffdd8f) 52%,
+    var(--btn-face-to, #fcaf4a) 100%
+  );
+  color: var(--btn-label-color, var(--color-brown-dark));
   overflow: hidden;
   transition: all 0.15s ease;
   touch-action: manipulation;
@@ -139,20 +151,20 @@ function onClick() {
 .box-button-container:hover .box-button,
 .box-button-container.is-pressed .box-button {
   box-shadow:
-    1px 1px 0 #301207,
-    1px 0px 0 #301207,
-    0px 1px 0 #301207,
-    0px 0px 0 rgba(48, 18, 7, 0.15);
+    1px 1px 0 var(--btn-shadow, #301207),
+    1px 0px 0 var(--btn-shadow, #301207),
+    0px 1px 0 var(--btn-shadow, #301207),
+    0px 0px 0 color-mix(in srgb, var(--btn-shadow, #301207) 15%, transparent);
   transform: translate(1px, 1px);
 }
 
 .box-button-container:hover,
 .box-button-container.is-pressed {
   box-shadow:
-    2px 2px 0 #301207,
-    2px 0px 0 #301207,
-    0px 2px 0 #301207,
-    0px 0px 0 rgba(48, 18, 7, 0.15);
+    2px 2px 0 var(--btn-shadow, #301207),
+    2px 0px 0 var(--btn-shadow, #301207),
+    0px 2px 0 var(--btn-shadow, #301207),
+    0px 0px 0 color-mix(in srgb, var(--btn-shadow, #301207) 15%, transparent);
   transform: translate(3px, 3px);
 }
 

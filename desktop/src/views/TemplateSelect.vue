@@ -3,9 +3,13 @@ import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import TemplatePreview from "@/components/TemplatePreview.vue";
+import KioskDecor from "@/components/KioskDecor.vue";
+import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 const store = usePhotoboothStore();
+const { laidOut, boxStyle, textOf, textStyle, buttonLabel } =
+  useKioskScreen("templates");
 
 const currentIndex = ref(0);
 const templates = computed(() => store.activeTemplates);
@@ -182,15 +186,26 @@ onUnmounted(() => {
 <template>
   <div
     class="template-screen"
-    :class="{ 'template-screen--empty': templates.length === 0 }"
+    :class="{
+      'template-screen--empty': templates.length === 0,
+      'kiosk-laid-out': laidOut,
+    }"
   >
+    <KioskDecor screen-id="templates" />
     <header class="template-header">
-      <h1 class="screen-title">Choose Your<br />Template</h1>
+      <h1
+        class="screen-title"
+        :style="laidOut ? { ...boxStyle('title'), ...textStyle('title') } : undefined"
+      >
+        <template v-if="laidOut">{{ textOf("title").content }}</template>
+        <template v-else>Choose Your<br />Template</template>
+      </h1>
       <div
         v-if="templates.length > 0"
         class="template-indicator"
         role="tablist"
         :aria-label="`${templates.length} templates, ${currentIndex + 1} of ${templates.length} selected`"
+        :style="laidOut ? boxStyle('dots') : undefined"
       >
         <span
           v-for="(t, i) in templates"
@@ -200,7 +215,7 @@ onUnmounted(() => {
         />
       </div>
     </header>
-    <div class="template-content">
+    <div class="template-content" :style="laidOut ? boxStyle('carousel') : undefined">
       <div v-if="templates.length === 0" class="template-empty">
         <p>No templates available.</p>
       </div>
@@ -276,14 +291,22 @@ onUnmounted(() => {
 
     <!-- Bottom action row — v2: Back (cream outline) bottom-left,
          Select (gold) bottom-right. -->
-    <button type="button" class="ghost-btn tpl-back-btn" @click="goBack">Back</button>
+    <button
+      type="button"
+      class="ghost-btn tpl-back-btn"
+      :style="laidOut ? boxStyle('backBtn') : undefined"
+      @click="goBack"
+    >
+      {{ buttonLabel("backBtn", "Back") }}
+    </button>
     <button
       v-if="templates.length > 0"
       type="button"
       class="wood-btn tpl-select-btn"
+      :style="laidOut ? boxStyle('selectBtn') : undefined"
       @click="selectTemplate"
     >
-      Select
+      {{ buttonLabel("selectBtn", "Select") }}
     </button>
 
     <!-- Inactivity Warning Modal -->
@@ -328,6 +351,30 @@ onUnmounted(() => {
      corner ornament. */
   padding: 2.5rem 7rem 9rem;
   position: relative;
+}
+
+.kiosk-laid-out {
+  padding: 0;
+}
+
+.kiosk-laid-out .template-header {
+  display: contents;
+}
+
+.kiosk-laid-out .screen-title,
+.kiosk-laid-out .template-indicator,
+.kiosk-laid-out .template-content,
+.kiosk-laid-out .tpl-back-btn,
+.kiosk-laid-out .tpl-select-btn {
+  margin: 0;
+}
+
+.kiosk-laid-out .screen-title {
+  white-space: pre-wrap;
+}
+
+.kiosk-laid-out .template-content {
+  flex: none;
 }
 
 .template-screen--empty {

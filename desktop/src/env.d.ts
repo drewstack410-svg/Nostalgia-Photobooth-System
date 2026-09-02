@@ -222,6 +222,16 @@ interface ElectronAPI {
   getPhotosDirectory: () => Promise<string>;
   listSavedPhotos: () => Promise<PhotoInfo[]>;
   readPhoto: (filePath: string) => Promise<string | null>;
+  listSessionFiles?: (
+    folder: string,
+  ) => Promise<{ name: string; path: string }[]>;
+  readSessionFile?: (relOrAbs: string) => Promise<{
+    success: boolean;
+    bytes: Uint8Array | null;
+    mime: string | null;
+    path?: string;
+    error?: string;
+  }>;
   deletePhoto: (filePath: string) => Promise<DeleteResult>;
   /**
    * Title screen background (image or video), stored on disk in the
@@ -252,8 +262,8 @@ interface ElectronAPI {
   saveTitleBackgroundBytes: (payload: {
     bytes: Uint8Array;
     mime: string;
-    /** Which screen's background: 'title' (default) or 'payment'. */
-    slot?: "title" | "payment";
+    /** Which screen's background: title, payment, or another kiosk screen. */
+    slot?: "title" | "payment" | "templates" | "camera" | "printing" | "qr";
   }) => Promise<SaveResult>;
   /**
    * Returns the raw bytes so the renderer can wrap them in a Blob and
@@ -261,7 +271,7 @@ interface ElectronAPI {
    * media-src allows only 'self' and blob:, and Chromium will not play
    * video from a large data URL anyway.
    */
-  getTitleBackground: (slot?: "title" | "payment") => Promise<{
+  getTitleBackground: (slot?: "title" | "payment" | "templates" | "camera" | "printing" | "qr") => Promise<{
     success: boolean;
     bytes: Uint8Array | null;
     mime: string | null;
@@ -276,7 +286,7 @@ interface ElectronAPI {
     error?: string;
   }>;
   clearTitleBackground: (
-    slot?: "title" | "payment",
+    slot?: "title" | "payment" | "templates" | "camera" | "printing" | "qr",
   ) => Promise<{ success: boolean; error?: string }>;
   /**
    * PNG/JPEG/MOV layer for a camera filter, stored on disk in userData

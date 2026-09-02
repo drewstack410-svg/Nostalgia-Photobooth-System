@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /**
  * Admin → Screen Editor. Pick a kiosk screen, then edit it against a
- * live 16:9 preview. Only Welcome is available for now.
+ * live 16:9 preview.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import WelcomeStage from "@/components/WelcomeStage.vue";
+import KioskStage from "@/components/KioskStage.vue";
 import {
   clampBox,
   getItemBox,
@@ -17,9 +18,20 @@ import {
   type WelcomeAssetKind,
   type WelcomeBox,
   type WelcomeItemId,
-  type WelcomeLayer,
+  type WelcomeStartButtonStyle,
   type WelcomeTextStyle,
 } from "@/utils/welcomeLayout";
+import {
+  KIOSK_SCREENS,
+  isKioskLockedLayer,
+  isKioskMovableLayer,
+  isKioskScreenId,
+  getKioskItemBox,
+  kioskItemDef,
+  kioskLayerLabel,
+  kioskScreenDef,
+  type KioskScreenId,
+} from "@/utils/kioskLayout";
 
 const TEXT_FONTS = [
   { label: "Display", value: "var(--font-display)" },
@@ -47,17 +59,89 @@ const TEXT_WEIGHTS = [
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
 
-const SCREENS = [
+type EditorScreenId = "welcome" | KioskScreenId;
+
+const SCREENS: {
+  id: EditorScreenId;
+  name: string;
+  description: string;
+}[] = [
   {
-    id: "welcome" as const,
+    id: "welcome",
     name: "Welcome screen",
     description: "Home screen guests see first — logo, start button, and background.",
   },
+  ...KIOSK_SCREENS.map((s) => ({
+    id: s.id,
+    name: s.name,
+    description: s.description,
+  })),
 ];
 
 const store = usePhotoboothStore();
-const selectedScreen = ref<(typeof SCREENS)[number]["id"] | null>(null);
-const selectedLayer = ref<WelcomeLayer>("background");
+const selectedScreen = ref<EditorScreenId | null>(null);
+const selectedLayer = ref<string>("background");
+const isWelcome = computed(() => selectedScreen.value === "welcome");
+const kioskId = computed<KioskScreenId | null>(() =>
+  isKioskScreenId(selectedScreen.value) ? selectedScreen.value : null,
+);
+
+function activeAssets() {
+  if (kioskId.value) return store.kioskLayoutOf(kioskId.value)?.assets ?? [];
+  return store.welcomeLayout?.assets ?? [];
+}
+
+function addAssetToScreen(
+  src: string,
+  name: string,
+  box: WelcomeBox | undefined,
+  kind: WelcomeAssetKind,
+  text?: WelcomeTextStyle,
+) {
+  if (kioskId.value) {
+    return store.addKioskAsset(kioskId.value, src, name, box, kind, text);
+  }
+  return store.addWelcomeAsset(src, name, box, kind, text);
+}
+
+function replaceAssetSrc(
+  id: string,
+  src: string,
+  kind?: "image" | "video",
+) {
+  if (kioskId.value) {
+    store.replaceKioskAssetSrc(kioskId.value, id, src, kind);
+    return;
+  }
+  store.replaceWelcomeAssetSrc(id, src, kind);
+}
+
+function removeAsset(id: string) {
+  if (kioskId.value) {
+    store.removeKioskAsset(kioskId.value, id);
+    return;
+  }
+  store.removeWelcomeAsset(id);
+}
+
+function updateAssetText(id: string, patch: Partial<WelcomeTextStyle>) {
+  if (kioskId.value) {
+    store.updateKioskAssetText(kioskId.value, id, patch);
+    return;
+  }
+  store.updateWelcomeAssetText(id, patch);
+}
+
+function layoutDirty() {
+  if (kioskId.value) return store.kioskLayoutDirty(kioskId.value);
+  return store.welcomeLayoutDirty;
+}
+
+function selectedKioskItem() {
+  const id = kioskId.value;
+  if (!id) return undefined;
+  return kioskItemDef(id, selectedLayer.value);
+}
 
 const editorRef = ref<HTMLElement | null>(null);
 const thumbRef = ref<HTMLElement | null>(null);
@@ -92,10 +176,11 @@ function fitPreview() {
 }
 
 function clearTitleBackground() {
-  store.clearTitleBackground();
+  if (kioskId.value) store.clearKioskBackground(kioskId.value);
+  else store.clearTitleBackground();
 }
 
-async function onDropFiles(payload: { files: File[]; layer: WelcomeLayer }) {
+async function onDropFiles(payload: { files: File[]; layer: string }) {
   const file = payload.files[0];
   if (!file) return;
   const isVideo =
@@ -106,7 +191,7 @@ async function onDropFiles(payload: { files: File[]; layer: WelcomeLayer }) {
     /\.(png|jpe?g|webp|gif|svg)$/i.test(file.name);
   if (isVideo) {
     if (isAssetId(payload.layer)) {
-      const current = store.welcomeLayout?.assets.find(
+      const current = activeAssets().find(
         (a) => `asset:${a.id}` === payload.layer,
       );
       if (current?.kind === "text") {
@@ -116,7 +201,7 @@ async function onDropFiles(payload: { files: File[]; layer: WelcomeLayer }) {
       selectedLayer.value = payload.layer;
       checkpoint();
       const src = await readFileDataUrl(file);
-      store.replaceWelcomeAssetSrc(payload.layer, src, "video");
+      replaceAssetSrc(payload.layer, src, "video");
       return;
     }
     selectedLayer.value = "background";
@@ -124,7 +209,9 @@ async function onDropFiles(payload: { files: File[]; layer: WelcomeLayer }) {
     titleBgBusy.value = true;
     titleBgError.value = "";
     try {
-      const ok = await store.setTitleBackgroundFile("video", file);
+      const ok = kioskId.value
+        ? await store.setKioskBackgroundFile(kioskId.value, "video", file)
+        : await store.setTitleBackgroundFile("video", file);
       if (!ok) titleBgError.value = "Couldn't save the background.";
     } catch (e) {
       titleBgError.value = e instanceof Error ? e.message : "Upload failed.";
@@ -152,7 +239,7 @@ async function onDropFiles(payload: { files: File[]; layer: WelcomeLayer }) {
     return;
   }
   if (isAssetId(payload.layer)) {
-    const current = store.welcomeLayout?.assets.find(
+    const current = activeAssets().find(
       (a) => `asset:${a.id}` === payload.layer,
     );
     if (current?.kind === "text") {
@@ -163,11 +250,7 @@ async function onDropFiles(payload: { files: File[]; layer: WelcomeLayer }) {
     checkpoint();
     const reader = new FileReader();
     reader.onload = () =>
-      store.replaceWelcomeAssetSrc(
-        payload.layer,
-        reader.result as string,
-        "image",
-      );
+      replaceAssetSrc(payload.layer, reader.result as string, "image");
     reader.readAsDataURL(file);
     return;
   }
@@ -176,7 +259,8 @@ async function onDropFiles(payload: { files: File[]; layer: WelcomeLayer }) {
 
 function resetLayout() {
   checkpoint();
-  store.resetWelcomeLayout();
+  if (kioskId.value) store.resetKioskLayout(kioskId.value);
+  else store.resetWelcomeLayout();
   selectedLayer.value = "background";
 }
 
@@ -243,7 +327,7 @@ async function addAssetFile(file: File) {
   const { w, h } =
     kind === "video" ? await readVideoSize(src) : await readNaturalSize(src);
   const name = file.name.replace(/\.[^.]+$/, "") || (kind === "video" ? "Video" : "Image");
-  selectedLayer.value = store.addWelcomeAsset(
+  selectedLayer.value = addAssetToScreen(
     src,
     name,
     boxFromNatural(w, h),
@@ -260,7 +344,7 @@ function onAssetInput(event: Event) {
 
 function addText() {
   checkpoint();
-  selectedLayer.value = store.addWelcomeAsset(
+  selectedLayer.value = addAssetToScreen(
     "",
     "Text",
     clampBox({ x: 0.22, y: 0.38, w: 0.56, h: 0.16 }),
@@ -270,14 +354,19 @@ function addText() {
 }
 
 function patchSelectedText(patch: Partial<WelcomeTextStyle>) {
+  const kioskText = selectedKioskItem();
+  if (kioskId.value && kioskText?.kind === "text") {
+    store.updateKioskText(kioskId.value, selectedLayer.value, patch);
+    return;
+  }
   if (!selectedAsset.value || selectedAsset.value.kind !== "text") return;
-  store.updateWelcomeAssetText(selectedLayer.value, patch);
+  updateAssetText(selectedLayer.value, patch);
 }
 
 function deleteSelectedAsset() {
   if (!isAssetId(selectedLayer.value)) return;
   checkpoint();
-  store.removeWelcomeAsset(selectedLayer.value);
+  removeAsset(selectedLayer.value);
   selectedLayer.value = "background";
 }
 
@@ -285,7 +374,8 @@ function sendSelected(dir: "back" | "front" | "backward" | "forward") {
   const id = selectedItem();
   if (!id) return;
   checkpoint();
-  store.sendWelcomeLayer(id, dir);
+  if (kioskId.value) store.sendKioskLayer(kioskId.value, id, dir);
+  else store.sendWelcomeLayer(id, dir);
 }
 
 const dragLayerId = ref<string | null>(null);
@@ -317,6 +407,14 @@ function onLayerDrop(id: string, e: DragEvent) {
   dragLayerId.value = null;
   dragOverLayerId.value = null;
   if (!from || id === "background" || from === id) return;
+  if (kioskId.value) {
+    const layout = store.ensureKioskLayout(kioskId.value);
+    const next = reorderVisualLayers(layout.order, from, id);
+    if (next.join() === layout.order.join()) return;
+    checkpoint();
+    store.setKioskLayerOrder(kioskId.value, next);
+    return;
+  }
   const layout = store.ensureWelcomeLayout();
   const next = reorderVisualLayers(layout.order, from, id);
   if (next.join() === layout.order.join()) return;
@@ -337,7 +435,8 @@ const saveFlash = ref(false);
 let saveFlashTimer: ReturnType<typeof setTimeout> | null = null;
 
 function saveScreen() {
-  store.saveWelcomeLayout();
+  if (kioskId.value) store.saveKioskLayout(kioskId.value);
+  else store.saveWelcomeLayout();
   saveFlash.value = true;
   if (saveFlashTimer) clearTimeout(saveFlashTimer);
   saveFlashTimer = setTimeout(() => {
@@ -346,15 +445,24 @@ function saveScreen() {
 }
 
 function leaveWorkspace() {
-  if (store.welcomeLayoutDirty) store.revertWelcomeLayout();
+  if (kioskId.value) {
+    if (store.kioskLayoutDirty(kioskId.value)) {
+      store.revertKioskLayout(kioskId.value);
+    }
+  } else if (store.welcomeLayoutDirty) {
+    store.revertWelcomeLayout();
+  }
   clearHistory();
   selectedScreen.value = null;
+  selectedLayer.value = "background";
 }
 
 type EditorSnap = {
-  layout: ReturnType<typeof store.ensureWelcomeLayout> | null;
+  welcomeLayout?: ReturnType<typeof store.ensureWelcomeLayout> | null;
+  kioskLayout?: ReturnType<typeof store.ensureKioskLayout> | null;
   logo: string | null;
   startBtn: string | null;
+  startBtnStyle?: WelcomeStartButtonStyle;
 };
 
 type WelcomeClip = {
@@ -403,15 +511,18 @@ function editorIsActive(): boolean {
 
 function currentSnap(): string {
   return JSON.stringify({
-    layout: store.welcomeLayout,
+    welcomeLayout: isWelcome.value ? store.welcomeLayout : undefined,
+    kioskLayout: kioskId.value ? store.kioskLayoutOf(kioskId.value) : undefined,
     logo: store.customLogoUrl,
     startBtn: store.customStartButtonUrl,
+    startBtnStyle: store.startButtonStyle,
   } satisfies EditorSnap);
 }
 
 function checkpoint() {
   if (!selectedScreen.value) return;
-  store.ensureWelcomeLayout();
+  if (kioskId.value) store.ensureKioskLayout(kioskId.value);
+  else store.ensureWelcomeLayout();
   const snap = currentSnap();
   if (snap === undoStack.value[undoStack.value.length - 1]) return;
   undoStack.value.push(snap);
@@ -426,11 +537,15 @@ function applySnap(raw: string) {
   } catch {
     return;
   }
-  if (data.layout) store.applyWelcomeLayout(data.layout);
+  if (data.welcomeLayout) store.applyWelcomeLayout(data.welcomeLayout);
+  if (kioskId.value && data.kioskLayout) {
+    store.setKioskLayout(kioskId.value, data.kioskLayout);
+  }
   if (data.logo) store.setCustomLogo(data.logo);
   else store.clearCustomLogo();
   if (data.startBtn) store.setCustomStartButton(data.startBtn);
   else store.clearCustomStartButton();
+  if (data.startBtnStyle) store.applyStartButtonStyle(data.startBtnStyle);
 }
 
 function undo() {
@@ -457,17 +572,41 @@ function offsetBox(box: WelcomeBox): WelcomeBox {
   return clampBox({ ...box, x: box.x + DUP_X, y: box.y + DUP_Y });
 }
 
-function selectedItem(): WelcomeItemId | null {
+function selectedItem(): string | null {
+  if (kioskId.value) {
+    return isKioskMovableLayer(kioskId.value, selectedLayer.value)
+      ? selectedLayer.value
+      : null;
+  }
   return isMovableLayer(selectedLayer.value) ? selectedLayer.value : null;
 }
 
 function isLockedLayer(id: string) {
+  if (kioskId.value) return isKioskLockedLayer(kioskId.value, id);
   return id === "logo" || id === "start" || id === "background";
 }
 
 function copySelected() {
   const id = selectedItem();
   if (!id || isLockedLayer(id)) return;
+  if (kioskId.value) {
+    const layout = store.ensureKioskLayout(kioskId.value);
+    const box = getKioskItemBox(layout, id);
+    if (!box) return;
+    const asset = isAssetId(id)
+      ? layout.assets.find((a) => `asset:${a.id}` === id)
+      : undefined;
+    clipboard.value = {
+      id,
+      box: { ...box },
+      logoUrl: null,
+      assetSrc: asset?.src,
+      assetName: asset?.name,
+      assetKind: asset?.kind,
+      text: asset?.kind === "text" ? asset.text : undefined,
+    };
+    return;
+  }
   const layout = store.ensureWelcomeLayout();
   const box = getItemBox(layout, id);
   if (!box) return;
@@ -491,7 +630,7 @@ function pasteClipboard() {
   if (!clip || isLockedLayer(clip.id)) return;
   checkpoint();
   if (clip.assetKind === "text" || clip.text) {
-    selectedLayer.value = store.addWelcomeAsset(
+    selectedLayer.value = addAssetToScreen(
       "",
       clip.assetName || "Text",
       offsetBox(clip.box),
@@ -501,7 +640,7 @@ function pasteClipboard() {
     return;
   }
   if (clip.assetSrc) {
-    selectedLayer.value = store.addWelcomeAsset(
+    selectedLayer.value = addAssetToScreen(
       clip.assetSrc,
       clip.assetName || (clip.assetKind === "video" ? "Video" : "Image"),
       offsetBox(clip.box),
@@ -509,6 +648,7 @@ function pasteClipboard() {
     );
     return;
   }
+  if (kioskId.value) return;
   const layout = store.ensureWelcomeLayout();
   const current = getItemBox(layout, clip.id);
   if (!current) return;
@@ -630,8 +770,14 @@ function onEditorKey(e: KeyboardEvent) {
 
   const id = selectedItem();
   if (!id) return;
-  const layout = store.ensureWelcomeLayout();
-  const current = getItemBox(layout, id);
+  let current: WelcomeBox | null = null;
+  if (kioskId.value) {
+    const layout = store.ensureKioskLayout(kioskId.value);
+    current = getKioskItemBox(layout, id);
+  } else {
+    const layout = store.ensureWelcomeLayout();
+    current = getItemBox(layout, id);
+  }
   if (!current) return;
   const box = { ...current };
   const stepX = (e.shiftKey ? 10 : 1) / CANVAS_W;
@@ -643,7 +789,8 @@ function onEditorKey(e: KeyboardEvent) {
   else return;
   e.preventDefault();
   checkpoint();
-  store.setWelcomeItem(id, box);
+  if (kioskId.value) store.setKioskItem(kioskId.value, id, box);
+  else store.setWelcomeItem(id, box);
 }
 
 function onEditorPaste(e: ClipboardEvent) {
@@ -701,7 +848,11 @@ onMounted(() => {
 onBeforeUnmount(() => {
   previewAlive = false;
   if (saveFlashTimer) clearTimeout(saveFlashTimer);
-  if (store.welcomeLayoutDirty) store.revertWelcomeLayout();
+  if (kioskId.value && store.kioskLayoutDirty(kioskId.value)) {
+    store.revertKioskLayout(kioskId.value);
+  } else if (store.welcomeLayoutDirty) {
+    store.revertWelcomeLayout();
+  }
   resizeObserver?.disconnect();
   visibilityObserver?.disconnect();
   document.removeEventListener("mousedown", closeShortcutsOnOutside);
@@ -710,8 +861,15 @@ onBeforeUnmount(() => {
 });
 
 watch(selectedScreen, async (id) => {
+  selectedLayer.value = "background";
   if (id === "welcome") {
     store.ensureWelcomeLayout();
+    clearHistory();
+  } else if (isKioskScreenId(id)) {
+    const layout = store.ensureKioskLayout(id);
+    const fill = layout.backgroundFill;
+    kioskBgTab.value =
+      fill === "media" ? "image" : fill === "color" ? "color" : "theme";
     clearHistory();
   }
   await nextTick();
@@ -742,19 +900,38 @@ const BG_SWATCHES = [
   "#8b1e1e",
 ];
 
-watch(
-  () => store.welcomeBackgroundColor,
-  (c) => {
-    hexDraft.value = c;
-  },
-);
+const activeBgColor = computed(() => {
+  if (kioskId.value) {
+    return store.kioskLayoutOf(kioskId.value)?.backgroundColor || "#f4ead5";
+  }
+  return store.welcomeBackgroundColor;
+});
 
-function chooseBgMode(mode: "image" | "video" | "color") {
-  titleBgMediaChoice.value = mode;
+watch(activeBgColor, (c) => {
+  hexDraft.value = c;
+});
+
+function chooseBgMode(mode: "image" | "video" | "color" | "theme") {
+  titleBgMediaChoice.value = mode === "theme" ? "color" : mode;
+  if (kioskId.value) {
+    store.setKioskBackgroundFill(
+      kioskId.value,
+      mode === "color" ? "color" : mode === "theme" ? "theme" : "media",
+    );
+    kioskBgTab.value = mode;
+    return;
+  }
   store.setWelcomeBackgroundFill(mode === "color" ? "color" : "media");
 }
 
+const kioskBgTab = ref<"theme" | "image" | "video" | "color">("theme");
+
 function applyHexColor() {
+  if (kioskId.value) {
+    store.setKioskBackgroundColor(kioskId.value, hexDraft.value);
+    hexDraft.value = store.ensureKioskLayout(kioskId.value).backgroundColor;
+    return;
+  }
   store.setWelcomeBackgroundColor(hexDraft.value);
   hexDraft.value = store.welcomeBackgroundColor;
 }
@@ -815,6 +992,27 @@ function updateLogoScale(e: Event) {
 function updateStartBtnScale(e: Event) {
   store.setStartButtonScale(parseFloat((e.target as HTMLInputElement).value));
 }
+function patchStartButton(patch: Partial<WelcomeStartButtonStyle>) {
+  const touchesText =
+    patch.fontFamily !== undefined ||
+    patch.fontSize !== undefined ||
+    patch.fontWeight !== undefined ||
+    patch.italic !== undefined ||
+    patch.labelColor !== undefined;
+  if (
+    touchesText &&
+    patch.label === undefined &&
+    !store.startButtonStyle.label.trim()
+  ) {
+    store.setStartButtonStyle({ label: "Click Here To Start", ...patch });
+    return;
+  }
+  store.setStartButtonStyle(patch);
+}
+function resetStartButtonLook() {
+  checkpoint();
+  store.resetStartButtonStyle();
+}
 
 async function handleTitleBgFile(kind: "image" | "video", event: Event) {
   const input = event.target as HTMLInputElement;
@@ -832,7 +1030,9 @@ async function handleTitleBgFile(kind: "image" | "video", event: Event) {
   }
   titleBgBusy.value = true;
   try {
-    const ok = await store.setTitleBackgroundFile(kind, file);
+    const ok = kioskId.value
+      ? await store.setKioskBackgroundFile(kioskId.value, kind, file)
+      : await store.setTitleBackgroundFile(kind, file);
     if (!ok) {
       titleBgError.value = "Couldn't save the background. Check the app log for details.";
     }
@@ -843,11 +1043,37 @@ async function handleTitleBgFile(kind: "image" | "video", event: Event) {
   }
 }
 
-const inspectorTitle = computed(() =>
-  layerLabel(selectedLayer.value, store.welcomeLayout),
-);
+const inspectorTitle = computed(() => {
+  if (kioskId.value) {
+    return kioskLayerLabel(
+      kioskId.value,
+      selectedLayer.value,
+      store.kioskLayoutOf(kioskId.value),
+    );
+  }
+  return layerLabel(selectedLayer.value, store.welcomeLayout);
+});
+
+const workspaceTitle = computed(() => {
+  if (kioskId.value) return kioskScreenDef(kioskId.value).name;
+  return "Welcome screen";
+});
 
 const layerRows = computed(() => {
+  if (kioskId.value) {
+    const layout = store.kioskLayoutOf(kioskId.value);
+    const movable = layout
+      ? [...layout.order].reverse()
+      : [...kioskScreenDef(kioskId.value).items.map((i) => i.id)].reverse();
+    return [
+      ...movable.map((id) => ({
+        id,
+        label: kioskLayerLabel(kioskId.value!, id, layout),
+        locked: isLockedLayer(id),
+      })),
+      { id: "background" as const, label: "Background", locked: true },
+    ];
+  }
   const layout = store.welcomeLayout;
   const movable = layout ? [...layout.order].reverse() : ["start", "logo"];
   return [
@@ -861,16 +1087,26 @@ const layerRows = computed(() => {
 });
 
 const selectedAsset = computed(() => {
-  if (!isAssetId(selectedLayer.value) || !store.welcomeLayout) return null;
+  if (!isAssetId(selectedLayer.value)) return null;
   const key = selectedLayer.value.slice(6);
-  return store.welcomeLayout.assets.find((a) => a.id === key) ?? null;
+  return activeAssets().find((a) => a.id === key) ?? null;
 });
 
-const selectedText = computed(() =>
-  selectedAsset.value?.kind === "text"
+const selectedFixedText = computed(() => {
+  const item = selectedKioskItem();
+  if (!kioskId.value || item?.kind !== "text") return null;
+  const layout = store.kioskLayoutOf(kioskId.value);
+  return parseTextStyle(layout?.texts[selectedLayer.value] ?? item.text);
+});
+
+const selectedText = computed(() => {
+  if (selectedFixedText.value) return selectedFixedText.value;
+  return selectedAsset.value?.kind === "text"
     ? parseTextStyle(selectedAsset.value.text)
-    : null,
-);
+    : null;
+});
+
+const screenDirty = computed(() => layoutDirty());
 </script>
 
 <template>
@@ -889,9 +1125,8 @@ const selectedText = computed(() =>
           @keydown.enter.prevent="selectedScreen = screen.id"
           @keydown.space.prevent="selectedScreen = screen.id"
         >
-          <div ref="thumbRef" class="screen-card__thumb">
+          <div :ref="screen.id === 'welcome' ? 'thumbRef' : undefined" class="screen-card__thumb">
             <div
-              v-if="screen.id === 'welcome'"
               class="preview-stage"
               :style="{
                 width: `${CANVAS_W}px`,
@@ -899,7 +1134,13 @@ const selectedText = computed(() =>
                 transform: `scale(${thumbScale})`,
               }"
             >
-              <WelcomeStage key="welcome-thumb" instant canvas />
+              <WelcomeStage v-if="screen.id === 'welcome'" :key="`thumb-${screen.id}`" instant canvas />
+              <KioskStage
+                v-else-if="isKioskScreenId(screen.id)"
+                :key="`thumb-${screen.id}`"
+                :screen-id="screen.id"
+                canvas
+              />
             </div>
           </div>
           <span class="screen-card__name">{{ screen.name }}</span>
@@ -913,7 +1154,7 @@ const selectedText = computed(() =>
         <button type="button" class="screen-back" @click="leaveWorkspace">
           ← Screens
         </button>
-        <h2 class="screen-toolbar__title">Welcome screen</h2>
+        <h2 class="screen-toolbar__title">{{ workspaceTitle }}</h2>
         <div class="screen-history">
           <button
             type="button"
@@ -1154,7 +1395,7 @@ const selectedText = computed(() =>
         <button
           type="button"
           class="screen-save"
-          :disabled="!store.welcomeLayoutDirty && !saveFlash"
+          :disabled="!screenDirty && !saveFlash"
           @click="saveScreen"
         >
           {{ saveFlash ? "Saved" : "Save" }}
@@ -1254,9 +1495,22 @@ const selectedText = computed(() =>
               }"
             >
               <WelcomeStage
+                v-if="isWelcome"
                 key="welcome-editor"
                 interactive
                 instant
+                canvas
+                :show-guides="showGuides"
+                :selected="selectedLayer"
+                @select="selectedLayer = $event"
+                @drop-files="onDropFiles"
+                @history-checkpoint="checkpoint"
+              />
+              <KioskStage
+                v-else-if="kioskId"
+                :key="`kiosk-editor-${kioskId}`"
+                :screen-id="kioskId"
+                interactive
                 canvas
                 :show-guides="showGuides"
                 :selected="selectedLayer"
@@ -1272,13 +1526,33 @@ const selectedText = computed(() =>
           <h3 class="inspector__title">{{ inspectorTitle }}</h3>
 
           <template v-if="selectedLayer === 'background'">
-            <div class="bg-tabs" role="tablist" aria-label="Background type">
+            <div
+              class="bg-tabs"
+              :class="{ 'bg-tabs--kiosk': !!kioskId }"
+              role="tablist"
+              aria-label="Background type"
+            >
+              <button
+                v-if="kioskId"
+                type="button"
+                role="tab"
+                class="bg-tabs__tab"
+                :class="{ 'bg-tabs__tab--on': kioskBgTab === 'theme' }"
+                :aria-selected="kioskBgTab === 'theme'"
+                @click="chooseBgMode('theme')"
+              >
+                Theme
+              </button>
               <button
                 type="button"
                 role="tab"
                 class="bg-tabs__tab"
-                :class="{ 'bg-tabs__tab--on': titleBgMediaChoice === 'image' }"
-                :aria-selected="titleBgMediaChoice === 'image'"
+                :class="{
+                  'bg-tabs__tab--on': kioskId
+                    ? kioskBgTab === 'image'
+                    : titleBgMediaChoice === 'image',
+                }"
+                :aria-selected="kioskId ? kioskBgTab === 'image' : titleBgMediaChoice === 'image'"
                 @click="chooseBgMode('image')"
               >
                 Image
@@ -1287,8 +1561,12 @@ const selectedText = computed(() =>
                 type="button"
                 role="tab"
                 class="bg-tabs__tab"
-                :class="{ 'bg-tabs__tab--on': titleBgMediaChoice === 'video' }"
-                :aria-selected="titleBgMediaChoice === 'video'"
+                :class="{
+                  'bg-tabs__tab--on': kioskId
+                    ? kioskBgTab === 'video'
+                    : titleBgMediaChoice === 'video',
+                }"
+                :aria-selected="kioskId ? kioskBgTab === 'video' : titleBgMediaChoice === 'video'"
                 @click="chooseBgMode('video')"
               >
                 Video
@@ -1297,24 +1575,40 @@ const selectedText = computed(() =>
                 type="button"
                 role="tab"
                 class="bg-tabs__tab"
-                :class="{ 'bg-tabs__tab--on': titleBgMediaChoice === 'color' }"
-                :aria-selected="titleBgMediaChoice === 'color'"
+                :class="{
+                  'bg-tabs__tab--on': kioskId
+                    ? kioskBgTab === 'color'
+                    : titleBgMediaChoice === 'color',
+                }"
+                :aria-selected="kioskId ? kioskBgTab === 'color' : titleBgMediaChoice === 'color'"
                 @click="chooseBgMode('color')"
               >
                 Color
               </button>
             </div>
-            <div v-show="titleBgMediaChoice === 'color'" class="color-editor">
+            <p v-if="kioskId && kioskBgTab === 'theme'" class="inspector__hint">
+              Uses the booth's wooden frame and cream panel. Switch to Color
+              or upload media to replace it.
+            </p>
+            <div
+              v-show="kioskId ? kioskBgTab === 'color' : titleBgMediaChoice === 'color'"
+              class="color-editor"
+            >
               <div class="color-editor__row">
                 <input
                   class="color-editor__picker"
                   type="color"
-                  :value="store.welcomeBackgroundColor"
+                  :value="activeBgColor"
                   aria-label="Background color"
                   @input="
-                    store.setWelcomeBackgroundColor(
-                      ($event.target as HTMLInputElement).value,
-                    )
+                    kioskId
+                      ? store.setKioskBackgroundColor(
+                          kioskId,
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      : store.setWelcomeBackgroundColor(
+                          ($event.target as HTMLInputElement).value,
+                        )
                   "
                 />
                 <input
@@ -1334,15 +1628,19 @@ const selectedText = computed(() =>
                   :key="swatch"
                   type="button"
                   class="color-swatch"
-                  :class="{ 'color-swatch--active': store.welcomeBackgroundColor === swatch }"
+                  :class="{ 'color-swatch--active': activeBgColor === swatch }"
                   :style="{ background: swatch }"
                   :aria-label="swatch"
-                  @click="store.setWelcomeBackgroundColor(swatch)"
+                  @click="
+                    kioskId
+                      ? store.setKioskBackgroundColor(kioskId, swatch)
+                      : store.setWelcomeBackgroundColor(swatch)
+                  "
                 />
               </div>
             </div>
             <div
-              v-show="titleBgMediaChoice === 'image'"
+              v-show="kioskId ? kioskBgTab === 'image' : titleBgMediaChoice === 'image'"
               class="upload-card"
               :class="{
                 'upload-card--filled':
@@ -1368,7 +1666,7 @@ const selectedText = computed(() =>
               </template>
             </div>
             <div
-              v-show="titleBgMediaChoice === 'video'"
+              v-show="kioskId ? kioskBgTab === 'video' : titleBgMediaChoice === 'video'"
               class="upload-card"
               :class="{
                 'upload-card--filled':
@@ -1500,6 +1798,297 @@ const selectedText = computed(() =>
               @pointerdown="checkpoint"
               @input="updateStartBtnScale"
             />
+            <p v-if="store.customStartButtonUrl" class="inspector__hint">
+              Remove the uploaded image to edit the default button's label and
+              colors.
+            </p>
+            <template v-else>
+              <label class="form-label">Label</label>
+              <input
+                class="text-number"
+                type="text"
+                :value="store.startButtonStyle.label"
+                placeholder="Click Here To Start"
+                @pointerdown="checkpoint"
+                @input="
+                  patchStartButton({
+                    label: ($event.target as HTMLInputElement).value,
+                  })
+                "
+              />
+              <p class="inspector__hint">
+                Leave blank to keep the original artwork. Type a label to
+                replace it with editable text.
+              </p>
+              <label class="form-label">Font</label>
+              <select
+                class="text-select"
+                :value="store.startButtonStyle.fontFamily"
+                @pointerdown="checkpoint"
+                @change="
+                  patchStartButton({
+                    fontFamily: ($event.target as HTMLSelectElement).value,
+                  })
+                "
+              >
+                <option
+                  v-for="font in TEXT_FONTS"
+                  :key="font.value"
+                  :value="font.value"
+                >
+                  {{ font.label }}
+                </option>
+              </select>
+              <div class="text-row">
+                <label class="text-field">
+                  <span class="form-label">Type size</span>
+                  <input
+                    class="text-number"
+                    type="number"
+                    min="10"
+                    max="64"
+                    :value="Math.round(store.startButtonStyle.fontSize)"
+                    @pointerdown="checkpoint"
+                    @change="
+                      patchStartButton({
+                        fontSize: Number(
+                          ($event.target as HTMLInputElement).value,
+                        ),
+                      })
+                    "
+                  />
+                </label>
+                <label class="text-field">
+                  <span class="form-label">Weight</span>
+                  <select
+                    class="text-select"
+                    :value="store.startButtonStyle.fontWeight"
+                    @pointerdown="checkpoint"
+                    @change="
+                      patchStartButton({
+                        fontWeight: Number(
+                          ($event.target as HTMLSelectElement).value,
+                        ),
+                      })
+                    "
+                  >
+                    <option
+                      v-for="weight in TEXT_WEIGHTS"
+                      :key="weight.value"
+                      :value="weight.value"
+                    >
+                      {{ weight.label }}
+                    </option>
+                  </select>
+                </label>
+              </div>
+              <div class="text-toggles">
+                <button
+                  type="button"
+                  class="text-toggle"
+                  :class="{
+                    'text-toggle--on': store.startButtonStyle.italic,
+                  }"
+                  title="Italic"
+                  aria-label="Italic"
+                  @click="
+                    checkpoint();
+                    patchStartButton({
+                      italic: !store.startButtonStyle.italic,
+                    });
+                  "
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="M10 5h9M5 19h9M15.5 5 8.5 19"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <label class="form-label">Text color</label>
+              <div class="color-editor__row">
+                <input
+                  class="color-editor__picker"
+                  type="color"
+                  :value="store.startButtonStyle.labelColor"
+                  aria-label="Button text color"
+                  @pointerdown="checkpoint"
+                  @input="
+                    patchStartButton({
+                      labelColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+                <input
+                  class="color-editor__hex"
+                  type="text"
+                  spellcheck="false"
+                  maxlength="7"
+                  :value="store.startButtonStyle.labelColor"
+                  aria-label="Button text hex color"
+                  @pointerdown="checkpoint"
+                  @change="
+                    patchStartButton({
+                      labelColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+              </div>
+              <label class="form-label">Face</label>
+              <div class="color-editor__row">
+                <input
+                  class="color-editor__picker"
+                  type="color"
+                  :value="store.startButtonStyle.faceColor"
+                  aria-label="Button face color"
+                  @pointerdown="checkpoint"
+                  @input="
+                    patchStartButton({
+                      faceColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+                <input
+                  class="color-editor__hex"
+                  type="text"
+                  spellcheck="false"
+                  maxlength="7"
+                  :value="store.startButtonStyle.faceColor"
+                  aria-label="Button face hex color"
+                  @pointerdown="checkpoint"
+                  @change="
+                    patchStartButton({
+                      faceColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+              </div>
+              <label class="form-label">Frame</label>
+              <div class="color-editor__row">
+                <input
+                  class="color-editor__picker"
+                  type="color"
+                  :value="store.startButtonStyle.bezelColor"
+                  aria-label="Button frame color"
+                  @pointerdown="checkpoint"
+                  @input="
+                    patchStartButton({
+                      bezelColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+                <input
+                  class="color-editor__hex"
+                  type="text"
+                  spellcheck="false"
+                  maxlength="7"
+                  :value="store.startButtonStyle.bezelColor"
+                  aria-label="Button frame hex color"
+                  @pointerdown="checkpoint"
+                  @change="
+                    patchStartButton({
+                      bezelColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+              </div>
+              <label class="form-label">Shadow</label>
+              <div class="color-editor__row">
+                <input
+                  class="color-editor__picker"
+                  type="color"
+                  :value="store.startButtonStyle.shadowColor"
+                  aria-label="Button shadow color"
+                  @pointerdown="checkpoint"
+                  @input="
+                    patchStartButton({
+                      shadowColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+                <input
+                  class="color-editor__hex"
+                  type="text"
+                  spellcheck="false"
+                  maxlength="7"
+                  :value="store.startButtonStyle.shadowColor"
+                  aria-label="Button shadow hex color"
+                  @pointerdown="checkpoint"
+                  @change="
+                    patchStartButton({
+                      shadowColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+              </div>
+              <label class="form-label">
+                Corners {{ store.startButtonStyle.radius.toFixed(1) }}
+              </label>
+              <input
+                type="range"
+                min="0"
+                max="24"
+                step="0.5"
+                :value="store.startButtonStyle.radius"
+                class="form-range"
+                @pointerdown="checkpoint"
+                @input="
+                  patchStartButton({
+                    radius: Number(($event.target as HTMLInputElement).value),
+                  })
+                "
+              />
+              <button
+                type="button"
+                class="btn-clear"
+                @click="resetStartButtonLook"
+              >
+                Reset look
+              </button>
+            </template>
+          </template>
+
+          <template v-else-if="selectedKioskItem()?.kind === 'button'">
+            <label class="form-label">Label</label>
+            <input
+              class="text-number"
+              type="text"
+              :value="
+                kioskId
+                  ? store.kioskLayoutOf(kioskId)?.buttons[selectedLayer]?.label
+                  : ''
+              "
+              @pointerdown="checkpoint"
+              @input="
+                kioskId &&
+                  store.updateKioskButton(
+                    kioskId,
+                    selectedLayer,
+                    ($event.target as HTMLInputElement).value,
+                  )
+              "
+            />
+            <p class="inspector__hint">
+              Drag the button on the canvas to move or resize it.
+            </p>
+          </template>
+
+          <template v-else-if="selectedKioskItem()?.kind === 'logo'">
+            <p class="inspector__hint">
+              Same logo as the Welcome screen. Change it under Welcome → Logo,
+              or drag here to reposition.
+            </p>
+          </template>
+
+          <template v-else-if="selectedKioskItem()?.kind === 'widget'">
+            <p class="inspector__hint">
+              This is a working part of the screen (carousel, camera, QR frame,
+              and so on). You can move and resize it. Extra images and text
+              can be added on top from the toolbar.
+            </p>
           </template>
 
           <template v-else-if="selectedText">
@@ -1820,7 +2409,12 @@ const selectedText = computed(() =>
                 })
               "
             />
-            <button type="button" class="btn-clear" @click="deleteSelectedAsset">
+            <button
+              v-if="selectedAsset"
+              type="button"
+              class="btn-clear"
+              @click="deleteSelectedAsset"
+            >
               Delete
             </button>
           </template>
@@ -2373,6 +2967,10 @@ const selectedText = computed(() =>
   border-radius: 10px;
 }
 
+.bg-tabs--kiosk {
+  grid-template-columns: repeat(4, 1fr);
+}
+
 .bg-tabs__tab {
   padding: 0.4rem 0.35rem;
   border: none;
@@ -2496,6 +3094,13 @@ const selectedText = computed(() =>
   min-height: 4.5rem;
   resize: vertical;
   line-height: 1.35;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.text-number,
+.text-select,
+.color-editor__hex {
   user-select: text;
   -webkit-user-select: text;
 }

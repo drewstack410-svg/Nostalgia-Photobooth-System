@@ -3,9 +3,12 @@ import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import QRCode from "qrcode";
+import KioskDecor from "@/components/KioskDecor.vue";
+import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 const store = usePhotoboothStore();
+const { laidOut, boxStyle, textOf, textStyle, buttonLabel } = useKioskScreen("qr");
 const qrDataUrl = ref("");
 const isGenerating = ref(true);
 const qrTargetUrl = ref("");
@@ -139,11 +142,9 @@ onMounted(async () => {
   // session's strip appears.
   console.log("[QR] This session's upload isn't ready — waiting");
   const stop = watch(
-    () => [store.recentStrips.length, store.currentQrSessionId] as const,
-    async () => {
-      if (isUnmounted) return;
-      const url = resolveShareUrl();
-      if (!url) return;
+    () => resolveShareUrl(),
+    async (url) => {
+      if (isUnmounted || !url) return;
       stopWaiting?.();
       try {
         await renderQr(url);
@@ -152,6 +153,7 @@ onMounted(async () => {
       }
       if (isUnmounted) return;
       isGenerating.value = false;
+      qrUnavailable.value = false;
       startAutoReturnCountdown();
     },
   );
@@ -187,19 +189,28 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="qr-scan-screen">
-    <button type="button" class="wood-btn done-btn" @click="returnToStart">
-      Done
+  <div class="qr-scan-screen" :class="{ 'kiosk-laid-out': laidOut }">
+    <KioskDecor screen-id="qr" />
+    <button
+      type="button"
+      class="wood-btn done-btn"
+      :style="laidOut ? boxStyle('doneBtn') : undefined"
+      @click="returnToStart"
+    >
+      {{ buttonLabel("doneBtn", "Done") }}
     </button>
 
     <div class="qr-content">
-      <h1 class="qr-title">
-        SCAN THIS QR CODE<br />
-        TO GET YOUR DIGITAL COPIES
+      <h1
+        class="qr-title"
+        :style="laidOut ? { ...boxStyle('title'), ...textStyle('title') } : undefined"
+      >
+        <template v-if="laidOut">{{ textOf("title").content }}</template>
+        <template v-else>SCAN THIS QR CODE<br />TO GET YOUR DIGITAL COPIES</template>
       </h1>
 
       <!-- QR Code Display -->
-      <div class="qr-placeholder">
+      <div class="qr-placeholder" :style="laidOut ? boxStyle('qrFrame') : undefined">
         <div v-if="isGenerating" class="qr-box qr-loading">
           <div class="loading-spinner"></div>
         </div>
@@ -209,8 +220,8 @@ onUnmounted(() => {
         <div v-else-if="qrUnavailable" class="qr-box qr-error">
           <span class="qr-error-icon">📡</span>
           <span class="qr-error-text">
-            Cloud upload didn't complete.<br />
-            Your photos are safe locally — ask staff for a copy.
+            Digital copies are pending upload.<br />
+            Photos are saved on this booth — staff can retry from Admin → Gallery.
           </span>
         </div>
         <div v-else class="qr-box qr-error">
@@ -218,7 +229,12 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="qr-footer">THANK YOU!</div>
+      <div
+        class="qr-footer"
+        :style="laidOut ? { ...boxStyle('thankYou'), ...textStyle('thankYou') } : undefined"
+      >
+        {{ laidOut ? textOf("thankYou").content : "THANK YOU!" }}
+      </div>
     </div>
   </div>
 </template>
@@ -263,6 +279,33 @@ onUnmounted(() => {
   padding: 0;
   background-color: var(--color-cream);
   position: relative;
+}
+
+.kiosk-laid-out .qr-content {
+  display: contents;
+}
+
+.kiosk-laid-out .qr-title {
+  white-space: pre-wrap;
+  position: absolute;
+  margin: 0;
+}
+
+.kiosk-laid-out .qr-placeholder,
+.kiosk-laid-out .qr-footer,
+.kiosk-laid-out .done-btn {
+  position: absolute;
+  margin: 0;
+}
+
+.kiosk-laid-out .qr-placeholder {
+  width: auto;
+  height: auto;
+}
+
+.kiosk-laid-out .qr-box {
+  width: 100%;
+  height: 100%;
 }
 
 .qr-content {

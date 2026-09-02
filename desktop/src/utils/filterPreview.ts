@@ -32,6 +32,7 @@
  * Because the curves are derived from the LUT file itself, the preview
  * cannot drift out of sync with the capture the way hardcoded CSS did.
  */
+import { imageDataRGBA } from "stackblur-canvas";
 import type { ParsedLut } from "./lut";
 
 /** Luminance weights. Must match the ones the capture path uses. */
@@ -157,6 +158,8 @@ export interface FilterAdjustments {
   shadows: number;
   /** Edge darkening, 0–100. 0 = none. */
   vignette: number;
+  /** Soft highlight bloom, 0–100. 0 = none. */
+  glow: number;
 }
 
 export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
@@ -165,6 +168,7 @@ export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
   contrast: 0,
   shadows: 0,
   vignette: 0,
+  glow: 0,
 };
 
 function clamp01(v: number): number {
@@ -227,6 +231,7 @@ export function applyAdjustmentsToImageData(
       data[i + 2] = lut[data[i + 2]];
     }
   }
+  applyGlowToImageData(imageData, adj.glow);
   applyVignetteToImageData(imageData, adj.vignette);
 }
 
@@ -266,7 +271,81 @@ export function applyVignetteToImageData(
   }
 }
 
-/** Capture-side grain intensity (0–34) from a 0–100 slider. */
+/** Blur working size — bloom does not need full-res pixels. */
+const GLOW_MAX_EDGE = 640;
+
+let glowFullCanvas: HTMLCanvasElement | null = null;
+let glowSmallCanvas: HTMLCanvasElement | null = null;
+
+function glowContext(
+  canvas: HTMLCanvasElement,
+  w: number,
+  h: number,
+): CanvasRenderingContext2D | null {
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  return canvas.getContext("2d", { willReadFrequently: true });
+}
+
+/**
+ * Photographic bloom via stackblur-canvas: pull highlights, Gaussian-ish
+ * blur, then screen-composite. Strength 100 is dreamy, not a white-out.
+ */
+export function applyGlowToImageData(imageData: ImageData, glow: number): void {
+  const amount = Math.max(0, Math.min(100, glow)) / 100;
+  if (amount <= 0) return;
+  const w = imageData.width;
+  const h = imageData.height;
+  if (w < 2 || h < 2 || typeof document === "undefined") return;
+
+  glowFullCanvas ??= document.createElement("canvas");
+  glowSmallCanvas ??= document.createElement("canvas");
+
+  const scale = Math.min(1, GLOW_MAX_EDGE / Math.min(w, h));
+  const sw = Math.max(2, Math.round(w * scale));
+  const sh = Math.max(2, Math.round(h * scale));
+
+  const fullCtx = glowContext(glowFullCanvas, w, h);
+  const smallCtx = glowContext(glowSmallCanvas, sw, sh);
+  if (!fullCtx || !smallCtx) return;
+
+  fullCtx.putImageData(imageData, 0, 0);
+  smallCtx.drawImage(glowFullCanvas, 0, 0, sw, sh);
+
+  const bloom = smallCtx.getImageData(0, 0, sw, sh);
+  const px = bloom.data;
+  const floor = 0.48;
+  const span = 1 - floor;
+  for (let i = 0; i < px.length; i += 4) {
+    const r = px[i]!;
+    const g = px[i + 1]!;
+    const b = px[i + 2]!;
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const t = lum <= floor ? 0 : Math.min(1, (lum - floor) / span);
+    const m = t * t;
+    px[i] = r * m;
+    px[i + 1] = g * m * 0.98;
+    px[i + 2] = b * m * 0.86;
+  }
+
+  const radius = Math.max(
+    2,
+    Math.min(180, Math.round(Math.min(sw, sh) * (0.018 + amount * 0.055))),
+  );
+  imageDataRGBA(bloom, 0, 0, sw, sh, radius);
+  smallCtx.putImageData(bloom, 0, 0);
+
+  fullCtx.save();
+  fullCtx.globalCompositeOperation = "screen";
+  fullCtx.globalAlpha = 0.38 + amount * 0.52;
+  fullCtx.drawImage(glowSmallCanvas, 0, 0, w, h);
+  fullCtx.restore();
+
+  imageData.data.set(fullCtx.getImageData(0, 0, w, h).data);
+}
+
 export function grainCaptureIntensity(grain: number): number {
   return Math.max(0, Math.min(34, (grain / 100) * 34));
 }
@@ -288,6 +367,39 @@ export function vignettePreviewStyle(
   const soft = (amount / 100) * 0.28;
   return {
     background: `radial-gradient(ellipse at center, transparent ${inner}%, rgba(0,0,0,${soft.toFixed(3)}) ${mid}%, rgba(0,0,0,${edge.toFixed(3)}) 100%)`,
+  };
+}
+
+/**
+ * SVG bloom for the live camera filter. Backdrop-filter overlays cannot
+ * sample a <video> (especially with isolation / CSS filter on the feed),
+ * so glow has to live in the same fe* chain as the LUT.
+ */
+export interface GlowPreviewSvg {
+  blur: string;
+  slopeR: string;
+  slopeG: string;
+  slopeB: string;
+  extract: string;
+}
+
+export function glowPreviewSvg(glow: number): GlowPreviewSvg | null {
+  const amount = Math.max(0, Math.min(100, glow));
+  if (amount <= 0) return null;
+  const t = amount / 100;
+  const gain = 1.5 + t * 0.7;
+  const knee = -(0.4 + t * 0.16);
+  return {
+    blur: (4 + t * 16).toFixed(2),
+    slopeR: (0.55 + t * 0.8).toFixed(3),
+    slopeG: (0.52 + t * 0.72).toFixed(3),
+    slopeB: (0.42 + t * 0.55).toFixed(3),
+    extract: [
+      gain.toFixed(3), 0, 0, 0, knee.toFixed(3),
+      0, gain.toFixed(3), 0, 0, knee.toFixed(3),
+      0, 0, gain.toFixed(3), 0, knee.toFixed(3),
+      0, 0, 0, 1, 0,
+    ].join(" "),
   };
 }
 

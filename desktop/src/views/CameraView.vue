@@ -14,6 +14,7 @@ import {
   applyAdjustmentsToImageData,
   buildAdjustmentTable,
   buildCubePreview,
+  glowPreviewSvg,
   grainCaptureIntensity,
   grainPreviewOpacity,
   vignettePreviewStyle,
@@ -41,9 +42,13 @@ import {
   stopWebcamTracks,
   webcamErrorMessage,
 } from "@/utils/openCamera";
+import KioskDecor from "@/components/KioskDecor.vue";
+import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 const store = usePhotoboothStore();
+const { laidOut, boxStyle, textOf, textStyle, buttonLabel } =
+  useKioskScreen("camera");
 const { cameraFrameStyle, cameraFrameColor, cameraFrameSvgUrl } =
   storeToRefs(store);
 const effectiveFrameStyle = computed(() =>
@@ -198,9 +203,15 @@ const adjustmentTable = computed(() =>
   buildAdjustmentTable(selectedAdjustments.value),
 );
 
+const glowSvg = computed(() => glowPreviewSvg(selectedAdjustments.value.glow));
+
 /** True when the selected look needs the SVG filter at all. */
 const hasPreviewFilter = computed(
-  () => !!previewMatrix.value || !!cubeCurves.value || !!adjustmentTable.value,
+  () =>
+    !!previewMatrix.value ||
+    !!cubeCurves.value ||
+    !!adjustmentTable.value ||
+    !!glowSvg.value,
 );
 
 const livePreviewFilter = computed(() =>
@@ -1060,8 +1071,8 @@ async function capturePhotoInner(hadLiveView: boolean) {
           drawLookMedia(ctx, mediaEl, mediaLayer.blendMode, mediaLayer.opacity);
         }
 
-        // Bake levels / contrast / shadows / vignette AFTER overlay and
-        // BEFORE grain — same stack as the live preview.
+        // Bake levels / contrast / shadows / glow / vignette AFTER overlay
+        // and BEFORE grain — same stack as the live preview.
         if (filter) {
           const adj = store.resolvedAdjustments(filter);
           const adjusted = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -1308,7 +1319,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="camera-screen">
+  <div class="camera-screen" :class="{ 'kiosk-laid-out': laidOut }">
+    <KioskDecor screen-id="camera" />
     <!-- The live preview's colour, built from the same definition the
          capture uses (see filterPreview.ts). Zero-sized and hidden: it only
          carries the filter definition the feed elements reference.
@@ -1321,7 +1333,14 @@ onUnmounted(() => {
       width="0"
       height="0"
     >
-      <filter :id="PREVIEW_FILTER_ID" color-interpolation-filters="sRGB">
+      <filter
+        :id="PREVIEW_FILTER_ID"
+        x="-30%"
+        y="-30%"
+        width="160%"
+        height="160%"
+        color-interpolation-filters="sRGB"
+      >
         <feColorMatrix
           v-if="previewMatrix"
           type="matrix"
@@ -1337,6 +1356,26 @@ onUnmounted(() => {
           <feFuncG type="table" :tableValues="adjustmentTable" />
           <feFuncB type="table" :tableValues="adjustmentTable" />
         </feComponentTransfer>
+        <feOffset v-if="glowSvg" dx="0" dy="0" result="preGlow" />
+        <feColorMatrix
+          v-if="glowSvg"
+          in="preGlow"
+          type="matrix"
+          :values="glowSvg.extract"
+          result="glowHi"
+        />
+        <feGaussianBlur
+          v-if="glowSvg"
+          in="glowHi"
+          :stdDeviation="glowSvg.blur"
+          result="glowBlur"
+        />
+        <feComponentTransfer v-if="glowSvg" in="glowBlur" result="glowAmt">
+          <feFuncR type="linear" :slope="glowSvg.slopeR" intercept="0" />
+          <feFuncG type="linear" :slope="glowSvg.slopeG" intercept="0" />
+          <feFuncB type="linear" :slope="glowSvg.slopeB" intercept="0" />
+        </feComponentTransfer>
+        <feBlend v-if="glowSvg" in="preGlow" in2="glowAmt" mode="screen" />
       </filter>
     </svg>
 
@@ -1344,15 +1383,16 @@ onUnmounted(() => {
     <button
       class="ghost-btn back-btn"
       :disabled="isCountingDown || isCapturing || isReviewing"
+      :style="laidOut ? boxStyle('backBtn') : undefined"
       @click="goBack"
     >
-      Back
+      {{ buttonLabel("backBtn", "Back") }}
     </button>
 
     <!-- Left: live preview of the ACTUAL selected template — real paper
          aspect, real cell grid and frame artwork, filling in as each
          shot lands (same geometry the print composite uses). -->
-    <div class="strip-preview">
+    <div class="strip-preview" :style="laidOut ? boxStyle('strip') : undefined">
       <div class="strip-preview-tilt">
         <div class="strip-preview-cq">
           <TemplateLivePreview
@@ -1368,7 +1408,7 @@ onUnmounted(() => {
 
     <!-- Center: Camera Feed -->
     <div class="camera-container">
-      <div class="camera-stage">
+      <div class="camera-stage" :style="laidOut ? boxStyle('viewfinder') : undefined">
         <div
           class="camera-frame"
           :class="{
@@ -1552,7 +1592,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Filter Controls -->
-      <div class="filter-controls">
+      <div class="filter-controls" :style="laidOut ? boxStyle('filters') : undefined">
         <div class="filter-buttons">
           <button
             v-for="opt in activeFilterOptions"
@@ -1587,13 +1627,23 @@ onUnmounted(() => {
         class="start-btn"
         :class="{ capturing: isCountingDown || isCapturing || isReviewing }"
         :disabled="isCountingDown || isCapturing || isReviewing || !cameraReady || store.hasAllPhotos"
+        :style="laidOut ? boxStyle('startBtn') : undefined"
         @click="startCapture"
       >
-        Start
+        {{ buttonLabel("startBtn", "Start") }}
       </button>
 
-      <div class="photo-counter">
-        Photo {{ currentPhotoNumber }} of {{ totalPhotos }}
+      <div
+        class="photo-counter"
+        :style="laidOut ? { ...boxStyle('counter'), ...textStyle('counter') } : undefined"
+      >
+        {{
+          laidOut
+            ? textOf("counter")
+                .content.replaceAll("{n}", String(currentPhotoNumber))
+                .replaceAll("{total}", String(totalPhotos))
+            : `Photo ${currentPhotoNumber} of ${totalPhotos}`
+        }}
       </div>
     </div>
 
@@ -1713,6 +1763,25 @@ onUnmounted(() => {
   gap: 1.5rem 2rem;
   position: relative;
   box-sizing: border-box;
+}
+
+.kiosk-laid-out {
+  display: block;
+  padding: 0;
+}
+
+.kiosk-laid-out .camera-container,
+.kiosk-laid-out .action-area {
+  display: contents;
+}
+
+.kiosk-laid-out .strip-preview,
+.kiosk-laid-out .camera-stage,
+.kiosk-laid-out .filter-controls,
+.kiosk-laid-out .start-btn,
+.kiosk-laid-out .photo-counter,
+.kiosk-laid-out .back-btn {
+  margin: 0;
 }
 
 /* Greyed out while a countdown/shutter is running — no retakes. */
