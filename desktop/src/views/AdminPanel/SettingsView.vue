@@ -24,6 +24,12 @@ import TemplateLayoutEditor from "@/components/TemplateLayoutEditor.vue";
 import OnScreenKeyboard from "@/components/OnScreenKeyboard.vue";
 import AdminFormModal from "@/components/AdminFormModal.vue";
 import FilterLivePreview from "@/components/FilterLivePreview.vue";
+import { parseCubeText } from "@/utils/lut";
+import {
+  decodeXmpFile,
+  lightroomXmpToCube,
+  xmpPresetName,
+} from "@/utils/lightroomXmp";
 
 const store = usePhotoboothStore();
 const dashboardStore = useDashboardStore();
@@ -496,7 +502,7 @@ function onBodyFontChange(event: Event) {
   input.value = "";
 }
 
-// Filters (camera): add via .cube upload; toggle On/Off per filter
+// Filters (camera): add via .cube LUT or Lightroom .xmp; toggle On/Off per filter
 function removeFilter(id: string) {
   store.removeFilter(id);
 }
@@ -643,53 +649,85 @@ function clearCameraFrameSvg() {
 }
 
 const filterCubeInputRef = ref<HTMLInputElement | null>(null);
+const filterXmpInputRef = ref<HTMLInputElement | null>(null);
+const filterLutInputRef = ref<HTMLInputElement | null>(null);
 const newFilterName = ref("");
 const newFilterActive = ref(true);
 const newFilterGrain = ref(false);
 const filterFormStatus = ref<"" | "idle" | "success" | "error">("idle");
 const filterFormMessage = ref("");
 
-function triggerCubeUpload() {
+function clearFilterFormStatus() {
   filterFormStatus.value = "idle";
   filterFormMessage.value = "";
+}
+
+function triggerCubeUpload() {
+  clearFilterFormStatus();
   filterCubeInputRef.value?.click();
 }
 
-function onCubeFileChange(event: Event) {
+function triggerXmpUpload() {
+  clearFilterFormStatus();
+  filterXmpInputRef.value?.click();
+}
+
+function triggerLutUpload() {
+  clearFilterFormStatus();
+  filterLutInputRef.value?.click();
+}
+
+function commitImportedFilter(name: string, cubeData: string) {
+  parseCubeText(cubeData);
+  const added = store.addFilter(name, cubeData, newFilterActive.value);
+  if (added) store.setFilterGrain(added.id, newFilterGrain.value);
+  filterFormStatus.value = "success";
+  filterFormMessage.value = `Added filter "${name}".`;
+  newFilterName.value = "";
+  newFilterActive.value = true;
+  newFilterGrain.value = false;
+}
+
+function onFilterLutFileChange(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = "";
   if (!file) return;
-  if (!/\.cube$/i.test(file.name)) {
+  const isCube = /\.cube$/i.test(file.name);
+  const isXmp = /\.xmp$/i.test(file.name);
+  if (!isCube && !isXmp) {
     filterFormStatus.value = "error";
-    filterFormMessage.value = "Please upload a .cube file.";
+    filterFormMessage.value =
+      "Please upload a .cube LUT or a Lightroom .xmp preset.";
     return;
   }
   const reader = new FileReader();
   reader.onload = () => {
-    const cubeData = reader.result as string;
-    const name =
-      newFilterName.value.trim() ||
-      file.name.replace(/\.cube$/i, "") ||
-      "Custom LUT";
     try {
-      const added = store.addFilter(name, cubeData, newFilterActive.value);
-      if (added) store.setFilterGrain(added.id, newFilterGrain.value);
-      filterFormStatus.value = "success";
-      filterFormMessage.value = `Added filter "${name}".`;
-      newFilterName.value = "";
-      newFilterActive.value = true;
-      newFilterGrain.value = false;
-    } catch {
+      const text = decodeXmpFile(reader.result as ArrayBuffer);
+      if (isXmp) {
+        const fallback = file.name.replace(/\.xmp$/i, "") || "Lightroom preset";
+        const cubeData = lightroomXmpToCube(text, fallback);
+        const name = newFilterName.value.trim() || xmpPresetName(text, fallback);
+        commitImportedFilter(name, cubeData);
+        return;
+      }
+      const name =
+        newFilterName.value.trim() ||
+        file.name.replace(/\.cube$/i, "") ||
+        "Custom LUT";
+      commitImportedFilter(name, text);
+    } catch (err) {
       filterFormStatus.value = "error";
-      filterFormMessage.value = "Failed to add filter.";
+      filterFormMessage.value =
+        err instanceof Error ? err.message : "Failed to add filter.";
     }
   };
   reader.onerror = () => {
     filterFormStatus.value = "error";
     filterFormMessage.value = "Could not read file.";
   };
-  reader.readAsText(file);
+  reader.readAsArrayBuffer(file);
 }
 
 // Template card dropdown menu (vertical 3-dots)
@@ -2275,7 +2313,7 @@ function submitEditTemplateDetails() {
     <AdminFormModal
       v-model:open="showFiltersModal"
       title="Filters"
-      description="Add LUT filters, then select one to fine-tune grain, levels, contrast, shadows, vignette and glow on a live camera preview."
+      description="Add .cube LUTs or Lightroom .xmp presets, then select one to fine-tune grain, levels, contrast, shadows, vignette and glow on a live camera preview."
       size="wide"
     >
       <div class="filters-studio">
@@ -2327,28 +2365,61 @@ function submitEditTemplateDetails() {
             </div>
           </div>
           <div class="filters-add-row filters-add-row--upload">
-            <label class="filters-add-label">Upload .cube file</label>
-            <div
-              class="upload-card upload-card--cube"
-              role="button"
-              tabindex="0"
-              aria-label="Choose .cube LUT file"
-              @click="triggerCubeUpload"
-              @keydown.enter.prevent="triggerCubeUpload"
-              @keydown.space.prevent="triggerCubeUpload"
-            >
-              <input
-                ref="filterCubeInputRef"
-                id="filter-cube-file"
-                type="file"
-                accept=".cube"
-                class="upload-card-input"
+            <label class="filters-add-label">Upload LUT or Lightroom preset</label>
+            <input
+              ref="filterLutInputRef"
+              id="filter-lut-file"
+              type="file"
+              accept=".cube,.xmp"
+              class="upload-card-input"
+              aria-label="Choose .cube LUT or Lightroom .xmp preset"
+              @change="onFilterLutFileChange"
+            />
+            <div class="upload-cards-row">
+              <div
+                class="upload-card upload-card--cube"
+                role="button"
+                tabindex="0"
                 aria-label="Choose .cube LUT file"
-                @change="onCubeFileChange"
-              />
-              <span class="upload-card-icon" aria-hidden="true">◇</span>
-              <span class="upload-card-text">Upload .cube file</span>
-              <span class="upload-card-hint">.cube LUT</span>
+                @click="triggerCubeUpload"
+                @keydown.enter.prevent="triggerCubeUpload"
+                @keydown.space.prevent="triggerCubeUpload"
+              >
+                <input
+                  ref="filterCubeInputRef"
+                  id="filter-cube-file"
+                  type="file"
+                  accept=".cube"
+                  class="upload-card-input"
+                  aria-label="Choose .cube LUT file"
+                  @change="onFilterLutFileChange"
+                />
+                <span class="upload-card-icon" aria-hidden="true">◇</span>
+                <span class="upload-card-text">Upload .cube file</span>
+                <span class="upload-card-hint">.cube LUT</span>
+              </div>
+              <div
+                class="upload-card upload-card--cube"
+                role="button"
+                tabindex="0"
+                aria-label="Choose Lightroom .xmp preset"
+                @click="triggerXmpUpload"
+                @keydown.enter.prevent="triggerXmpUpload"
+                @keydown.space.prevent="triggerXmpUpload"
+              >
+                <input
+                  ref="filterXmpInputRef"
+                  id="filter-xmp-file"
+                  type="file"
+                  accept=".xmp,application/rdf+xml,text/xml"
+                  class="upload-card-input"
+                  aria-label="Choose Lightroom .xmp preset"
+                  @change="onFilterLutFileChange"
+                />
+                <span class="upload-card-icon" aria-hidden="true">◈</span>
+                <span class="upload-card-text">Upload Lightroom preset</span>
+                <span class="upload-card-hint">.xmp from Lightroom</span>
+              </div>
             </div>
           </div>
           <div class="filters-add-actions">
@@ -2367,7 +2438,7 @@ function submitEditTemplateDetails() {
             <button
               type="button"
               class="btn btn-primary filters-add-btn"
-              @click="triggerCubeUpload"
+              @click="triggerLutUpload"
             >
               Add filter
             </button>
@@ -4002,6 +4073,10 @@ function submitEditTemplateDetails() {
 .filters-add-row--upload {
   flex-direction: column;
   align-items: stretch;
+}
+
+.filters-add-row--upload .upload-cards-row {
+  width: 100%;
 }
 
 .filters-add-row--upload .filters-add-label {

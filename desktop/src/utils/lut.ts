@@ -51,7 +51,9 @@ export function parseCubeText(text: string): ParsedLut {
  * Results are cached by key so each LUT is only parsed once.
  */
 export async function loadLut(cubeData: string): Promise<ParsedLut> {
-  const cacheKey = cubeData.startsWith('/') ? cubeData : cubeData.slice(0, 64);
+  const cacheKey = cubeData.startsWith('/')
+    ? cubeData
+    : `${cubeData.length}:${cubeData.slice(0, 64)}:${cubeData.slice(-64)}`;
 
   if (lutCache.has(cacheKey)) {
     return lutCache.get(cacheKey)!;
