@@ -23,13 +23,16 @@ import {
 } from "@/utils/welcomeLayout";
 import {
   KIOSK_SCREENS,
+  defaultKioskButtonStyle,
   isKioskLockedLayer,
   isKioskMovableLayer,
   isKioskScreenId,
   getKioskItemBox,
+  kioskButtonRadiusMax,
   kioskItemDef,
   kioskLayerLabel,
   kioskScreenDef,
+  type KioskButtonStyle,
   type KioskScreenId,
 } from "@/utils/kioskLayout";
 
@@ -142,6 +145,22 @@ function selectedKioskItem() {
   if (!id) return undefined;
   return kioskItemDef(id, selectedLayer.value);
 }
+
+const selectedKioskButton = computed(() => {
+  const id = kioskId.value;
+  const item = selectedKioskItem();
+  if (!id || item?.kind !== "button") return null;
+  const saved = store.kioskLayoutOf(id)?.buttons[selectedLayer.value];
+  if (saved) return saved;
+  return defaultKioskButtonStyle(
+    item.buttonLabel || item.label,
+    item.buttonVariant || "wood",
+  );
+});
+
+const kioskButtonCornerMax = computed(() =>
+  kioskButtonRadiusMax(selectedKioskItem()?.buttonVariant || "wood"),
+);
 
 const editorRef = ref<HTMLElement | null>(null);
 const thumbRef = ref<HTMLElement | null>(null);
@@ -887,6 +906,7 @@ const previewHeight = computed(() => `${Math.round(CANVAS_H * previewScale.value
 const logoInputRef = ref<HTMLInputElement | null>(null);
 const textContentRef = ref<HTMLTextAreaElement | null>(null);
 const startBtnInputRef = ref<HTMLInputElement | null>(null);
+const kioskBtnInputRef = ref<HTMLInputElement | null>(null);
 const titleBgImageInputRef = ref<HTMLInputElement | null>(null);
 const titleBgVideoInputRef = ref<HTMLInputElement | null>(null);
 const titleBgMediaChoice = ref<"image" | "video" | "color">("image");
@@ -936,11 +956,11 @@ const kioskBgIsCustom = computed(() =>
 );
 const inspectorBgUrl = computed(() => {
   if (kioskId.value) return store.kioskBackgroundUrl(kioskId.value);
-  return store.titleBackgroundUrl;
+  return store.effectiveTitleBackgroundUrl;
 });
 const inspectorBgType = computed(() => {
   if (kioskId.value) return store.kioskBackgroundType(kioskId.value);
-  return store.titleBackgroundType;
+  return store.effectiveTitleBackgroundType;
 });
 const inspectorHasImage = computed(
   () =>
@@ -976,7 +996,11 @@ watch(
       titleBgMediaChoice.value = "color";
       return;
     }
-    if (type === "video" || type === "image") titleBgMediaChoice.value = type;
+    if (type === "video" || type === "image") {
+      titleBgMediaChoice.value = type;
+      return;
+    }
+    titleBgMediaChoice.value = "video";
   },
   { immediate: true },
 );
@@ -1045,6 +1069,48 @@ function patchStartButton(patch: Partial<WelcomeStartButtonStyle>) {
 function resetStartButtonLook() {
   checkpoint();
   store.resetStartButtonStyle();
+}
+
+function patchKioskButton(patch: Partial<KioskButtonStyle>) {
+  if (!kioskId.value) return;
+  store.updateKioskButton(kioskId.value, selectedLayer.value, patch);
+}
+
+function triggerKioskBtnInput() {
+  kioskBtnInputRef.value?.click();
+}
+
+function onKioskBtnChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file || !file.type.startsWith("image/")) return;
+  checkpoint();
+  const reader = new FileReader();
+  reader.onload = () => {
+    patchKioskButton({ imageSrc: reader.result as string });
+  };
+  reader.readAsDataURL(file);
+  input.value = "";
+}
+
+function clearKioskButtonImage() {
+  checkpoint();
+  patchKioskButton({ imageSrc: undefined });
+}
+
+function updateKioskBtnScale(e: Event) {
+  if (!kioskId.value) return;
+  store.setKioskButtonScale(
+    kioskId.value,
+    selectedLayer.value,
+    parseFloat((e.target as HTMLInputElement).value),
+  );
+}
+
+function resetKioskButtonLook() {
+  if (!kioskId.value) return;
+  checkpoint();
+  store.resetKioskButton(kioskId.value, selectedLayer.value);
 }
 
 async function handleTitleBgFile(kind: "image" | "video", event: Event) {
@@ -2074,29 +2140,306 @@ const screenDirty = computed(() => layoutDirty());
             </template>
           </template>
 
-          <template v-else-if="selectedKioskItem()?.kind === 'button'">
-            <label class="form-label">Label</label>
+          <template v-else-if="selectedKioskButton">
+            <div
+              class="upload-card"
+              :class="{ 'upload-card--filled': selectedKioskButton.imageSrc }"
+              @click="triggerKioskBtnInput()"
+            >
+              <input
+                ref="kioskBtnInputRef"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                class="upload-card-input"
+                @change="onKioskBtnChange"
+              />
+              <template v-if="selectedKioskButton.imageSrc">
+                <img
+                  :src="selectedKioskButton.imageSrc"
+                  alt="Custom button"
+                  class="upload-card-preview"
+                />
+                <button
+                  type="button"
+                  class="upload-card-remove"
+                  aria-label="Restore default button"
+                  @click.stop="clearKioskButtonImage"
+                >
+                  ×
+                </button>
+              </template>
+              <template v-else>
+                <span class="upload-card-icon">+</span>
+                <span class="upload-card-text">Upload button</span>
+              </template>
+            </div>
+            <label class="form-label">
+              Size {{ Math.round(selectedKioskButton.scale * 100) }}%
+            </label>
             <input
-              class="text-number"
-              type="text"
-              :value="
-                kioskId
-                  ? store.kioskLayoutOf(kioskId)?.buttons[selectedLayer]?.label
-                  : ''
-              "
+              type="range"
+              min="0.5"
+              max="1.5"
+              step="0.01"
+              :value="selectedKioskButton.scale"
+              class="form-range"
               @pointerdown="checkpoint"
-              @input="
-                kioskId &&
-                  store.updateKioskButton(
-                    kioskId,
-                    selectedLayer,
-                    ($event.target as HTMLInputElement).value,
-                  )
-              "
+              @input="updateKioskBtnScale"
             />
-            <p class="inspector__hint">
-              Drag the button on the canvas to move or resize it.
+            <p v-if="selectedKioskButton.imageSrc" class="inspector__hint">
+              Remove the uploaded image to edit the default button's label and
+              colors.
             </p>
+            <template v-else>
+              <label class="form-label">Label</label>
+              <input
+                class="text-number"
+                type="text"
+                :value="selectedKioskButton.label"
+                @pointerdown="checkpoint"
+                @input="
+                  patchKioskButton({
+                    label: ($event.target as HTMLInputElement).value,
+                  })
+                "
+              />
+              <label class="form-label">Font</label>
+              <select
+                class="text-select"
+                :value="selectedKioskButton.fontFamily"
+                @pointerdown="checkpoint"
+                @change="
+                  patchKioskButton({
+                    fontFamily: ($event.target as HTMLSelectElement).value,
+                  })
+                "
+              >
+                <option
+                  v-for="font in TEXT_FONTS"
+                  :key="font.value"
+                  :value="font.value"
+                >
+                  {{ font.label }}
+                </option>
+              </select>
+              <div class="text-row">
+                <label class="text-field">
+                  <span class="form-label">Type size</span>
+                  <input
+                    class="text-number"
+                    type="number"
+                    min="10"
+                    max="64"
+                    :value="Math.round(selectedKioskButton.fontSize)"
+                    @pointerdown="checkpoint"
+                    @change="
+                      patchKioskButton({
+                        fontSize: Number(
+                          ($event.target as HTMLInputElement).value,
+                        ),
+                      })
+                    "
+                  />
+                </label>
+                <label class="text-field">
+                  <span class="form-label">Weight</span>
+                  <select
+                    class="text-select"
+                    :value="selectedKioskButton.fontWeight"
+                    @pointerdown="checkpoint"
+                    @change="
+                      patchKioskButton({
+                        fontWeight: Number(
+                          ($event.target as HTMLSelectElement).value,
+                        ),
+                      })
+                    "
+                  >
+                    <option
+                      v-for="weight in TEXT_WEIGHTS"
+                      :key="weight.value"
+                      :value="weight.value"
+                    >
+                      {{ weight.label }}
+                    </option>
+                  </select>
+                </label>
+              </div>
+              <div class="text-toggles">
+                <button
+                  type="button"
+                  class="text-toggle"
+                  :class="{
+                    'text-toggle--on': selectedKioskButton.italic,
+                  }"
+                  title="Italic"
+                  aria-label="Italic"
+                  @click="
+                    checkpoint();
+                    patchKioskButton({
+                      italic: !selectedKioskButton.italic,
+                    });
+                  "
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="M10 5h9M5 19h9M15.5 5 8.5 19"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <label class="form-label">Text color</label>
+              <div class="color-editor__row">
+                <input
+                  class="color-editor__picker"
+                  type="color"
+                  :value="selectedKioskButton.labelColor"
+                  aria-label="Button text color"
+                  @pointerdown="checkpoint"
+                  @input="
+                    patchKioskButton({
+                      labelColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+                <input
+                  class="color-editor__hex"
+                  type="text"
+                  spellcheck="false"
+                  maxlength="7"
+                  :value="selectedKioskButton.labelColor"
+                  aria-label="Button text hex color"
+                  @pointerdown="checkpoint"
+                  @change="
+                    patchKioskButton({
+                      labelColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+              </div>
+              <label class="form-label">Face</label>
+              <div class="color-editor__row">
+                <input
+                  class="color-editor__picker"
+                  type="color"
+                  :value="selectedKioskButton.faceColor"
+                  aria-label="Button face color"
+                  @pointerdown="checkpoint"
+                  @input="
+                    patchKioskButton({
+                      faceColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+                <input
+                  class="color-editor__hex"
+                  type="text"
+                  spellcheck="false"
+                  maxlength="7"
+                  :value="selectedKioskButton.faceColor"
+                  aria-label="Button face hex color"
+                  @pointerdown="checkpoint"
+                  @change="
+                    patchKioskButton({
+                      faceColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+              </div>
+              <label class="form-label">Frame</label>
+              <div class="color-editor__row">
+                <input
+                  class="color-editor__picker"
+                  type="color"
+                  :value="selectedKioskButton.bezelColor"
+                  aria-label="Button frame color"
+                  @pointerdown="checkpoint"
+                  @input="
+                    patchKioskButton({
+                      bezelColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+                <input
+                  class="color-editor__hex"
+                  type="text"
+                  spellcheck="false"
+                  maxlength="7"
+                  :value="selectedKioskButton.bezelColor"
+                  aria-label="Button frame hex color"
+                  @pointerdown="checkpoint"
+                  @change="
+                    patchKioskButton({
+                      bezelColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+              </div>
+              <label class="form-label">Shadow</label>
+              <div class="color-editor__row">
+                <input
+                  class="color-editor__picker"
+                  type="color"
+                  :value="selectedKioskButton.shadowColor"
+                  aria-label="Button shadow color"
+                  @pointerdown="checkpoint"
+                  @input="
+                    patchKioskButton({
+                      shadowColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+                <input
+                  class="color-editor__hex"
+                  type="text"
+                  spellcheck="false"
+                  maxlength="7"
+                  :value="selectedKioskButton.shadowColor"
+                  aria-label="Button shadow hex color"
+                  @pointerdown="checkpoint"
+                  @change="
+                    patchKioskButton({
+                      shadowColor: ($event.target as HTMLInputElement).value,
+                    })
+                  "
+                />
+              </div>
+              <label class="form-label">
+                Corners {{ selectedKioskButton.radius.toFixed(1) }}
+              </label>
+              <input
+                type="range"
+                min="0"
+                :max="kioskButtonCornerMax"
+                step="0.5"
+                :value="selectedKioskButton.radius"
+                class="form-range"
+                @pointerdown="checkpoint"
+                @input="
+                  patchKioskButton({
+                    radius: Number(($event.target as HTMLInputElement).value),
+                  })
+                "
+              />
+              <button
+                type="button"
+                class="btn-clear"
+                @click="resetKioskButtonLook"
+              >
+                Reset look
+              </button>
+            </template>
+            <button
+              v-if="selectedKioskButton.imageSrc"
+              type="button"
+              class="btn-clear"
+              @click="resetKioskButtonLook"
+            >
+              Reset look
+            </button>
           </template>
 
           <template v-else-if="selectedKioskItem()?.kind === 'logo'">

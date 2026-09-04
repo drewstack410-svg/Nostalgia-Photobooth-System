@@ -16,6 +16,7 @@ import {
   isKioskActionButton,
   isKioskFixedId,
   kioskBoxStyle,
+  kioskButtonCssVars,
   kioskItemDef,
   kioskScreenDef,
   kioskTextCss,
@@ -91,9 +92,15 @@ const fill = computed(() => layout.value.backgroundFill);
 const colorBg = computed(() => layout.value.backgroundColor);
 const mediaUrl = computed(() => {
   if (fill.value === "color") return null;
+  if (fill.value === "theme") return store.kioskThemeBackgroundUrl(props.screenId);
   return store.kioskBackgroundUrl(props.screenId);
 });
-const mediaType = computed(() => store.kioskBackgroundType(props.screenId));
+const mediaType = computed(() => {
+  if (fill.value === "theme") {
+    return store.kioskThemeBackgroundType(props.screenId);
+  }
+  return store.kioskBackgroundType(props.screenId);
+});
 
 onMounted(() => {
   if (props.interactive) store.ensureKioskLayout(props.screenId);
@@ -321,6 +328,15 @@ function buttonLabel(itemId: string) {
   );
 }
 
+function buttonCss(itemId: string) {
+  const style = layout.value.buttons[itemId];
+  return style ? kioskButtonCssVars(style) : undefined;
+}
+
+function buttonArt(itemId: string) {
+  return layout.value.buttons[itemId]?.imageSrc;
+}
+
 function dotsCount() {
   return Math.max(1, store.activeTemplates.length || 3);
 }
@@ -344,7 +360,7 @@ function dotsCount() {
       class="kiosk-bg kiosk-bg--color"
       :style="{
         backgroundColor:
-          fill === 'color' ? colorBg : fill === 'theme' ? '#f4ead5' : '#f4ead5',
+          fill === 'color' ? colorBg : 'var(--color-cream, #f4ead5)',
       }"
     />
     <div v-if="fill !== 'color' && mediaUrl" class="kiosk-bg">
@@ -428,8 +444,18 @@ function dotsCount() {
       </template>
 
       <template v-else-if="item.kind === 'button'">
-        <span :class="buttonClass(item.id)" class="kiosk-btn">
-          {{ buttonLabel(item.id) }}
+        <span
+          :class="buttonClass(item.id)"
+          class="kiosk-btn"
+          :style="buttonCss(item.id)"
+        >
+          <img
+            v-if="buttonArt(item.id)"
+            :src="buttonArt(item.id)"
+            alt=""
+            class="kiosk-btn-art"
+          />
+          <template v-else>{{ buttonLabel(item.id) }}</template>
         </span>
       </template>
 
@@ -793,9 +819,20 @@ function dotsCount() {
   width: 100%;
   height: 100%;
   padding: 0 1.25rem;
-  font-size: 1.7rem;
+  font-family: var(--btn-font, var(--font-display));
+  font-weight: var(--btn-font-weight, 700);
+  font-style: var(--btn-font-style, normal);
+  font-size: var(--btn-font-size, 1.7rem);
   line-height: 1;
   white-space: nowrap;
+}
+
+.kiosk-btn:has(> .kiosk-btn-art) {
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  overflow: hidden;
 }
 
 .kiosk-logo-img,
@@ -816,20 +853,21 @@ function dotsCount() {
   width: 100%;
   height: 100%;
   padding: 0;
-  border-radius: 50%;
-  font-family: var(--font-display);
-  font-size: 2rem;
-  font-weight: 700;
-  color: var(--color-brown-dark);
+  border-radius: var(--btn-radius, 50%);
+  font-family: var(--btn-font, var(--font-display));
+  font-size: var(--btn-font-size, 2rem);
+  font-weight: var(--btn-font-weight, 700);
+  font-style: var(--btn-font-style, normal);
+  color: var(--btn-label-color, var(--color-brown-dark));
   background: radial-gradient(
     circle at 50% 38%,
-    #fee2a0 0%,
-    #fed582 38%,
-    #fdc66c 100%
+    var(--btn-face-mid, #fee2a0) 0%,
+    var(--btn-face-from, #fed582) 38%,
+    var(--btn-face-to, #fdc66c) 100%
   );
-  border: 8px solid #9c6b3f;
+  border: 8px solid var(--btn-bezel-from, #9c6b3f);
   box-shadow:
-    0 8px 0 var(--color-wood-dark),
+    0 8px 0 var(--btn-shadow, var(--color-wood-dark)),
     0 12px 40px rgba(61, 43, 31, 0.4),
     inset 0 2px 15px rgba(255, 255, 255, 0.45);
 }

@@ -31,7 +31,7 @@ import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 const store = usePhotoboothStore();
-const { laidOut, boxStyle, buttonLabel } = useKioskScreen("printing");
+const { laidOut, boxStyle, buttonLabel, buttonLook, buttonArt } = useKioskScreen("printing");
 
 const printTemplate = computed(
   () => store.sessionTemplate ?? store.selectedTemplate,
@@ -1560,10 +1560,16 @@ onUnmounted(() => {
     <button
       v-if="printStatus !== 'printing'"
       class="wood-btn done-btn"
-      :style="laidOut ? boxStyle('doneBtn') : undefined"
+      :style="buttonLook('doneBtn')"
       @click="goToQRView"
     >
-      {{ buttonLabel("doneBtn", "Done") }}
+      <img
+        v-if="buttonArt('doneBtn')"
+        :src="buttonArt('doneBtn')"
+        alt=""
+        class="kiosk-btn-art"
+      />
+      <template v-else>{{ buttonLabel("doneBtn", "Done") }}</template>
     </button>
 
     <!-- Photo Output Visualization -->
@@ -1739,7 +1745,7 @@ onUnmounted(() => {
   position: absolute;
   top: 2.5rem;
   right: 7rem;
-  font-size: 1.5rem;
+  font-size: var(--btn-font-size, 1.5rem);
   padding: 0.65rem 2.4rem;
   z-index: 10;
 }

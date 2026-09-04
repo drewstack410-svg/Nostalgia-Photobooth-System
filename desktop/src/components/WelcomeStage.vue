@@ -296,6 +296,11 @@ watch(
   },
 );
 
+watch(
+  () => store.effectiveTitleBackgroundUrl,
+  () => nextTick(playBgVideo),
+);
+
 function onDragEnd() {
   drag = null;
   dragging.value = false;

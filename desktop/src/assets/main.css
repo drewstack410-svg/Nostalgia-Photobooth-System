@@ -288,15 +288,22 @@ body {
    with a 3D bottom edge + soft drop shadow. Presses down and the gold
    darkens (matches the Figma pressed state). */
 .wood-btn {
-  font-family: var(--font-display);
-  font-weight: 700;
-  color: #3d2417;
-  border: 6px solid #6e4a28;
-  border-radius: 22px;
-  background: linear-gradient(180deg, #fed788 0%, #fdc668 52%, #fbba52 100%);
+  font-family: var(--btn-font, var(--font-display));
+  font-weight: var(--btn-font-weight, 700);
+  font-style: var(--btn-font-style, normal);
+  font-size: var(--btn-font-size, 1.7rem);
+  color: var(--btn-label-color, #3d2417);
+  border: 6px solid var(--btn-bezel-from, #6e4a28);
+  border-radius: var(--btn-radius, 22px);
+  background: linear-gradient(
+    180deg,
+    var(--btn-face-mid, #fed788) 0%,
+    var(--btn-face-from, #fdc668) 52%,
+    var(--btn-face-to, #fbba52) 100%
+  );
   box-shadow:
     inset 0 0 0 2px rgba(255, 240, 200, 0.5),
-    0 7px 0 #4e3218,
+    0 7px 0 var(--btn-shadow, #4e3218),
     0 12px 18px rgba(48, 24, 10, 0.35);
   cursor: pointer;
   touch-action: manipulation;
@@ -323,12 +330,14 @@ body {
 /* Back / secondary button — near-white rounded pill, tan border + tan
    label (matches the Figma "Back" element). */
 .ghost-btn {
-  font-family: var(--font-display);
-  font-weight: 700;
-  color: var(--color-cream-dark);
-  background: #fdfbf7;
-  border: 3px solid var(--color-cream-dark);
-  border-radius: 22px;
+  font-family: var(--btn-font, var(--font-display));
+  font-weight: var(--btn-font-weight, 700);
+  font-style: var(--btn-font-style, normal);
+  font-size: var(--btn-font-size, 1.7rem);
+  color: var(--btn-label-color, var(--color-cream-dark));
+  background: var(--btn-face-from, #fdfbf7);
+  border: 3px solid var(--btn-bezel-from, var(--color-cream-dark));
+  border-radius: var(--btn-radius, 22px);
   cursor: pointer;
   touch-action: manipulation;
   transition:
@@ -349,9 +358,36 @@ body {
   width: 13.75rem;
   height: 4.6rem;
   padding: 0 1.25rem;
-  font-size: 1.7rem;
+  font-size: var(--btn-font-size, 1.7rem);
   line-height: 1;
   white-space: nowrap;
+}
+
+.kiosk-btn-art {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  display: block;
+}
+
+.wood-btn:has(> .kiosk-btn-art),
+.ghost-btn:has(> .kiosk-btn-art),
+.start-btn:has(> .kiosk-btn-art),
+.kiosk-start-btn:has(> .kiosk-btn-art) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.wood-btn:has(> .kiosk-btn-art):active,
+.ghost-btn:has(> .kiosk-btn-art):active,
+.start-btn:has(> .kiosk-btn-art):active:not(:disabled),
+.kiosk-start-btn:has(> .kiosk-btn-art):active {
+  background: transparent;
+  box-shadow: none;
 }
 
 /* Themed range sliders — gold thumb + brown/cream track (not OS blue).

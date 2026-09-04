@@ -8,7 +8,7 @@ import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 const store = usePhotoboothStore();
-const { laidOut, boxStyle, textOf, textStyle, buttonLabel } =
+const { laidOut, boxStyle, textOf, textStyle, buttonLabel, buttonLook, buttonArt } =
   useKioskScreen("templates");
 
 const currentIndex = ref(0);
@@ -294,19 +294,31 @@ onUnmounted(() => {
     <button
       type="button"
       class="ghost-btn kiosk-action-btn tpl-back-btn"
-      :style="laidOut ? boxStyle('backBtn') : undefined"
+      :style="buttonLook('backBtn')"
       @click="goBack"
     >
-      {{ buttonLabel("backBtn", "Back") }}
+      <img
+        v-if="buttonArt('backBtn')"
+        :src="buttonArt('backBtn')"
+        alt=""
+        class="kiosk-btn-art"
+      />
+      <template v-else>{{ buttonLabel("backBtn", "Back") }}</template>
     </button>
     <button
       v-if="templates.length > 0"
       type="button"
       class="wood-btn kiosk-action-btn tpl-select-btn"
-      :style="laidOut ? boxStyle('selectBtn') : undefined"
+      :style="buttonLook('selectBtn')"
       @click="selectTemplate"
     >
-      {{ buttonLabel("selectBtn", "Select") }}
+      <img
+        v-if="buttonArt('selectBtn')"
+        :src="buttonArt('selectBtn')"
+        alt=""
+        class="kiosk-btn-art"
+      />
+      <template v-else>{{ buttonLabel("selectBtn", "Select") }}</template>
     </button>
 
     <!-- Inactivity Warning Modal -->

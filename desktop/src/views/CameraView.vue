@@ -48,7 +48,7 @@ import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 const store = usePhotoboothStore();
-const { laidOut, boxStyle, textOf, textStyle, buttonLabel } =
+const { laidOut, boxStyle, textOf, textStyle, buttonLabel, buttonLook, buttonArt } =
   useKioskScreen("camera");
 const { cameraFrameStyle, cameraFrameColor, cameraFrameSvgUrl } =
   storeToRefs(store);
@@ -1394,10 +1394,16 @@ onUnmounted(() => {
     <button
       class="ghost-btn kiosk-action-btn back-btn"
       :disabled="isCountingDown || isCapturing || isReviewing"
-      :style="laidOut ? boxStyle('backBtn') : undefined"
+      :style="buttonLook('backBtn')"
       @click="goBack"
     >
-      {{ buttonLabel("backBtn", "Back") }}
+      <img
+        v-if="buttonArt('backBtn')"
+        :src="buttonArt('backBtn')"
+        alt=""
+        class="kiosk-btn-art"
+      />
+      <template v-else>{{ buttonLabel("backBtn", "Back") }}</template>
     </button>
 
     <!-- Left: live preview of the ACTUAL selected template — real paper
@@ -1638,10 +1644,16 @@ onUnmounted(() => {
         class="start-btn"
         :class="{ capturing: isCountingDown || isCapturing || isReviewing }"
         :disabled="isCountingDown || isCapturing || isReviewing || !cameraReady || store.hasAllPhotos"
-        :style="laidOut ? boxStyle('startBtn') : undefined"
+        :style="buttonLook('startBtn')"
         @click="startCapture"
       >
-        {{ buttonLabel("startBtn", "Start") }}
+        <img
+          v-if="buttonArt('startBtn')"
+          :src="buttonArt('startBtn')"
+          alt=""
+          class="kiosk-btn-art"
+        />
+        <template v-else>{{ buttonLabel("startBtn", "Start") }}</template>
       </button>
 
       <div
@@ -2403,16 +2415,22 @@ onUnmounted(() => {
 .start-btn {
   width: clamp(150px, 52cqi, 220px);
   height: clamp(150px, 52cqi, 220px);
-  border-radius: 50%;
-  font-family: var(--font-display);
-  font-size: clamp(1.5rem, 6.5cqi, 2rem);
-  font-weight: 700;
-  /* v2 gold face (#fed582 → #fdc66c) inside a wood-brown ring. */
-  background: radial-gradient(circle at 50% 38%, #fee2a0 0%, #fed582 38%, #fdc66c 100%);
-  color: var(--color-brown-dark);
-  border: 8px solid #9c6b3f;
+  border-radius: var(--btn-radius, 50%);
+  font-family: var(--btn-font, var(--font-display));
+  font-size: var(--btn-font-size, clamp(1.5rem, 6.5cqi, 2rem));
+  font-weight: var(--btn-font-weight, 700);
+  font-style: var(--btn-font-style, normal);
+  /* v2 gold face inside a wood-brown ring; Screen Editor can override. */
+  background: radial-gradient(
+    circle at 50% 38%,
+    var(--btn-face-mid, #fee2a0) 0%,
+    var(--btn-face-from, #fed582) 38%,
+    var(--btn-face-to, #fdc66c) 100%
+  );
+  color: var(--btn-label-color, var(--color-brown-dark));
+  border: 8px solid var(--btn-bezel-from, #9c6b3f);
   box-shadow:
-    0 8px 0 var(--color-wood-dark),
+    0 8px 0 var(--btn-shadow, var(--color-wood-dark)),
     0 12px 40px rgba(61, 43, 31, 0.4),
     inset 0 2px 15px rgba(255, 255, 255, 0.45);
   cursor: pointer;

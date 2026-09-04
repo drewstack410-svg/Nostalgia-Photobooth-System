@@ -38,7 +38,7 @@ const router = useRouter();
 const paymentStore = usePaymentStore();
 const photoboothStore = usePhotoboothStore();
 const dashboardStore = useDashboardStore();
-const { laidOut, boxStyle, textOf, textStyle, buttonLabel } =
+const { laidOut, boxStyle, textOf, textStyle, buttonLabel, buttonLook, buttonArt } =
   useKioskScreen("payment");
 const { status, amountReceived, amountRequired, remaining, isPaid, currency, lastError } =
   storeToRefs(paymentStore);
@@ -311,10 +311,16 @@ onUnmounted(() => {
     <!-- Back Button — bottom-left, cream/ghost style (v2). -->
     <button
       class="ghost-btn kiosk-action-btn back-btn"
-      :style="laidOut ? boxStyle('backBtn') : undefined"
+      :style="buttonLook('backBtn')"
       @click="goBack"
     >
-      {{ buttonLabel("backBtn", "Back") }}
+      <img
+        v-if="buttonArt('backBtn')"
+        :src="buttonArt('backBtn')"
+        alt=""
+        class="kiosk-btn-art"
+      />
+      <template v-else>{{ buttonLabel("backBtn", "Back") }}</template>
     </button>
 
     <!-- Main Content -->

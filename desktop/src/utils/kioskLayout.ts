@@ -6,14 +6,18 @@ import {
   assetItemId,
   assetKey,
   clampBox,
+  defaultStartButtonStyle,
   defaultWelcomeText,
   isAssetId,
+  parseStartButtonStyle,
   parseTextStyle,
+  startButtonCssVars,
   WELCOME_CANVAS_H,
   WELCOME_CANVAS_W,
   type WelcomeAsset,
   type WelcomeAssetKind,
   type WelcomeBox,
+  type WelcomeStartButtonStyle,
   type WelcomeTextStyle,
 } from "@/utils/welcomeLayout";
 
@@ -39,8 +43,12 @@ export function kioskActionButtonBox(side: "left" | "right"): WelcomeBox {
   };
 }
 
-export function lockKioskActionButtonSize(box: WelcomeBox): WelcomeBox {
-  return { ...box, w: KIOSK_ACTION_BTN_W, h: KIOSK_ACTION_BTN_H };
+export function lockKioskActionButtonSize(
+  box: WelcomeBox,
+  scale = 1,
+): WelcomeBox {
+  const s = Math.min(1.5, Math.max(0.5, scale));
+  return { ...box, w: KIOSK_ACTION_BTN_W * s, h: KIOSK_ACTION_BTN_H * s };
 }
 
 /**
@@ -64,8 +72,12 @@ export function kioskStartButtonBox(): WelcomeBox {
   };
 }
 
-export function lockKioskStartButtonSize(box: WelcomeBox): WelcomeBox {
-  return { ...box, w: KIOSK_START_BTN_W, h: KIOSK_START_BTN_H };
+export function lockKioskStartButtonSize(
+  box: WelcomeBox,
+  scale = 1,
+): WelcomeBox {
+  const s = Math.min(1.5, Math.max(0.5, scale));
+  return { ...box, w: KIOSK_START_BTN_W * s, h: KIOSK_START_BTN_H * s };
 }
 
 /** Live PrintingView: 500px gold slot, 280px square plaque. */
@@ -125,9 +137,102 @@ export type KioskScreenDef = {
   items: KioskItemDef[];
 };
 
-export type KioskButtonStyle = {
-  label: string;
+export type KioskButtonStyle = WelcomeStartButtonStyle & {
+  /** Optional uploaded artwork. When set, label/colors are hidden. */
+  imageSrc?: string;
+  /** 0.5–1.5, same idea as the Welcome start-button size slider. */
+  scale: number;
 };
+
+export function defaultKioskButtonStyle(
+  label: string,
+  variant: KioskButtonVariant = "wood",
+): KioskButtonStyle {
+  const base = defaultStartButtonStyle();
+  if (variant === "ghost") {
+    return {
+      ...base,
+      label,
+      fontSize: 27,
+      labelColor: "#c4b59a",
+      faceColor: "#fdfbf7",
+      bezelColor: "#c4b59a",
+      shadowColor: "#4e3218",
+      radius: 22,
+      scale: 1,
+    };
+  }
+  if (variant === "start") {
+    return {
+      ...base,
+      label,
+      fontSize: 32,
+      labelColor: "#3d2b1f",
+      faceColor: "#fdc66c",
+      bezelColor: "#9c6b3f",
+      shadowColor: "#3d2b1f",
+      radius: 110,
+      scale: 1,
+    };
+  }
+  return {
+    ...base,
+    label,
+    fontSize: 27,
+    labelColor: "#3d2417",
+    faceColor: "#fdc668",
+    bezelColor: "#6e4a28",
+    shadowColor: "#4e3218",
+    radius: 22,
+    scale: 1,
+  };
+}
+
+function clampScale(v: unknown, fallback = 1): number {
+  const n =
+    typeof v === "number" ? v : typeof v === "string" ? parseFloat(v) : NaN;
+  if (!isFinite(n)) return fallback;
+  return Math.min(1.5, Math.max(0.5, n));
+}
+
+export function kioskButtonRadiusMax(variant: KioskButtonVariant): number {
+  return variant === "start" ? 110 : 24;
+}
+
+function clampRadius(v: unknown, fallback: number, max: number): number {
+  const n =
+    typeof v === "number" ? v : typeof v === "string" ? parseFloat(v) : NaN;
+  if (!isFinite(n)) return fallback;
+  return Math.min(max, Math.max(0, n));
+}
+
+export function parseKioskButtonStyle(
+  raw: unknown,
+  label: string,
+  variant: KioskButtonVariant = "wood",
+): KioskButtonStyle {
+  const d = defaultKioskButtonStyle(label, variant);
+  const parsed = parseStartButtonStyle({ ...d, ...(raw && typeof raw === "object" ? raw : {}) });
+  const t = raw && typeof raw === "object" ? (raw as Partial<KioskButtonStyle>) : {};
+  const imageSrc =
+    typeof t.imageSrc === "string" && t.imageSrc.startsWith("data:image/")
+      ? t.imageSrc
+      : undefined;
+  return {
+    ...parsed,
+    label:
+      typeof t.label === "string" && t.label.trim() ? t.label : d.label,
+    imageSrc,
+    scale: clampScale(t.scale, d.scale),
+    radius: clampRadius(t.radius, d.radius, kioskButtonRadiusMax(variant)),
+  };
+}
+
+export function kioskButtonCssVars(
+  style: KioskButtonStyle,
+): Record<string, string> {
+  return startButtonCssVars(style, style.scale);
+}
 
 export type KioskLayout = {
   items: Record<string, WelcomeBox>;
@@ -484,7 +589,10 @@ export function defaultKioskLayout(screenId: KioskScreenId): KioskLayout {
     items[item.id] = { ...item.box };
     if (item.text) texts[item.id] = { ...item.text };
     if (item.kind === "button") {
-      buttons[item.id] = { label: item.buttonLabel || item.label };
+      buttons[item.id] = defaultKioskButtonStyle(
+        item.buttonLabel || item.label,
+        item.buttonVariant || "wood",
+      );
     }
     order.push(item.id);
   }
@@ -521,13 +629,12 @@ export function normalizeKioskLayout(
       texts[item.id] = parseTextStyle(layout.texts?.[item.id] ?? item.text);
     }
     if (item.kind === "button") {
-      const saved = layout.buttons?.[item.id];
-      buttons[item.id] = {
-        label:
-          typeof saved?.label === "string" && saved.label.trim()
-            ? saved.label
-            : item.buttonLabel || item.label,
-      };
+      const variant = item.buttonVariant || "wood";
+      buttons[item.id] = parseKioskButtonStyle(
+        layout.buttons?.[item.id],
+        item.buttonLabel || item.label,
+        variant,
+      );
     }
   }
   const next: KioskLayout = {
@@ -544,11 +651,12 @@ export function normalizeKioskLayout(
       : "#f4ead5",
   };
   for (const id of Object.keys(items)) {
+    const scale = buttons[id]?.scale ?? 1;
     if (isKioskActionButton(screenId, id) && items[id]) {
-      items[id] = lockKioskActionButtonSize(items[id]!);
+      items[id] = lockKioskActionButtonSize(items[id]!, scale);
     }
     if (screenId === "camera" && id === "startBtn" && items[id]) {
-      items[id] = lockKioskStartButtonSize(items[id]!);
+      items[id] = lockKioskStartButtonSize(items[id]!, scale);
     }
   }
   if (screenId === "camera" || screenId === "printing") {

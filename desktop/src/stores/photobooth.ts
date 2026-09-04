@@ -40,14 +40,18 @@ import {
   type WelcomeTextStyle,
 } from "@/utils/welcomeLayout";
 import {
+  defaultKioskButtonStyle,
   defaultKioskLayout,
   isKioskActionButton,
+  kioskItemDef,
   KIOSK_SCREEN_IDS,
   lockKioskActionButtonSize,
   lockKioskStartButtonSize,
   normalizeKioskLayout,
+  parseKioskButtonStyle,
   parseKioskLayout,
   type KioskBackgroundFill,
+  type KioskButtonStyle,
   type KioskLayout,
   type KioskScreenId,
 } from "@/utils/kioskLayout";
@@ -1380,11 +1384,12 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       return;
     }
     const items = { ...layout.items, [itemId]: next };
+    const scale = layout.buttons[itemId]?.scale ?? 1;
     if (isKioskActionButton(id, itemId)) {
-      items[itemId] = lockKioskActionButtonSize(next);
+      items[itemId] = lockKioskActionButtonSize(next, scale);
     }
     if (id === "camera" && itemId === "startBtn") {
-      items[itemId] = lockKioskStartButtonSize(items[itemId]!);
+      items[itemId] = lockKioskStartButtonSize(items[itemId]!, scale);
     }
     setKioskLayout(id, {
       ...layout,
@@ -1490,16 +1495,107 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     });
   }
 
+  function kioskButtonMeta(screenId: KioskScreenId, itemId: string) {
+    const def = kioskItemDef(screenId, itemId);
+    return {
+      variant: def?.buttonVariant || "wood",
+      fallback: def?.buttonLabel || def?.label || "Button",
+    };
+  }
+
+  function sizedKioskButtonBox(
+    screenId: KioskScreenId,
+    itemId: string,
+    box: WelcomeBox,
+    scale: number,
+  ): WelcomeBox {
+    const s = Math.min(1.5, Math.max(0.5, scale));
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    let next: WelcomeBox;
+    if (isKioskActionButton(screenId, itemId)) {
+      next = lockKioskActionButtonSize(box, s);
+    } else if (screenId === "camera" && itemId === "startBtn") {
+      next = lockKioskStartButtonSize(box, s);
+    } else {
+      const native = kioskItemDef(screenId, itemId)?.box ?? box;
+      next = { ...box, w: native.w * s, h: native.h * s };
+    }
+    return clampBox({
+      x: cx - next.w / 2,
+      y: cy - next.h / 2,
+      w: next.w,
+      h: next.h,
+    });
+  }
+
   function updateKioskButton(
     screenId: KioskScreenId,
     itemId: string,
-    label: string,
+    patch: Partial<KioskButtonStyle>,
   ) {
     const layout = ensureKioskLayout(screenId);
-    if (!layout.buttons[itemId]) return;
+    const current = layout.buttons[itemId];
+    if (!current) return;
+    const { variant, fallback } = kioskButtonMeta(screenId, itemId);
     setKioskLayout(screenId, {
       ...layout,
-      buttons: { ...layout.buttons, [itemId]: { label } },
+      buttons: {
+        ...layout.buttons,
+        [itemId]: parseKioskButtonStyle(
+          { ...current, ...patch },
+          fallback,
+          variant,
+        ),
+      },
+    });
+  }
+
+  function setKioskButtonScale(
+    screenId: KioskScreenId,
+    itemId: string,
+    scale: number,
+  ) {
+    const layout = ensureKioskLayout(screenId);
+    const current = layout.buttons[itemId];
+    const box = layout.items[itemId];
+    if (!current || !box) return;
+    const s = Math.min(1.5, Math.max(0.5, scale));
+    const { variant, fallback } = kioskButtonMeta(screenId, itemId);
+    setKioskLayout(screenId, {
+      ...layout,
+      items: {
+        ...layout.items,
+        [itemId]: sizedKioskButtonBox(screenId, itemId, box, s),
+      },
+      buttons: {
+        ...layout.buttons,
+        [itemId]: parseKioskButtonStyle(
+          { ...current, scale: s },
+          fallback,
+          variant,
+        ),
+      },
+    });
+  }
+
+  function resetKioskButton(screenId: KioskScreenId, itemId: string) {
+    const layout = ensureKioskLayout(screenId);
+    const current = layout.buttons[itemId];
+    const box = layout.items[itemId];
+    if (!current || !box) return;
+    const { variant, fallback } = kioskButtonMeta(screenId, itemId);
+    const next = defaultKioskButtonStyle(current.label || fallback, variant);
+    setKioskLayout(screenId, {
+      ...layout,
+      items: {
+        ...layout.items,
+        [itemId]: sizedKioskButtonBox(screenId, itemId, box, next.scale),
+      },
+      buttons: {
+        ...layout.buttons,
+        [itemId]: next,
+      },
     });
   }
 
@@ -1587,12 +1683,12 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   // export, so don't "unify" them.
   const DEFAULT_TITLE_BG_URL = `${import.meta.env.BASE_URL}backgrounds/default-title-background.mp4`;
   const DEFAULT_PAYMENT_BG_URL = `${import.meta.env.BASE_URL}backgrounds/default-payment-background.mp4`;
-  let packagedTitleUrl: string | null = null;
-  let packagedPaymentUrl: string | null = null;
+  const packagedTitleUrl = ref<string | null>(null);
+  const packagedPaymentUrl = ref<string | null>(null);
 
   /** What the title screen should actually render. */
   const effectiveTitleBackgroundUrl = computed(
-    () => titleBackgroundUrl.value || packagedTitleUrl || DEFAULT_TITLE_BG_URL,
+    () => titleBackgroundUrl.value || packagedTitleUrl.value || DEFAULT_TITLE_BG_URL,
   );
   const effectiveTitleBackgroundType = computed<TitleBackgroundType>(
     () => (titleBackgroundUrl.value ? titleBackgroundType.value : "video"),
@@ -1797,7 +1893,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   /** The payment screen's own default (mirrored strips) unless uploaded. */
   const effectivePaymentBackgroundUrl = computed(
-    () => paymentBackgroundUrl.value || packagedPaymentUrl || DEFAULT_PAYMENT_BG_URL,
+    () => paymentBackgroundUrl.value || packagedPaymentUrl.value || DEFAULT_PAYMENT_BG_URL,
   );
   const effectivePaymentBackgroundType = computed<TitleBackgroundType>(
     () => (paymentBackgroundUrl.value ? paymentBackgroundType.value : "video"),
@@ -1849,8 +1945,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
             result.mime || (result.mediaType === "video" ? "video/mp4" : "image/jpeg"),
           ),
         );
-      } else if (!packagedPaymentUrl) {
-        packagedPaymentUrl = await loadPackagedBackground("payment");
+      } else if (!packagedPaymentUrl.value) {
+        packagedPaymentUrl.value = await loadPackagedBackground("payment");
       }
     } catch (e) {
       console.error("Failed to load payment background from disk:", e);
@@ -1946,12 +2042,25 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   function kioskBackgroundUrl(id: KioskScreenId): string | null {
     if (id === "payment") return effectivePaymentBackgroundUrl.value;
-    return kioskBgSlots.value[id]?.url ?? packagedTitleUrl ?? DEFAULT_TITLE_BG_URL;
+    return kioskBgSlots.value[id]?.url || effectiveTitleBackgroundUrl.value;
   }
 
   function kioskBackgroundType(id: KioskScreenId): TitleBackgroundType {
     if (id === "payment") return effectivePaymentBackgroundType.value;
-    return kioskBgSlots.value[id]?.url ? kioskBgSlots.value[id]!.type : "video";
+    return kioskBgSlots.value[id]?.url
+      ? kioskBgSlots.value[id]!.type
+      : effectiveTitleBackgroundType.value;
+  }
+
+  /** Theme fill: booth default (Welcome/Payment video), ignoring this screen's upload. */
+  function kioskThemeBackgroundUrl(id: KioskScreenId): string | null {
+    if (id === "payment") return effectivePaymentBackgroundUrl.value;
+    return effectiveTitleBackgroundUrl.value;
+  }
+
+  function kioskThemeBackgroundType(id: KioskScreenId): TitleBackgroundType {
+    if (id === "payment") return effectivePaymentBackgroundType.value;
+    return effectiveTitleBackgroundType.value;
   }
 
   function kioskHasCustomBackground(id: KioskScreenId): boolean {
@@ -2070,8 +2179,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
           result.mime || (result.mediaType === "video" ? "video/mp4" : "image/jpeg"),
         );
         setTitleBackgroundBlob(result.mediaType, blob);
-      } else if (!packagedTitleUrl) {
-        packagedTitleUrl = await loadPackagedBackground("title");
+      } else if (!packagedTitleUrl.value) {
+        packagedTitleUrl.value = await loadPackagedBackground("title");
       }
     } catch (e) {
       console.error("Failed to load title background from disk:", e);
@@ -2991,6 +3100,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     updateKioskAssetText,
     updateKioskText,
     updateKioskButton,
+    setKioskButtonScale,
+    resetKioskButton,
     sendKioskLayer,
     setKioskLayerOrder,
     saveKioskLayout,
@@ -3002,6 +3113,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     loadKioskBackgroundsFromDisk,
     kioskBackgroundUrl,
     kioskBackgroundType,
+    kioskThemeBackgroundUrl,
+    kioskThemeBackgroundType,
     kioskHasCustomBackground,
     welcomeBackgroundColor,
     welcomeBackgroundFill,

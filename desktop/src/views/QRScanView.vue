@@ -8,7 +8,7 @@ import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 const store = usePhotoboothStore();
-const { laidOut, boxStyle, textOf, textStyle, buttonLabel } = useKioskScreen("qr");
+const { laidOut, boxStyle, textOf, textStyle, buttonLabel, buttonLook, buttonArt } = useKioskScreen("qr");
 const qrDataUrl = ref("");
 const isGenerating = ref(true);
 const qrTargetUrl = ref("");
@@ -194,10 +194,16 @@ onUnmounted(() => {
     <button
       type="button"
       class="wood-btn done-btn"
-      :style="laidOut ? boxStyle('doneBtn') : undefined"
+      :style="buttonLook('doneBtn')"
       @click="returnToStart"
     >
-      {{ buttonLabel("doneBtn", "Done") }}
+      <img
+        v-if="buttonArt('doneBtn')"
+        :src="buttonArt('doneBtn')"
+        alt=""
+        class="kiosk-btn-art"
+      />
+      <template v-else>{{ buttonLabel("doneBtn", "Done") }}</template>
     </button>
 
     <div class="qr-content">
@@ -467,7 +473,7 @@ onUnmounted(() => {
   position: absolute;
   top: 2.5rem;
   right: 7rem;
-  font-size: 1.5rem;
+  font-size: var(--btn-font-size, 1.5rem);
   padding: 0.65rem 2.4rem;
   z-index: 10;
 }
