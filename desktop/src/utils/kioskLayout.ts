@@ -19,6 +19,63 @@ import {
 
 export { WELCOME_CANVAS_W as KIOSK_CANVAS_W, WELCOME_CANVAS_H as KIOSK_CANVAS_H };
 
+/** Matches `.kiosk-action-btn` (13.75rem × 4.6rem at a 16px root). */
+const ACTION_BTN_W_PX = 13.75 * 16;
+const ACTION_BTN_H_PX = 4.6 * 16;
+const ACTION_INSET_X_PX = 7 * 16;
+const ACTION_INSET_Y_PX = 3 * 16;
+
+export const KIOSK_ACTION_BTN_W = ACTION_BTN_W_PX / WELCOME_CANVAS_W;
+export const KIOSK_ACTION_BTN_H = ACTION_BTN_H_PX / WELCOME_CANVAS_H;
+
+export function kioskActionButtonBox(side: "left" | "right"): WelcomeBox {
+  const insetX = ACTION_INSET_X_PX / WELCOME_CANVAS_W;
+  const insetY = ACTION_INSET_Y_PX / WELCOME_CANVAS_H;
+  return {
+    x: side === "left" ? insetX : 1 - insetX - KIOSK_ACTION_BTN_W,
+    y: 1 - insetY - KIOSK_ACTION_BTN_H,
+    w: KIOSK_ACTION_BTN_W,
+    h: KIOSK_ACTION_BTN_H,
+  };
+}
+
+export function lockKioskActionButtonSize(box: WelcomeBox): WelcomeBox {
+  return { ...box, w: KIOSK_ACTION_BTN_W, h: KIOSK_ACTION_BTN_H };
+}
+
+/**
+ * Live CameraView Start is `clamp(150px, 52cqi, 220px)` in the right
+ * column. At 1920×1080 that column is ~400px, so 52cqi = 208px.
+ */
+const START_BTN_PX = 208;
+export const KIOSK_START_BTN_W = START_BTN_PX / WELCOME_CANVAS_W;
+export const KIOSK_START_BTN_H = START_BTN_PX / WELCOME_CANVAS_H;
+
+export function kioskStartButtonBox(): WelcomeBox {
+  const col = 400 / WELCOME_CANVAS_W;
+  const insetX = 48 / WELCOME_CANVAS_W;
+  const gap = 32 / WELCOME_CANVAS_W;
+  const rightX = insetX + col + gap + col * 2.4 + gap;
+  return {
+    x: rightX + (col - KIOSK_START_BTN_W) / 2,
+    y: 0.345,
+    w: KIOSK_START_BTN_W,
+    h: KIOSK_START_BTN_H,
+  };
+}
+
+export function lockKioskStartButtonSize(box: WelcomeBox): WelcomeBox {
+  return { ...box, w: KIOSK_START_BTN_W, h: KIOSK_START_BTN_H };
+}
+
+export function isKioskActionButton(
+  screenId: KioskScreenId,
+  itemId: string,
+): boolean {
+  if (itemId === "backBtn") return true;
+  return screenId === "templates" && itemId === "selectBtn";
+}
+
 export type KioskScreenId =
   | "templates"
   | "payment"
@@ -142,7 +199,7 @@ export const KIOSK_SCREENS: KioskScreenDef[] = [
         id: "backBtn",
         label: "Back button",
         kind: "button",
-        box: { x: 0.07, y: 0.84, w: 0.16, h: 0.1 },
+        box: kioskActionButtonBox("left"),
         buttonLabel: "Back",
         buttonVariant: "ghost",
       },
@@ -150,7 +207,7 @@ export const KIOSK_SCREENS: KioskScreenDef[] = [
         id: "selectBtn",
         label: "Select button",
         kind: "button",
-        box: { x: 0.77, y: 0.84, w: 0.16, h: 0.1 },
+        box: kioskActionButtonBox("right"),
         buttonLabel: "Select",
         buttonVariant: "wood",
       },
@@ -193,7 +250,7 @@ export const KIOSK_SCREENS: KioskScreenDef[] = [
         id: "backBtn",
         label: "Back button",
         kind: "button",
-        box: { x: 0.07, y: 0.84, w: 0.16, h: 0.1 },
+        box: kioskActionButtonBox("left"),
         buttonLabel: "Back",
         buttonVariant: "ghost",
       },
@@ -208,25 +265,25 @@ export const KIOSK_SCREENS: KioskScreenDef[] = [
         id: "strip",
         label: "Strip preview",
         kind: "widget",
-        box: { x: 0.03, y: 0.07, w: 0.22, h: 0.7 },
+        box: { x: 0.035, y: 0.08, w: 0.2, h: 0.68 },
       },
       {
         id: "viewfinder",
         label: "Viewfinder",
         kind: "widget",
-        box: { x: 0.27, y: 0.05, w: 0.46, h: 0.68 },
+        box: { x: 0.24, y: 0.06, w: 0.5, h: 0.68 },
       },
       {
         id: "filters",
         label: "Filters",
         kind: "widget",
-        box: { x: 0.27, y: 0.75, w: 0.46, h: 0.1 },
+        box: { x: 0.22, y: 0.76, w: 0.56, h: 0.16 },
       },
       {
         id: "startBtn",
         label: "Start button",
         kind: "button",
-        box: { x: 0.76, y: 0.28, w: 0.18, h: 0.12 },
+        box: kioskStartButtonBox(),
         buttonLabel: "Start",
         buttonVariant: "start",
       },
@@ -234,14 +291,14 @@ export const KIOSK_SCREENS: KioskScreenDef[] = [
         id: "counter",
         label: "Photo counter",
         kind: "text",
-        box: { x: 0.74, y: 0.42, w: 0.22, h: 0.08 },
+        box: { x: 0.74, y: 0.53, w: 0.22, h: 0.07 },
         text: body("Photo {n} of {total}", 28, { fontFamily: "var(--font-display)" }),
       },
       {
         id: "backBtn",
         label: "Back button",
         kind: "button",
-        box: { x: 0.07, y: 0.84, w: 0.16, h: 0.1 },
+        box: kioskActionButtonBox("left"),
         buttonLabel: "Back",
         buttonVariant: "ghost",
       },
@@ -465,6 +522,34 @@ export function normalizeKioskLayout(
       ? layout.backgroundColor
       : "#f4ead5",
   };
+  for (const id of Object.keys(items)) {
+    if (isKioskActionButton(screenId, id) && items[id]) {
+      items[id] = lockKioskActionButtonSize(items[id]!);
+    }
+    if (screenId === "camera" && id === "startBtn" && items[id]) {
+      items[id] = lockKioskStartButtonSize(items[id]!);
+    }
+  }
+  if (screenId === "camera") {
+    const legacy: Record<string, WelcomeBox> = {
+      strip: { x: 0.03, y: 0.07, w: 0.22, h: 0.7 },
+      viewfinder: { x: 0.27, y: 0.05, w: 0.46, h: 0.68 },
+      filters: { x: 0.27, y: 0.75, w: 0.46, h: 0.1 },
+      startBtn: { x: 0.76, y: 0.28, w: 0.18, h: 0.12 },
+      counter: { x: 0.74, y: 0.42, w: 0.22, h: 0.08 },
+    };
+    for (const item of def.items) {
+      const old = legacy[item.id];
+      const cur = items[item.id];
+      if (!old || !cur) continue;
+      const near =
+        Math.abs(cur.x - old.x) < 0.015 &&
+        Math.abs(cur.y - old.y) < 0.015 &&
+        Math.abs(cur.w - old.w) < 0.015 &&
+        Math.abs(cur.h - old.h) < 0.015;
+      if (near) items[item.id] = { ...item.box };
+    }
+  }
   const ids = knownKioskIds(next, screenId);
   const seen = new Set<string>();
   const order: string[] = [];
@@ -560,6 +645,7 @@ export function kioskBoxStyle(
 ): Record<string, string> {
   const i = order.indexOf(id);
   return {
+    position: "absolute",
     left: `${box.x * 100}%`,
     top: `${box.y * 100}%`,
     width: `${box.w * 100}%`,

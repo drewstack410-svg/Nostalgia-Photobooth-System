@@ -3625,6 +3625,7 @@ function submitEditTemplateDetails() {
           :paper-size="layoutEditorTemplate.paperSize"
           :frame-rows="layoutEditorTemplate.frameRows"
           :frame-cols="layoutEditorTemplate.frameCols"
+          :layout-name="layoutEditorTemplate.name"
         />
 
         <div class="modal-actions">

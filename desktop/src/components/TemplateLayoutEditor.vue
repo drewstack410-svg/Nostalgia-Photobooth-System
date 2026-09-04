@@ -22,6 +22,11 @@ import { getPaperSizePx } from "@/utils/printLayout";
 import type { PaperSize } from "@/utils/printLayout";
 import type { TemplateCell } from "@/stores/photobooth";
 import { prepareFrameDataUrl } from "@/utils/pngAlpha";
+import {
+  layoutFileSlug,
+  parsePhotoLayoutJson,
+  serializePhotoLayout,
+} from "@/utils/photoLayoutFile";
 
 const props = withDefaults(
   defineProps<{
@@ -32,8 +37,10 @@ const props = withDefaults(
     /** Grid used to seed slots when the frame has no detectable windows. */
     frameRows?: number;
     frameCols?: number;
+    /** Used only for the exported filename. */
+    layoutName?: string;
   }>(),
-  { photoCount: 4, frameRows: 0, frameCols: 0 },
+  { photoCount: 4, frameRows: 0, frameCols: 0, layoutName: "" },
 );
 
 const emit = defineEmits<{
@@ -215,6 +222,55 @@ async function seed() {
 function resetLayout() {
   snapshot();
   seed();
+}
+
+const importInputRef = ref<HTMLInputElement | null>(null);
+
+function triggerImport() {
+  seedNote.value = "";
+  importInputRef.value?.click();
+}
+
+function exportLayout() {
+  if (!cells.value.length) {
+    seedNote.value = "Nothing to export yet — add or reset slots first.";
+    return;
+  }
+  const payload = serializePhotoLayout({
+    name: props.layoutName,
+    photoCount: props.photoCount,
+    paperSize: props.paperSize,
+    cells: cells.value,
+  });
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${layoutFileSlug(props.layoutName || "photo-layout")}.photo-layout.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  seedNote.value = `Exported ${cells.value.length} slot(s).`;
+}
+
+async function onImportFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const imported = parsePhotoLayoutJson(text);
+    snapshot();
+    cells.value = imported;
+    selected.value = -1;
+    commit();
+    seedNote.value = `Imported ${imported.length} slot(s) from ${file.name}.`;
+  } catch (err) {
+    seedNote.value =
+      err instanceof Error ? err.message : "Could not import that layout file.";
+  }
 }
 
 /**
@@ -478,6 +534,29 @@ watch(
       <button class="tool-btn" @click="resetLayout">Reset layout</button>
       <button
         class="tool-btn"
+        title="Load slots from a .photo-layout.json file"
+        @click="triggerImport"
+      >
+        Import
+      </button>
+      <button
+        class="tool-btn"
+        :disabled="!cells.length"
+        title="Save slots as a .photo-layout.json file"
+        @click="exportLayout"
+      >
+        Export
+      </button>
+      <input
+        ref="importInputRef"
+        type="file"
+        accept=".json,application/json"
+        class="tool-file"
+        aria-label="Import photo layout file"
+        @change="onImportFile"
+      />
+      <button
+        class="tool-btn"
         :disabled="selected < 0"
         title="Add another slot showing the same shot"
         @click="duplicateSlot"
@@ -570,6 +649,7 @@ watch(
 }
 
 .editor-toolbar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -589,6 +669,14 @@ watch(
 .tool-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.tool-file {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .tool-check {

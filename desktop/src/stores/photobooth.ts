@@ -41,7 +41,10 @@ import {
 } from "@/utils/welcomeLayout";
 import {
   defaultKioskLayout,
+  isKioskActionButton,
   KIOSK_SCREEN_IDS,
+  lockKioskActionButtonSize,
+  lockKioskStartButtonSize,
   normalizeKioskLayout,
   parseKioskLayout,
   type KioskBackgroundFill,
@@ -1288,7 +1291,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   const lastPersistedKiosk = ref<Record<KioskScreenId, string>>(emptyKioskSnaps());
 
   function kioskLayoutOf(id: KioskScreenId): KioskLayout | null {
-    return kioskLayouts.value[id];
+    const cur = kioskLayouts.value[id];
+    return cur ? normalizeKioskLayout(id, cur) : null;
   }
 
   function kioskSnapshot(layout: KioskLayout | null): string {
@@ -1386,9 +1390,16 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       });
       return;
     }
+    const items = { ...layout.items, [itemId]: next };
+    if (isKioskActionButton(id, itemId)) {
+      items[itemId] = lockKioskActionButtonSize(next);
+    }
+    if (id === "camera" && itemId === "startBtn") {
+      items[itemId] = lockKioskStartButtonSize(items[itemId]!);
+    }
     setKioskLayout(id, {
       ...layout,
-      items: { ...layout.items, [itemId]: next },
+      items,
     });
   }
 

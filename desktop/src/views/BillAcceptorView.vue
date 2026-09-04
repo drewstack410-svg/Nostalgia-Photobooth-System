@@ -310,7 +310,7 @@ onUnmounted(() => {
 
     <!-- Back Button — bottom-left, cream/ghost style (v2). -->
     <button
-      class="ghost-btn back-btn"
+      class="ghost-btn kiosk-action-btn back-btn"
       :style="laidOut ? boxStyle('backBtn') : undefined"
       @click="goBack"
     >
@@ -469,6 +469,7 @@ onUnmounted(() => {
 .kiosk-laid-out .pay-frame,
 .kiosk-laid-out .payment-progress,
 .kiosk-laid-out .back-btn {
+  position: absolute;
   margin: 0;
 }
 
@@ -502,14 +503,12 @@ onUnmounted(() => {
   display: block;
 }
 
-/* Back — bottom-left placement (v2); appearance from .ghost-btn. */
+/* Placement only — size comes from .kiosk-action-btn (same as editor). */
 .back-btn {
   position: absolute;
   /* Inset past the corner ornaments (~170px) so it never overlaps them. */
   bottom: 3rem;
   left: 7rem;
-  font-size: 1.7rem;
-  padding: 0.95rem 3.4rem;
   /* MUST stay above .bill-acceptor-content (z-index:20). That block is
      `flex: 1`, so it fills the whole screen and overlaps this button —
      at a lower z-index the click lands on the content div and the Back

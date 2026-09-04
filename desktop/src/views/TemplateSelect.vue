@@ -293,7 +293,7 @@ onUnmounted(() => {
          Select (gold) bottom-right. -->
     <button
       type="button"
-      class="ghost-btn tpl-back-btn"
+      class="ghost-btn kiosk-action-btn tpl-back-btn"
       :style="laidOut ? boxStyle('backBtn') : undefined"
       @click="goBack"
     >
@@ -302,7 +302,7 @@ onUnmounted(() => {
     <button
       v-if="templates.length > 0"
       type="button"
-      class="wood-btn tpl-select-btn"
+      class="wood-btn kiosk-action-btn tpl-select-btn"
       :style="laidOut ? boxStyle('selectBtn') : undefined"
       @click="selectTemplate"
     >
@@ -366,6 +366,7 @@ onUnmounted(() => {
 .kiosk-laid-out .template-content,
 .kiosk-laid-out .tpl-back-btn,
 .kiosk-laid-out .tpl-select-btn {
+  position: absolute;
   margin: 0;
 }
 
@@ -445,17 +446,14 @@ onUnmounted(() => {
   background: var(--color-brown-light);
 }
 
-/* v2 bottom-corner buttons — appearance comes from the shared .ghost-btn
-   / .wood-btn classes. Back (left) and Select (right) share the SAME
-   size so the pair is balanced. */
+/* Placement only — size and type come from .kiosk-action-btn so the
+   Screen Editor preview stays pixel-identical. */
 .tpl-back-btn,
 .tpl-select-btn {
   position: absolute;
   /* Inset past the 150px corner ornaments (which sit 20px from each
      corner, so occupy ~170px) so the buttons never overlap them. */
   bottom: 3rem;
-  font-size: 1.7rem;
-  padding: 0.95rem 3.4rem;
   z-index: 10;
 }
 

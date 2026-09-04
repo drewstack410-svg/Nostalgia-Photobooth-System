@@ -1381,7 +1381,7 @@ onUnmounted(() => {
 
     <!-- Back Button — bottom-left, cream/ghost style (v2). -->
     <button
-      class="ghost-btn back-btn"
+      class="ghost-btn kiosk-action-btn back-btn"
       :disabled="isCountingDown || isCapturing || isReviewing"
       :style="laidOut ? boxStyle('backBtn') : undefined"
       @click="goBack"
@@ -1781,7 +1781,19 @@ onUnmounted(() => {
 .kiosk-laid-out .start-btn,
 .kiosk-laid-out .photo-counter,
 .kiosk-laid-out .back-btn {
+  position: absolute;
   margin: 0;
+}
+
+.kiosk-laid-out .camera-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kiosk-laid-out .camera-frame {
+  width: 100%;
+  height: 100%;
 }
 
 /* Greyed out while a countdown/shutter is running — no retakes. */
@@ -1791,14 +1803,12 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-/* Back Button — bottom-left placement (v2); appearance from .ghost-btn. */
+/* Placement only — size comes from .kiosk-action-btn (same as editor). */
 .back-btn {
   position: absolute;
   /* Inset past the corner ornaments (~170px) so it never overlaps them. */
   bottom: 3rem;
   left: 7rem;
-  font-size: 1.7rem;
-  padding: 0.95rem 3.4rem;
   z-index: 10;
 }
 

@@ -1728,6 +1728,7 @@ onUnmounted(() => {
 .kiosk-laid-out .print-status-area,
 .kiosk-laid-out .delivery-plaque,
 .kiosk-laid-out .done-btn {
+  position: absolute;
   margin: 0;
 }
 

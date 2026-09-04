@@ -5,11 +5,15 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { usePhotoboothStore } from "@/stores/photobooth";
+import type { CameraFilter } from "@/stores/photobooth";
 import TemplatePreview from "@/components/TemplatePreview.vue";
+import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
+import { cropBarPercentForTemplate } from "@/utils/viewfinderCrop";
 import {
   allKioskItemBoxes,
   defaultKioskLayout,
   getKioskItemBox,
+  isKioskActionButton,
   isKioskFixedId,
   kioskBoxStyle,
   kioskItemDef,
@@ -65,6 +69,23 @@ const logoSrc = computed(
   () => store.customLogoUrl || `${import.meta.env.BASE_URL}Logo.svg`,
 );
 const templates = computed(() => store.activeTemplates.slice(0, 3));
+const shootTemplate = computed(
+  () => store.selectedTemplate || store.activeTemplates[0] || null,
+);
+const cropBarW = computed(() =>
+  cropBarPercentForTemplate(shootTemplate.value),
+);
+
+function filterToneClass(f: CameraFilter): string {
+  const name = (f.name || "").toLowerCase();
+  const type = f.effectType;
+  if (type === "bw" || name.includes("b & w") || name.includes("b&w")) {
+    return "tone-bw";
+  }
+  if (type === "fujifilm" || name.includes("fujifilm")) return "tone-fujifilm";
+  if (type === "original" || name === "original") return "tone-original";
+  return "tone-sepia";
+}
 
 const fill = computed(() => layout.value.backgroundFill);
 const colorBg = computed(() => layout.value.backgroundColor);
@@ -284,9 +305,12 @@ const HANDLES: Handle[] = ["nw", "ne", "sw", "se"];
 
 function buttonClass(itemId: string) {
   const variant = kioskItemDef(props.screenId, itemId)?.buttonVariant || "wood";
-  if (variant === "ghost") return "ghost-btn";
+  const action = isKioskActionButton(props.screenId, itemId)
+    ? " kiosk-action-btn"
+    : "";
+  if (variant === "ghost") return `ghost-btn${action}`;
   if (variant === "start") return "kiosk-start-btn";
-  return "wood-btn";
+  return `wood-btn${action}`;
 }
 
 function buttonLabel(itemId: string) {
@@ -457,23 +481,60 @@ function dotsCount() {
       </template>
 
       <template v-else-if="item.id === 'strip'">
-        <div class="mock-strip">Strip preview</div>
+        <div class="shoot-strip">
+          <div class="shoot-strip-tilt">
+            <TemplateLivePreview
+              v-if="shootTemplate"
+              :template="shootTemplate"
+              :photos="[]"
+              :active-index="0"
+              fluid
+            />
+            <div v-else class="shoot-strip-empty">Strip preview</div>
+          </div>
+        </div>
       </template>
 
       <template v-else-if="item.id === 'viewfinder'">
-        <div class="mock-viewfinder">Viewfinder</div>
+        <div class="shoot-viewfinder">
+          <div class="shoot-frame">
+            <div class="shoot-feed">
+              <div
+                class="shoot-crop-bars"
+                :style="{ '--crop-bar-w': cropBarW + '%' }"
+              >
+                <div class="shoot-crop-bar shoot-crop-bar--left" />
+                <div class="shoot-crop-bar shoot-crop-bar--right" />
+              </div>
+            </div>
+          </div>
+        </div>
       </template>
 
       <template v-else-if="item.id === 'filters'">
-        <div class="mock-filters">
-          <span
-            v-for="f in store.activeFilters.slice(0, 4)"
-            :key="f.id"
-            class="mock-chip"
-          >
-            {{ f.name }}
-          </span>
-          <span v-if="!store.activeFilters.length" class="mock-chip">Filter</span>
+        <div class="shoot-filters">
+          <div class="shoot-filter-row">
+            <span
+              v-for="(f, i) in store.activeFilters.slice(0, 4)"
+              :key="f.id"
+              class="shoot-filter-btn"
+              :class="[filterToneClass(f), { active: i === 0 }]"
+            >
+              {{ f.name }}
+            </span>
+            <span v-if="!store.activeFilters.length" class="shoot-filter-btn">
+              Filter
+            </span>
+          </div>
+          <div class="shoot-mirror">
+            <span
+              class="shoot-mirror-track"
+              :class="{ active: store.mirrorMode }"
+            >
+              <span class="shoot-mirror-thumb" />
+            </span>
+            <span class="shoot-mirror-label">Mirror</span>
+          </div>
         </div>
       </template>
 
@@ -660,11 +721,15 @@ function dotsCount() {
 
 .kiosk-btn {
   pointer-events: none;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  padding: 0 1.25rem;
+  font-size: 1.7rem;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .kiosk-logo-img,
@@ -677,15 +742,30 @@ function dotsCount() {
   display: block;
 }
 
-.kiosk-start-btn {
+.kiosk-item:has(.kiosk-start-btn) {
+  container-type: size;
+}
+
+.kiosk-start-btn.kiosk-btn {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border-radius: 50%;
   font-family: var(--font-display);
-  font-size: 1.6rem;
+  font-size: 2rem;
   font-weight: 700;
-  color: var(--color-cream);
-  background: var(--color-brown-dark);
-  border: 0;
-  border-radius: 999px;
-  padding: 0.7rem 2rem;
+  color: var(--color-brown-dark);
+  background: radial-gradient(
+    circle at 50% 38%,
+    #fee2a0 0%,
+    #fed582 38%,
+    #fdc66c 100%
+  );
+  border: 8px solid #9c6b3f;
+  box-shadow:
+    0 8px 0 var(--color-wood-dark),
+    0 12px 40px rgba(61, 43, 31, 0.4),
+    inset 0 2px 15px rgba(255, 255, 255, 0.45);
 }
 
 .mock-carousel {
@@ -802,8 +882,6 @@ function dotsCount() {
   background: var(--color-brown);
 }
 
-.mock-strip,
-.mock-viewfinder,
 .mock-slot {
   width: 100%;
   height: 100%;
@@ -816,34 +894,178 @@ function dotsCount() {
   pointer-events: none;
 }
 
-.mock-strip {
-  background: #3d2b1f;
-  border-radius: 10px;
-  transform: rotate(-3deg);
-}
-
-.mock-viewfinder {
-  background: #1a1410;
-  border: 10px solid #5a3d28;
-  border-radius: 8px;
-}
-
-.mock-filters {
-  display: flex;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
+.shoot-strip,
+.shoot-viewfinder,
+.shoot-filters {
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
 
-.mock-chip {
-  padding: 0.35rem 0.7rem;
-  border-radius: 999px;
-  background: var(--color-cream);
-  border: 2px solid var(--color-brown-light);
-  font-family: var(--font-body);
-  font-size: 0.85rem;
+.shoot-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shoot-strip-tilt {
+  width: 88%;
+  height: 92%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  container-type: size;
+  transform: rotate(-3deg);
+}
+
+.shoot-strip-empty {
+  width: 100%;
+  height: 100%;
+  background: #3d2b1f;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--color-cream);
+}
+
+.shoot-viewfinder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  container-type: size;
+}
+
+.shoot-frame {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 16px;
+  border-radius: 8px;
+  background: url("/wood.svg") repeat;
+  background-color: var(--color-wood);
+  box-shadow: var(--shadow-hard);
+}
+
+.shoot-feed {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+}
+
+.shoot-crop-bars {
+  position: absolute;
+  inset: 0;
+}
+
+.shoot-crop-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--crop-bar-w, 16.6667%);
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.shoot-crop-bar--left {
+  left: 0;
+}
+
+.shoot-crop-bar--right {
+  right: 0;
+}
+
+.shoot-filters {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+}
+
+.shoot-filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+}
+
+.shoot-filter-btn {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 700;
+  padding: 0.7rem 1.5rem;
+  min-width: 6rem;
+  border-radius: 10px;
+  background: #d9d9d9;
+  color: #7a7a7a;
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.18);
+}
+
+.shoot-filter-btn.active {
+  color: #fff;
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.25),
+    inset 0 2px 5px rgba(0, 0, 0, 0.18);
+}
+
+.shoot-filter-btn.tone-sepia.active {
+  background: #b17c45;
+}
+
+.shoot-filter-btn.tone-bw.active {
+  background: #575757;
+}
+
+.shoot-filter-btn.tone-original.active {
+  background: linear-gradient(180deg, #3a80c0 0%, #152652 100%);
+}
+
+.shoot-filter-btn.tone-fujifilm.active {
+  background: #fff3b2;
+  color: #6f583d;
+}
+
+.shoot-mirror {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.shoot-mirror-track {
+  width: 60px;
+  height: 32px;
+  background: #cbb9a3;
+  border-radius: 16px;
+  position: relative;
+}
+
+.shoot-mirror-track.active {
+  background: #683017;
+}
+
+.shoot-mirror-thumb {
+  width: 26px;
+  height: 26px;
+  background: #c2822e;
+  border-radius: 50%;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+}
+
+.shoot-mirror-track.active .shoot-mirror-thumb {
+  transform: translateX(28px);
+}
+
+.shoot-mirror-label {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 600;
   color: var(--color-brown-dark);
 }
 
