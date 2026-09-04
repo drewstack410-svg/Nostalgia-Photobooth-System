@@ -176,8 +176,13 @@ function fitPreview() {
 }
 
 function clearTitleBackground() {
-  if (kioskId.value) store.clearKioskBackground(kioskId.value);
-  else store.clearTitleBackground();
+  if (kioskId.value) {
+    store.clearKioskBackground(kioskId.value);
+    store.setKioskBackgroundFill(kioskId.value, "theme");
+    kioskBgTab.value = "theme";
+  } else {
+    store.clearTitleBackground();
+  }
 }
 
 async function onDropFiles(payload: { files: File[]; layer: string }) {
@@ -926,6 +931,34 @@ function chooseBgMode(mode: "image" | "video" | "color" | "theme") {
 
 const kioskBgTab = ref<"theme" | "image" | "video" | "color">("theme");
 
+const kioskBgIsCustom = computed(() =>
+  kioskId.value ? store.kioskHasCustomBackground(kioskId.value) : false,
+);
+const inspectorBgUrl = computed(() => {
+  if (kioskId.value) return store.kioskBackgroundUrl(kioskId.value);
+  return store.titleBackgroundUrl;
+});
+const inspectorBgType = computed(() => {
+  if (kioskId.value) return store.kioskBackgroundType(kioskId.value);
+  return store.titleBackgroundType;
+});
+const inspectorHasImage = computed(
+  () =>
+    inspectorBgType.value === "image" &&
+    !!inspectorBgUrl.value &&
+    (kioskId.value ? kioskBgIsCustom.value : true),
+);
+const inspectorHasVideo = computed(
+  () =>
+    inspectorBgType.value === "video" &&
+    !!inspectorBgUrl.value &&
+    (kioskId.value ? kioskBgIsCustom.value : true),
+);
+const inspectorCanClear = computed(() => {
+  if (kioskId.value) return kioskBgIsCustom.value;
+  return titleBgMediaChoice.value !== "color" && !!store.titleBackgroundUrl;
+});
+
 function applyHexColor() {
   if (kioskId.value) {
     store.setKioskBackgroundColor(kioskId.value, hexDraft.value);
@@ -1587,8 +1620,8 @@ const screenDirty = computed(() => layoutDirty());
               </button>
             </div>
             <p v-if="kioskId && kioskBgTab === 'theme'" class="inspector__hint">
-              Uses the booth's wooden frame and cream panel. Switch to Color
-              or upload media to replace it.
+              Uses the booth's default background. Switch to Image, Video, or
+              Color to replace it.
             </p>
             <div
               v-show="kioskId ? kioskBgTab === 'color' : titleBgMediaChoice === 'color'"
@@ -1642,10 +1675,7 @@ const screenDirty = computed(() => layoutDirty());
             <div
               v-show="kioskId ? kioskBgTab === 'image' : titleBgMediaChoice === 'image'"
               class="upload-card"
-              :class="{
-                'upload-card--filled':
-                  store.titleBackgroundType === 'image' && store.titleBackgroundUrl,
-              }"
+              :class="{ 'upload-card--filled': inspectorHasImage }"
               @click="titleBgImageInputRef?.click()"
             >
               <input
@@ -1655,10 +1685,8 @@ const screenDirty = computed(() => layoutDirty());
                 class="upload-card-input"
                 @change="handleTitleBgFile('image', $event)"
               />
-              <template
-                v-if="store.titleBackgroundType === 'image' && store.titleBackgroundUrl"
-              >
-                <img :src="store.titleBackgroundUrl" alt="" class="upload-card-preview" />
+              <template v-if="inspectorHasImage && inspectorBgUrl">
+                <img :src="inspectorBgUrl" alt="" class="upload-card-preview" />
               </template>
               <template v-else>
                 <span class="upload-card-icon">+</span>
@@ -1668,10 +1696,7 @@ const screenDirty = computed(() => layoutDirty());
             <div
               v-show="kioskId ? kioskBgTab === 'video' : titleBgMediaChoice === 'video'"
               class="upload-card"
-              :class="{
-                'upload-card--filled':
-                  store.titleBackgroundType === 'video' && store.titleBackgroundUrl,
-              }"
+              :class="{ 'upload-card--filled': inspectorHasVideo }"
               @click="titleBgVideoInputRef?.click()"
             >
               <input
@@ -1681,11 +1706,9 @@ const screenDirty = computed(() => layoutDirty());
                 class="upload-card-input"
                 @change="handleTitleBgFile('video', $event)"
               />
-              <template
-                v-if="store.titleBackgroundType === 'video' && store.titleBackgroundUrl"
-              >
+              <template v-if="inspectorHasVideo && inspectorBgUrl">
                 <video
-                  :src="store.titleBackgroundUrl"
+                  :src="inspectorBgUrl"
                   class="upload-card-preview"
                   muted
                   playsinline
@@ -1699,7 +1722,7 @@ const screenDirty = computed(() => layoutDirty());
             <p v-if="titleBgBusy" class="form-hint">Saving background…</p>
             <p v-if="titleBgError" class="form-error">{{ titleBgError }}</p>
             <button
-              v-if="titleBgMediaChoice !== 'color' && store.titleBackgroundUrl"
+              v-if="inspectorCanClear"
               type="button"
               class="btn-clear"
               @click="clearTitleBackground"

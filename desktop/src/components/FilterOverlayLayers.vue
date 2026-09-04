@@ -26,10 +26,14 @@ function bindMediaEl(el: Element | null) {
 async function playOverlayVideo() {
   await nextTick();
   const el = mediaEl.value;
-  if (el instanceof HTMLVideoElement) {
-    el.muted = true;
-    el.loop = true;
-    await el.play().catch(() => {});
+  if (!(el instanceof HTMLVideoElement)) return;
+  el.muted = true;
+  el.loop = true;
+  el.playsInline = true;
+  try {
+    await el.play();
+  } catch {
+    /* autoplay can wait until loadeddata */
   }
 }
 
@@ -70,6 +74,7 @@ defineExpose({ mediaEl });
     muted
     loop
     playsinline
+    @loadeddata="playOverlayVideo"
     aria-hidden="true"
   />
   <div

@@ -1107,8 +1107,9 @@ ipcMain.handle("save-filter-overlay-media", async (_event, { filterId, bytes, mi
     }
     const ext = overlayExtFromMimeOrName(mime, filename);
     const filePath = path.join(dir, `${safeFilterOverlayId(filterId)}.${ext}`);
-    fs.writeFileSync(filePath, Buffer.from(bytes));
-    console.log(`[Main] Filter overlay media saved (${bytes.length} bytes):`, filePath);
+    const buf = r2.toNodeBuffer(bytes);
+    fs.writeFileSync(filePath, buf);
+    console.log(`[Main] Filter overlay media saved (${buf.length} bytes):`, filePath);
     return { success: true, path: filePath };
   } catch (error) {
     console.error("[Main] Error saving filter overlay media:", error);

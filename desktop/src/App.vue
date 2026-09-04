@@ -38,7 +38,7 @@ const screenHasOwnBackground = computed(() => {
   if (kiosk) {
     const layout = store.kioskLayoutOf(kiosk);
     if (layout?.backgroundFill === "color") return true;
-    if (layout?.backgroundFill === "media" && store.kioskBackgroundUrl(kiosk)) {
+    if (layout && store.kioskBackgroundUrl(kiosk)) {
       return true;
     }
   }

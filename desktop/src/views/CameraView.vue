@@ -17,6 +17,7 @@ import {
   glowPreviewSvg,
   grainCaptureIntensity,
   grainPreviewOpacity,
+  saturationPreviewAmount,
   vignettePreviewStyle,
 } from "@/utils/filterPreview";
 import type { CubePreview } from "@/utils/filterPreview";
@@ -204,6 +205,9 @@ const adjustmentTable = computed(() =>
 );
 
 const glowSvg = computed(() => glowPreviewSvg(selectedAdjustments.value.glow));
+const saturationAmount = computed(() =>
+  saturationPreviewAmount(selectedAdjustments.value.saturation),
+);
 
 /** True when the selected look needs the SVG filter at all. */
 const hasPreviewFilter = computed(
@@ -211,6 +215,7 @@ const hasPreviewFilter = computed(
     !!previewMatrix.value ||
     !!cubeCurves.value ||
     !!adjustmentTable.value ||
+    !!saturationAmount.value ||
     !!glowSvg.value,
 );
 
@@ -1071,8 +1076,9 @@ async function capturePhotoInner(hadLiveView: boolean) {
           drawLookMedia(ctx, mediaEl, mediaLayer.blendMode, mediaLayer.opacity);
         }
 
-        // Bake levels / contrast / shadows / glow / vignette AFTER overlay
-        // and BEFORE grain — same stack as the live preview.
+        // Bake exposure / levels / contrast / shadows / saturation /
+        // glow / vignette AFTER overlay and BEFORE grain — same stack
+        // as the live preview.
         if (filter) {
           const adj = store.resolvedAdjustments(filter);
           const adjusted = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -1356,6 +1362,11 @@ onUnmounted(() => {
           <feFuncG type="table" :tableValues="adjustmentTable" />
           <feFuncB type="table" :tableValues="adjustmentTable" />
         </feComponentTransfer>
+        <feColorMatrix
+          v-if="saturationAmount"
+          type="saturate"
+          :values="saturationAmount"
+        />
         <feOffset v-if="glowSvg" dx="0" dy="0" result="preGlow" />
         <feColorMatrix
           v-if="glowSvg"

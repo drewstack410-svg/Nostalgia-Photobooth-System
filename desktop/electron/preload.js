@@ -141,8 +141,14 @@ try {
     },
 
     saveFilterOverlayMedia: ({ filterId, bytes, mime, filename }) => {
-      console.log(`[Preload] saveFilterOverlayMedia (${filterId}, ${bytes?.length} bytes, ${mime})`);
-      return ipcRenderer.invoke('save-filter-overlay-media', { filterId, bytes, mime, filename });
+      const payload = cloneBytesForIpc(bytes);
+      console.log(`[Preload] saveFilterOverlayMedia (${filterId}, ${payload?.byteLength ?? payload?.length} bytes, ${mime})`);
+      return ipcRenderer.invoke('save-filter-overlay-media', {
+        filterId,
+        bytes: payload,
+        mime,
+        filename,
+      });
     },
     getFilterOverlayMedia: (filterId) => {
       return ipcRenderer.invoke('get-filter-overlay-media', { filterId });

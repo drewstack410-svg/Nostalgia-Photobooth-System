@@ -51,6 +51,13 @@ import {
   type KioskLayout,
   type KioskScreenId,
 } from "@/utils/kioskLayout";
+import {
+  DEFAULT_ADJUSTMENTS,
+  type FilterAdjustments,
+} from "@/utils/filterPreview";
+
+export { DEFAULT_ADJUSTMENTS };
+export type { FilterAdjustments };
 
 /** IPC Uint8Array is ArrayBufferLike; Blob wants a plain ArrayBuffer. */
 function blobFromIpcBytes(bytes: Uint8Array, type: string): Blob {
@@ -368,27 +375,9 @@ export interface CameraFilter {
    * sepia/bw/fujifilm, and for cube filters whose baseFilter is sepia.
    */
   grainEnabled?: boolean;
-  /** Fine-tune sliders: grain, levels, contrast, shadows, vignette, glow. */
+  /** Fine-tune sliders: grain, exposure, levels, contrast, shadows, vignette, saturation, glow. */
   adjustments?: FilterAdjustments;
 }
-
-export interface FilterAdjustments {
-  grain: number;
-  levels: number;
-  contrast: number;
-  shadows: number;
-  vignette: number;
-  glow: number;
-}
-
-export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
-  grain: 0,
-  levels: 0,
-  contrast: 0,
-  shadows: 0,
-  vignette: 0,
-  glow: 0,
-};
 
 // -----------------------------------------------------------------------------
 // Storage keys
@@ -1957,16 +1946,16 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   function kioskBackgroundUrl(id: KioskScreenId): string | null {
     if (id === "payment") return effectivePaymentBackgroundUrl.value;
-    return kioskBgSlots.value[id]?.url ?? null;
+    return kioskBgSlots.value[id]?.url ?? packagedTitleUrl ?? DEFAULT_TITLE_BG_URL;
   }
 
   function kioskBackgroundType(id: KioskScreenId): TitleBackgroundType {
     if (id === "payment") return effectivePaymentBackgroundType.value;
-    return kioskBgSlots.value[id]?.type ?? null;
+    return kioskBgSlots.value[id]?.url ? kioskBgSlots.value[id]!.type : "video";
   }
 
   function kioskHasCustomBackground(id: KioskScreenId): boolean {
-    if (id === "payment") return !!effectivePaymentBackgroundUrl.value;
+    if (id === "payment") return !!paymentBackgroundUrl.value;
     return !!kioskBgSlots.value[id]?.url;
   }
 
@@ -2298,6 +2287,18 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     return "image/jpeg";
   }
 
+  function overlayPlaybackMime(file: File, kind: OverlayMediaKind): string {
+    if (kind === "video") {
+      if (/\.webm$/i.test(file.name) || file.type === "video/webm") {
+        return "video/webm";
+      }
+      // Chromium on Windows will not decode a blob tagged video/quicktime,
+      // even when the MOV is H.264. Tag MP4/MOV/M4V as video/mp4.
+      return "video/mp4";
+    }
+    return overlayMimeFor(file, kind);
+  }
+
   /**
    * Upload a PNG/JPEG/MOV (etc.) as the Photoshop-style media layer for a
    * filter. The file is persisted under userData in Electron; the renderer
@@ -2311,9 +2312,11 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (!f) return false;
     const kind = guessOverlayMediaKind(file);
     if (!kind) return false;
-    const mime = overlayMimeFor(file, kind);
+    const mime = overlayPlaybackMime(file, kind);
     const buf = new Uint8Array(await file.arrayBuffer());
-    setOverlayMediaRuntime(id, kind, new Blob([buf], { type: mime }));
+    const copy = new Uint8Array(buf.byteLength);
+    copy.set(buf);
+    setOverlayMediaRuntime(id, kind, new Blob([copy], { type: mime }));
     f.mediaOverlay = sanitizeMediaOverlay({
       blendMode: f.mediaOverlay?.blendMode ?? DEFAULT_MEDIA_OVERLAY.blendMode,
       opacity: f.mediaOverlay?.opacity ?? DEFAULT_MEDIA_OVERLAY.opacity,
@@ -2325,18 +2328,19 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (window.electronAPI?.saveFilterOverlayMedia) {
       const res = await window.electronAPI.saveFilterOverlayMedia({
         filterId: id,
-        bytes: buf,
+        bytes: copy,
         mime,
         filename: file.name,
       });
       if (!res.success) {
         console.error("[Store] Failed to save filter overlay media:", res.error);
+        return false;
       }
-      return res.success;
+    } else {
+      console.warn(
+        "[Store] Filter overlay media can't persist outside Electron — preview only.",
+      );
     }
-    console.warn(
-      "[Store] Filter overlay media can't persist outside Electron — preview only.",
-    );
     return true;
   }
 
@@ -2398,12 +2402,18 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       const x = typeof v === "number" && Number.isFinite(v) ? v : fallback;
       return Math.max(min, Math.min(max, Math.round(x)));
     };
+    const n2 = (v: unknown, min: number, max: number, fallback: number) => {
+      const x = typeof v === "number" && Number.isFinite(v) ? v : fallback;
+      return Math.max(min, Math.min(max, Math.round(x * 100) / 100));
+    };
     return {
       grain: n(raw.grain, 0, 100, 0),
+      exposure: n2(raw.exposure, -4, 4, 0),
       levels: n(raw.levels, -100, 100, 0),
       contrast: n(raw.contrast, -100, 100, 0),
-      shadows: n(raw.shadows, 0, 100, 0),
-      vignette: n(raw.vignette, 0, 100, 0),
+      shadows: n(raw.shadows, -100, 100, 0),
+      vignette: n(raw.vignette, -100, 100, 0),
+      saturation: n(raw.saturation, -100, 100, 0),
       glow: n(raw.glow, 0, 100, 0),
     };
   }
@@ -2411,14 +2421,16 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   /** Resolved sliders for a filter, including grain fallback from the toggle. */
   function resolvedAdjustments(filter: CameraFilter): FilterAdjustments {
     const a = filter.adjustments;
-    return {
+    return clampAdjustments({
       grain: a?.grain ?? (filterWantsGrain(filter) ? 100 : 0),
+      exposure: a?.exposure ?? 0,
       levels: a?.levels ?? 0,
       contrast: a?.contrast ?? 0,
       shadows: a?.shadows ?? 0,
       vignette: a?.vignette ?? 0,
+      saturation: a?.saturation ?? 0,
       glow: a?.glow ?? 0,
-    };
+    });
   }
 
   function filterGrainAmount(filter: CameraFilter): number {

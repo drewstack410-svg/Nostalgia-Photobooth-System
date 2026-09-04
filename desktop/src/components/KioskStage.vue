@@ -90,7 +90,7 @@ function filterToneClass(f: CameraFilter): string {
 const fill = computed(() => layout.value.backgroundFill);
 const colorBg = computed(() => layout.value.backgroundColor);
 const mediaUrl = computed(() => {
-  if (fill.value === "color" || fill.value === "theme") return null;
+  if (fill.value === "color") return null;
   return store.kioskBackgroundUrl(props.screenId);
 });
 const mediaType = computed(() => store.kioskBackgroundType(props.screenId));
@@ -347,7 +347,7 @@ function dotsCount() {
           fill === 'color' ? colorBg : fill === 'theme' ? '#f4ead5' : '#f4ead5',
       }"
     />
-    <div v-if="fill === 'media' && mediaUrl" class="kiosk-bg">
+    <div v-if="fill !== 'color' && mediaUrl" class="kiosk-bg">
       <img
         v-if="mediaType === 'image'"
         :src="mediaUrl"
@@ -389,7 +389,16 @@ function dotsCount() {
           : undefined
       "
     >
-      <template v-if="item.kind === 'text'">
+      <template v-if="item.id === 'status'">
+        <div class="print-status-pill">
+          <span class="print-status-icon" aria-hidden="true">🖨️</span>
+          <span>{{
+            layout.texts.status?.content || item.text?.content
+          }}</span>
+        </div>
+      </template>
+
+      <template v-else-if="item.kind === 'text'">
         <div
           v-if="interactive && editingTextId === item.id"
           ref="textEditEl"
@@ -539,12 +548,69 @@ function dotsCount() {
       </template>
 
       <template v-else-if="item.id === 'slot'">
-        <div class="mock-slot">Printer slot</div>
+        <div class="print-slot">
+          <div class="print-slot-frame">
+            <div class="print-slot-screen">
+              <svg
+                class="print-slot-svg"
+                viewBox="0 0 657 439"
+                fill="none"
+                aria-hidden="true"
+              >
+                <defs>
+                  <linearGradient
+                    :id="'slotGrad-' + screenId"
+                    x1="328.45"
+                    y1="438.66"
+                    x2="328.45"
+                    y2="3.54"
+                    gradientUnits="userSpaceOnUse"
+                  >
+                    <stop />
+                    <stop offset="0.12" stop-color="#151313" />
+                    <stop offset="0.36" stop-color="#3D3738" />
+                    <stop offset="0.49" stop-color="#4D4547" />
+                    <stop offset="1" stop-color="#1F1B1C" />
+                  </linearGradient>
+                </defs>
+                <path
+                  d="M529.83 138.5C529.83 89.63 530.19 42.92 533.04 0H130.44C132.97 41.41 133.3 86.23 133.3 133.03C133.3 258.01 80.89 368.89 0 438.17H656.92C579.57 368.6 529.84 260.23 529.84 138.49L529.83 138.5Z"
+                  :fill="'url(#slotGrad-' + screenId + ')'"
+                />
+              </svg>
+              <div class="print-slot-content">
+                <div class="print-slot-strip">
+                  <div class="print-slot-strip-cq">
+                    <TemplateLivePreview
+                      v-if="shootTemplate"
+                      :template="shootTemplate"
+                      :photos="[]"
+                      :active-index="-1"
+                      fluid
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </template>
 
       <template v-else-if="item.id === 'plaque'">
-        <div class="mock-plaque">
-          Photos<br />Delivered<br />Here
+        <div class="print-plaque">
+          <span class="print-plaque-bolt print-plaque-bolt--tl" />
+          <span class="print-plaque-bolt print-plaque-bolt--tr" />
+          <span class="print-plaque-bolt print-plaque-bolt--bl" />
+          <span class="print-plaque-bolt print-plaque-bolt--br" />
+          <div class="print-plaque-content">
+            <svg class="print-plaque-arrow" viewBox="0 0 64 40" aria-hidden="true">
+              <path d="M32 2 62 28h-16v10H18V28H2z" />
+            </svg>
+            <p class="print-plaque-photos">Photos</p>
+            <p class="print-plaque-line">Delivered</p>
+            <p class="print-plaque-line">Here</p>
+            <p class="print-plaque-seconds">In 20 Seconds</p>
+          </div>
         </div>
       </template>
 
@@ -1075,21 +1141,209 @@ function dotsCount() {
   clip-path: polygon(20% 0, 80% 0, 100% 100%, 0 100%);
 }
 
-.mock-plaque {
+.print-slot,
+.print-plaque,
+.print-status-pill {
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.print-slot {
   width: 100%;
   height: 100%;
-  background: #c4a35a;
-  border: 4px solid #6b3b11;
-  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  text-align: center;
+}
+
+.print-slot-frame {
+  width: min(500px, 100%);
+  height: min(340px, 100%);
+  box-sizing: border-box;
+  padding: 20px;
+  border-radius: 16px;
+  background: linear-gradient(150deg, #fcaf4a 0%, #ffdd8f 52%, #fcaf4a 100%);
+  box-shadow:
+    0 10px 40px rgba(61, 43, 31, 0.4),
+    inset 0 2px 10px rgba(255, 255, 255, 0.3);
+}
+
+.print-slot-screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(0deg, #4d4547 0%, #000 100%);
+}
+
+.print-slot-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.print-slot-content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 48px 28px;
+  box-sizing: border-box;
+}
+
+.print-slot-strip {
+  width: 72%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(10deg);
+  transform-origin: center center;
+}
+
+.print-slot-strip-cq {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  container-type: size;
+}
+
+.print-status-pill {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
   font-family: var(--font-display);
-  font-weight: 700;
-  color: #3d2b1f;
-  line-height: 1.15;
-  pointer-events: none;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--color-brown-dark);
+  background: rgba(61, 43, 31, 0.08);
+  border: 1.5px solid var(--color-brown-light);
+  border-radius: 12px;
+  padding: 0.75rem 1.5rem;
+}
+
+.print-status-icon {
+  font-size: 1.4rem;
+}
+
+.print-plaque {
+  position: relative;
+  width: min(280px, 100%);
+  height: min(280px, 100%);
+  aspect-ratio: 1;
+  box-sizing: border-box;
+  padding: 1.35rem 1.1rem 1.15rem;
+  border-radius: 12px;
+  background:
+    radial-gradient(ellipse at 50% 38%, #f7f7f7 0%, #d4d4d4 52%, #b0b0b0 100%);
+  border: 2px solid #6e6e6e;
+  box-shadow:
+    0 10px 22px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.12);
+}
+
+.print-plaque-bolt {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 30%, #8a8a8a 0%, #3a3a3a 58%, #141414 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(0, 0, 0, 0.55),
+    0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.print-plaque-bolt::after {
+  content: "";
+  position: absolute;
+  left: 20%;
+  right: 20%;
+  top: 46%;
+  height: 2px;
+  background: #111;
+  border-radius: 1px;
+}
+
+.print-plaque-bolt--tl {
+  top: 10px;
+  left: 10px;
+}
+.print-plaque-bolt--tr {
+  top: 10px;
+  right: 10px;
+}
+.print-plaque-bolt--bl {
+  bottom: 10px;
+  left: 10px;
+}
+.print-plaque-bolt--br {
+  bottom: 10px;
+  right: 10px;
+}
+
+.print-plaque-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: #111;
+}
+
+.print-plaque-arrow {
+  width: 2.4rem;
+  height: auto;
+  fill: #111;
+}
+
+.print-plaque-photos,
+.print-plaque-line,
+.print-plaque-seconds {
+  margin: 0;
+  line-height: 1.05;
+}
+
+.print-plaque-photos {
+  font-family: "Playfair Display", Times, serif;
+  font-size: 2.15rem;
+  font-weight: 800;
+  font-style: italic;
+  text-transform: uppercase;
+  margin: 0.1rem 0 0.35rem;
+}
+
+.print-plaque-line {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 1.05rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.print-plaque-seconds {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 0.55rem;
 }
 
 .kiosk-lock {

@@ -44,15 +44,13 @@ export function useKioskScreen(screenId: KioskScreenId) {
   );
 
   const mediaBg = computed(() => {
-    if (layout.value?.backgroundFill === "color") return null;
-    if (layout.value?.backgroundFill === "theme") return null;
-    if (layout.value?.backgroundFill === "media") {
-      return {
-        url: store.kioskBackgroundUrl(screenId),
-        type: store.kioskBackgroundType(screenId),
-      };
-    }
-    return null;
+    if (!layout.value || layout.value.backgroundFill === "color") return null;
+    const url = store.kioskBackgroundUrl(screenId);
+    if (!url) return null;
+    return {
+      url,
+      type: store.kioskBackgroundType(screenId),
+    };
   });
 
   return {

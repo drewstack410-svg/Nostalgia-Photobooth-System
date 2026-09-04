@@ -524,7 +524,7 @@ function updateOverlay(f: CameraFilter, patch: Partial<FilterOverlay>) {
 }
 
 const FILTER_MEDIA_ACCEPT =
-  "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,video/quicktime,video/mp4,.mov,.mp4,.m4v";
+  ".png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.m4v,.webm";
 const filterMediaInputRef = ref<HTMLInputElement | null>(null);
 const filterMediaError = ref("");
 const filterMediaBusy = ref(false);
@@ -534,6 +534,16 @@ const editingMediaRuntime = computed(() => {
   if (!id) return null;
   return store.overlayMediaRuntime[id] ?? null;
 });
+
+function triggerFilterMediaUpload() {
+  if (filterMediaBusy.value) return;
+  filterMediaInputRef.value?.click();
+}
+
+function onFilterMediaVideoError() {
+  filterMediaError.value =
+    "This video won't play here. Export an H.264 MP4 (or H.264 MOV) and try again.";
+}
 
 async function onFilterMediaChange(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -547,7 +557,7 @@ async function onFilterMediaChange(event: Event) {
     file.type.startsWith("video/") ||
     /\.(png|jpe?g|webp|gif|mp4|mov|m4v|webm)$/i.test(file.name);
   if (!looksRight) {
-    filterMediaError.value = `Use a PNG, JPEG, or MOV file (${file.name}).`;
+    filterMediaError.value = `Use a PNG, JPEG, MP4, or MOV file (${file.name}).`;
     return;
   }
   filterMediaBusy.value = true;
@@ -583,6 +593,7 @@ function toggleFilterGrain(id: string, event: Event) {
 }
 
 const editingFilterId = ref("");
+const filterPreviewMode = ref<"wide" | "full">("wide");
 const editingFilter = computed(
   () =>
     store.filters.find((f) => f.id === editingFilterId.value) ??
@@ -595,11 +606,41 @@ const editingAdj = computed(() =>
     : store.DEFAULT_ADJUSTMENTS,
 );
 
+function exitFilterFullscreen() {
+  filterPreviewMode.value = "wide";
+}
+
+function onFilterFullscreenKey(e: KeyboardEvent) {
+  if (e.key !== "Escape") return;
+  if (!showFiltersModal.value || filterPreviewMode.value !== "full") return;
+  e.preventDefault();
+  e.stopPropagation();
+  exitFilterFullscreen();
+}
+
 watch(showFiltersModal, (open) => {
   if (open && store.filters[0] && !editingFilterId.value) {
     editingFilterId.value = store.filters[0].id;
   }
-  if (!open) filterMediaError.value = "";
+  if (!open) {
+    filterMediaError.value = "";
+    filterPreviewMode.value = "wide";
+  }
+});
+
+watch(
+  () => showFiltersModal.value && filterPreviewMode.value === "full",
+  (active) => {
+    if (active) {
+      window.addEventListener("keydown", onFilterFullscreenKey, true);
+    } else {
+      window.removeEventListener("keydown", onFilterFullscreenKey, true);
+    }
+  },
+);
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", onFilterFullscreenKey, true);
 });
 
 watch(editingFilterId, () => {
@@ -614,6 +655,10 @@ function updateAdjustment(key: keyof FilterAdjustments, value: number) {
   const f = editingFilter.value;
   if (!f) return;
   store.setFilterAdjustments(f.id, { [key]: value });
+}
+
+function adjPct(value: number, min: number, max: number) {
+  return `${((value - min) / (max - min)) * 100}%`;
 }
 
 // Camera frame: style (wooden | color | svg), color picker, custom image upload
@@ -2313,59 +2358,90 @@ function submitEditTemplateDetails() {
     <AdminFormModal
       v-model:open="showFiltersModal"
       title="Filters"
-      description="Add .cube LUTs or Lightroom .xmp presets, then select one to fine-tune grain, levels, contrast, shadows, vignette and glow on a live camera preview."
+      description="LUT, Lightroom preset, or live adjustments on the camera preview."
       size="wide"
     >
-      <div class="filters-studio">
-      <div class="filters-studio-main">
+      <div
+        class="filters-studio"
+        :class="'filters-studio--' + filterPreviewMode"
+      >
+      <div class="filters-preview-bar">
+        <div class="filters-view-toggle" role="tablist" aria-label="Preview size">
+          <button
+            type="button"
+            role="tab"
+            class="filters-view-toggle__btn"
+            :class="{ 'filters-view-toggle__btn--on': filterPreviewMode === 'wide' }"
+            :aria-selected="filterPreviewMode === 'wide'"
+            @click="filterPreviewMode = 'wide'"
+          >
+            Wide Preview
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="filters-view-toggle__btn"
+            :class="{ 'filters-view-toggle__btn--on': filterPreviewMode === 'full' }"
+            :aria-selected="filterPreviewMode === 'full'"
+            @click="filterPreviewMode = 'full'"
+          >
+            Full Screen
+          </button>
+        </div>
+        <p class="filters-preview-bar-hint">Edit with controls visible.</p>
+      </div>
+      <Teleport to="body" :disabled="filterPreviewMode !== 'full'">
+        <div
+          class="filters-studio-preview"
+          :class="{ 'filters-studio-preview--fullscreen': filterPreviewMode === 'full' }"
+        >
+          <button
+            v-if="filterPreviewMode === 'full'"
+            type="button"
+            class="filters-fullscreen-close"
+            aria-label="Exit full screen"
+            @click="exitFilterFullscreen"
+          >
+            ×
+          </button>
+          <FilterLivePreview
+            v-if="showFiltersModal"
+            fill
+            :chrome="filterPreviewMode !== 'full'"
+            :filter="editingFilter"
+          />
+        </div>
+      </Teleport>
       <div class="filters-add-form">
         <fieldset class="filters-add-fieldset">
           <legend class="filters-add-legend">Add filter</legend>
-          <div class="filters-add-row filters-add-row--name-status">
-            <div class="filters-add-field">
-              <label class="filters-add-label" for="filter-name-input">
-                Name
-              </label>
+          <div class="filters-add-bar">
+            <input
+              id="filter-name-input"
+              v-model="newFilterName"
+              type="text"
+              class="filters-name-input"
+              placeholder="Name (e.g. Vintage Warm)"
+              aria-label="Filter name (optional, defaults to filename)"
+            />
+            <label class="filters-table-status">
               <input
-                id="filter-name-input"
-                v-model="newFilterName"
-                type="text"
-                class="filters-name-input"
-                placeholder="e.g. Vintage Warm"
-                aria-label="Filter name (optional, defaults to filename)"
+                id="filter-status-input"
+                v-model="newFilterActive"
+                type="checkbox"
+                aria-label="Set filter active on camera"
               />
-            </div>
-            <div class="filters-add-field">
-              <label class="filters-add-label" for="filter-status-input">
-                Status
-              </label>
-              <label class="filters-table-status filters-add-status">
-                <input
-                  id="filter-status-input"
-                  v-model="newFilterActive"
-                  type="checkbox"
-                  aria-label="Set filter active on camera"
-                />
-                <span>{{ newFilterActive ? "Active" : "Disabled" }}</span>
-              </label>
-            </div>
-            <div class="filters-add-field">
-              <label class="filters-add-label" for="filter-grain-input">
-                Grain
-              </label>
-              <label class="filters-table-status filters-add-status">
-                <input
-                  id="filter-grain-input"
-                  v-model="newFilterGrain"
-                  type="checkbox"
-                  aria-label="Bake film grain into captures with this filter"
-                />
-                <span>{{ newFilterGrain ? "On" : "Off" }}</span>
-              </label>
-            </div>
-          </div>
-          <div class="filters-add-row filters-add-row--upload">
-            <label class="filters-add-label">Upload LUT or Lightroom preset</label>
+              <span>Active</span>
+            </label>
+            <label class="filters-table-status">
+              <input
+                id="filter-grain-input"
+                v-model="newFilterGrain"
+                type="checkbox"
+                aria-label="Bake film grain into captures with this filter"
+              />
+              <span>Grain</span>
+            </label>
             <input
               ref="filterLutInputRef"
               id="filter-lut-file"
@@ -2375,74 +2451,58 @@ function submitEditTemplateDetails() {
               aria-label="Choose .cube LUT or Lightroom .xmp preset"
               @change="onFilterLutFileChange"
             />
-            <div class="upload-cards-row">
-              <div
-                class="upload-card upload-card--cube"
-                role="button"
-                tabindex="0"
-                aria-label="Choose .cube LUT file"
-                @click="triggerCubeUpload"
-                @keydown.enter.prevent="triggerCubeUpload"
-                @keydown.space.prevent="triggerCubeUpload"
-              >
-                <input
-                  ref="filterCubeInputRef"
-                  id="filter-cube-file"
-                  type="file"
-                  accept=".cube"
-                  class="upload-card-input"
-                  aria-label="Choose .cube LUT file"
-                  @change="onFilterLutFileChange"
-                />
-                <span class="upload-card-icon" aria-hidden="true">◇</span>
-                <span class="upload-card-text">Upload .cube file</span>
-                <span class="upload-card-hint">.cube LUT</span>
-              </div>
-              <div
-                class="upload-card upload-card--cube"
-                role="button"
-                tabindex="0"
-                aria-label="Choose Lightroom .xmp preset"
-                @click="triggerXmpUpload"
-                @keydown.enter.prevent="triggerXmpUpload"
-                @keydown.space.prevent="triggerXmpUpload"
-              >
-                <input
-                  ref="filterXmpInputRef"
-                  id="filter-xmp-file"
-                  type="file"
-                  accept=".xmp,application/rdf+xml,text/xml"
-                  class="upload-card-input"
-                  aria-label="Choose Lightroom .xmp preset"
-                  @change="onFilterLutFileChange"
-                />
-                <span class="upload-card-icon" aria-hidden="true">◈</span>
-                <span class="upload-card-text">Upload Lightroom preset</span>
-                <span class="upload-card-hint">.xmp from Lightroom</span>
-              </div>
-            </div>
-          </div>
-          <div class="filters-add-actions">
-            <p
-              v-if="filterFormMessage"
-              class="filters-form-status"
-              :class="{
-                'filters-form-status--success': filterFormStatus === 'success',
-                'filters-form-status--error': filterFormStatus === 'error',
-              }"
-              role="status"
-              aria-live="polite"
+            <input
+              ref="filterCubeInputRef"
+              id="filter-cube-file"
+              type="file"
+              accept=".cube"
+              class="upload-card-input"
+              aria-label="Choose .cube LUT file"
+              @change="onFilterLutFileChange"
+            />
+            <input
+              ref="filterXmpInputRef"
+              id="filter-xmp-file"
+              type="file"
+              accept=".xmp,application/rdf+xml,text/xml"
+              class="upload-card-input"
+              aria-label="Choose Lightroom .xmp preset"
+              @change="onFilterLutFileChange"
+            />
+            <button
+              type="button"
+              class="filters-file-btn"
+              @click="triggerCubeUpload"
             >
-              {{ filterFormMessage }}
-            </p>
+              .cube
+            </button>
+            <button
+              type="button"
+              class="filters-file-btn"
+              @click="triggerXmpUpload"
+            >
+              .xmp
+            </button>
             <button
               type="button"
               class="btn btn-primary filters-add-btn"
               @click="triggerLutUpload"
             >
-              Add filter
+              Add
             </button>
           </div>
+          <p
+            v-if="filterFormMessage"
+            class="filters-form-status"
+            :class="{
+              'filters-form-status--success': filterFormStatus === 'success',
+              'filters-form-status--error': filterFormStatus === 'error',
+            }"
+            role="status"
+            aria-live="polite"
+          >
+            {{ filterFormMessage }}
+          </p>
         </fieldset>
       </div>
       <div class="filters-table-wrap">
@@ -2565,32 +2625,31 @@ function submitEditTemplateDetails() {
           </tbody>
         </table>
       </div>
-      </div>
       <aside class="filters-studio-side">
-        <FilterLivePreview
-          v-if="showFiltersModal"
-          :filter="editingFilter"
-        />
         <div v-if="editingFilter" class="filter-adjust">
           <h3 class="filter-adjust-title">Media overlay</h3>
-          <p class="filter-adjust-hint">
-            Place a PNG, JPEG, or MOV on top of {{ editingFilter.name }}. Blend
-            mode and opacity work like a Photoshop layer.
-          </p>
-          <label
+          <div
             class="upload-card upload-card--thumb"
             :class="{
               'upload-card--filled': !!editingMediaRuntime,
               'upload-card--busy': filterMediaBusy,
             }"
+            role="button"
+            tabindex="0"
+            aria-label="Upload PNG, JPEG, MP4, or MOV overlay"
+            @click="triggerFilterMediaUpload"
+            @keydown.enter.prevent="triggerFilterMediaUpload"
+            @keydown.space.prevent="triggerFilterMediaUpload"
           >
             <input
               ref="filterMediaInputRef"
               type="file"
               :accept="FILTER_MEDIA_ACCEPT"
               class="upload-card-input"
-              aria-label="Upload PNG, JPEG, or MOV overlay"
+              aria-hidden="true"
+              tabindex="-1"
               @change="onFilterMediaChange"
+              @click.stop
             />
             <template v-if="editingMediaRuntime">
               <video
@@ -2601,6 +2660,7 @@ function submitEditTemplateDetails() {
                 loop
                 autoplay
                 playsinline
+                @error="onFilterMediaVideoError"
               />
               <img
                 v-else
@@ -2618,13 +2678,11 @@ function submitEditTemplateDetails() {
               </button>
             </template>
             <template v-else>
-              <span class="upload-card-icon" aria-hidden="true">+</span>
               <span class="upload-card-text">
-                {{ filterMediaBusy ? "Saving…" : "Upload PNG, JPEG, or MOV" }}
+                {{ filterMediaBusy ? "Saving…" : "PNG / JPEG / MP4 / MOV" }}
               </span>
-              <span class="upload-card-hint">H.264 MOV / MP4 plays most reliably</span>
             </template>
-          </label>
+          </div>
           <p v-if="filterMediaError" class="booth-warning">{{ filterMediaError }}</p>
           <p
             v-else-if="editingFilter.mediaOverlay"
@@ -2669,10 +2727,7 @@ function submitEditTemplateDetails() {
           </template>
         </div>
         <div v-if="editingFilter" class="filter-adjust">
-          <h3 class="filter-adjust-title">Advanced adjustments</h3>
-          <p class="filter-adjust-hint">
-            Fine-tune {{ editingFilter.name }}. Changes apply live and are saved on this filter.
-          </p>
+          <h3 class="filter-adjust-title">Adjustments</h3>
           <label class="filter-adjust-row">
             <span>Grain</span>
             <input
@@ -2681,10 +2736,23 @@ function submitEditTemplateDetails() {
               max="100"
               step="1"
               :value="editingAdj.grain"
-              :style="{ '--range-pct': `${editingAdj.grain}%` }"
+              :style="{ '--range-pct': adjPct(editingAdj.grain, 0, 100) }"
               @input="updateAdjustment('grain', Number(($event.target as HTMLInputElement).value))"
             />
             <span class="filter-adjust-value">{{ editingAdj.grain }}</span>
+          </label>
+          <label class="filter-adjust-row">
+            <span>Exposure</span>
+            <input
+              type="range"
+              min="-4"
+              max="4"
+              step="0.05"
+              :value="editingAdj.exposure"
+              :style="{ '--range-pct': adjPct(editingAdj.exposure, -4, 4) }"
+              @input="updateAdjustment('exposure', Number(($event.target as HTMLInputElement).value))"
+            />
+            <span class="filter-adjust-value">{{ editingAdj.exposure.toFixed(2) }}</span>
           </label>
           <label class="filter-adjust-row">
             <span>Levels</span>
@@ -2694,7 +2762,7 @@ function submitEditTemplateDetails() {
               max="100"
               step="1"
               :value="editingAdj.levels"
-              :style="{ '--range-pct': `${(editingAdj.levels + 100) / 2}%` }"
+              :style="{ '--range-pct': adjPct(editingAdj.levels, -100, 100) }"
               @input="updateAdjustment('levels', Number(($event.target as HTMLInputElement).value))"
             />
             <span class="filter-adjust-value">{{ editingAdj.levels }}</span>
@@ -2707,7 +2775,7 @@ function submitEditTemplateDetails() {
               max="100"
               step="1"
               :value="editingAdj.contrast"
-              :style="{ '--range-pct': `${(editingAdj.contrast + 100) / 2}%` }"
+              :style="{ '--range-pct': adjPct(editingAdj.contrast, -100, 100) }"
               @input="updateAdjustment('contrast', Number(($event.target as HTMLInputElement).value))"
             />
             <span class="filter-adjust-value">{{ editingAdj.contrast }}</span>
@@ -2716,24 +2784,37 @@ function submitEditTemplateDetails() {
             <span>Shadows</span>
             <input
               type="range"
-              min="0"
+              min="-100"
               max="100"
               step="1"
               :value="editingAdj.shadows"
-              :style="{ '--range-pct': `${editingAdj.shadows}%` }"
+              :style="{ '--range-pct': adjPct(editingAdj.shadows, -100, 100) }"
               @input="updateAdjustment('shadows', Number(($event.target as HTMLInputElement).value))"
             />
             <span class="filter-adjust-value">{{ editingAdj.shadows }}</span>
           </label>
           <label class="filter-adjust-row">
+            <span>Saturation</span>
+            <input
+              type="range"
+              min="-100"
+              max="100"
+              step="1"
+              :value="editingAdj.saturation"
+              :style="{ '--range-pct': adjPct(editingAdj.saturation, -100, 100) }"
+              @input="updateAdjustment('saturation', Number(($event.target as HTMLInputElement).value))"
+            />
+            <span class="filter-adjust-value">{{ editingAdj.saturation }}</span>
+          </label>
+          <label class="filter-adjust-row">
             <span>Vignette</span>
             <input
               type="range"
-              min="0"
+              min="-100"
               max="100"
               step="1"
               :value="editingAdj.vignette"
-              :style="{ '--range-pct': `${editingAdj.vignette}%` }"
+              :style="{ '--range-pct': adjPct(editingAdj.vignette, -100, 100) }"
               @input="updateAdjustment('vignette', Number(($event.target as HTMLInputElement).value))"
             />
             <span class="filter-adjust-value">{{ editingAdj.vignette }}</span>
@@ -2746,7 +2827,7 @@ function submitEditTemplateDetails() {
               max="100"
               step="1"
               :value="editingAdj.glow"
-              :style="{ '--range-pct': `${editingAdj.glow}%` }"
+              :style="{ '--range-pct': adjPct(editingAdj.glow, 0, 100) }"
               @input="updateAdjustment('glow', Number(($event.target as HTMLInputElement).value))"
             />
             <span class="filter-adjust-value">{{ editingAdj.glow }}</span>
@@ -4005,15 +4086,16 @@ function submitEditTemplateDetails() {
   letter-spacing: 0.02em;
 }
 
-/* Add filter form */
 .filters-add-form {
-  margin-bottom: 1.25rem;
+  grid-area: add;
+  min-width: 0;
+  overflow: visible;
 }
 
 .filters-add-fieldset {
   border: 1px solid var(--color-brown-light);
   border-radius: 8px;
-  padding: 1rem 1.25rem;
+  padding: 0.35rem 0.75rem 0.45rem;
   background: var(--color-cream);
   margin: 0;
 }
@@ -4021,89 +4103,61 @@ function submitEditTemplateDetails() {
 .filters-add-legend {
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   color: var(--color-brown-dark);
-  padding: 0 0.5rem;
-  margin-bottom: 0.75rem;
+  padding: 0 0.4rem;
 }
 
-.filters-add-row {
+.filters-add-bar {
   display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  margin-bottom: 0.75rem;
-}
-
-.filters-add-row:last-of-type {
-  margin-bottom: 0;
-}
-
-.filters-add-row--name-status {
-  flex-direction: row;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 1.5rem;
+  align-items: center;
+  gap: 0.5rem 0.7rem;
 }
 
-.filters-add-row--name-status .filters-add-field:first-child {
-  flex: 1 1 70%;
-  min-width: 200px;
+.filters-add-bar .filters-name-input {
+  flex: 1 1 12rem;
+  max-width: 18rem;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.88rem;
 }
 
-.filters-add-row--name-status .filters-add-field:last-child {
-  flex: 0 0 auto;
+.filters-studio--wide .filters-add-bar .filters-name-input {
+  flex: 1 1 100%;
+  max-width: none;
 }
 
-.filters-add-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  min-width: 0;
+.filters-studio--wide .filters-add-btn {
+  margin-left: 0;
 }
 
-.filters-add-field .filters-name-input {
-  max-width: 100%;
-}
-
-.filters-add-label {
-  font-size: 0.9rem;
-  font-weight: 500;
+.filters-file-btn {
+  padding: 0.35rem 0.7rem;
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  font-weight: 600;
   color: var(--color-brown-dark);
+  background: var(--color-cream);
+  border: 1.5px dashed var(--color-brown-light);
+  border-radius: 7px;
+  cursor: pointer;
 }
 
-.filters-add-row--upload {
-  flex-direction: column;
-  align-items: stretch;
-}
-
-.filters-add-row--upload .upload-cards-row {
-  width: 100%;
-}
-
-.filters-add-row--upload .filters-add-label {
-  flex: none;
-}
-
-.upload-card--cube {
-  width: 100%;
-  min-height: 100px;
-}
-
-.upload-card--cube .upload-card-icon {
-  font-size: 1.5rem;
+.filters-file-btn:hover {
+  border-color: var(--color-brown);
 }
 
 .filters-add-btn {
-  padding: 0.5rem 1.25rem;
-  font-size: 0.95rem;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.88rem;
   font-family: var(--font-display);
   font-weight: 600;
-  border-radius: 8px;
+  border-radius: 7px;
   border: 2px solid var(--color-brown);
   background: linear-gradient(180deg, #e8c872 0%, #c9a227 50%, #a68520 100%);
   color: var(--color-brown-dark);
   cursor: pointer;
-  transition: all 0.2s ease;
+  margin-left: auto;
 }
 
 .filters-add-btn:hover {
@@ -4113,9 +4167,9 @@ function submitEditTemplateDetails() {
 .filters-name-input {
   width: 100%;
   max-width: 280px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.35rem 0.6rem;
   font-family: var(--font-body);
-  font-size: 0.95rem;
+  font-size: 0.88rem;
   border: 1px solid var(--color-brown-light);
   border-radius: 6px;
   background: var(--color-bg);
@@ -4131,26 +4185,9 @@ function submitEditTemplateDetails() {
   outline-offset: 2px;
 }
 
-.filters-add-status {
-  margin-top: 0.25rem;
-}
-
-.filters-add-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.75rem;
-  margin-top: 1rem;
-}
-
-.filters-add-actions .filters-form-status {
-  margin-right: auto;
-}
-
 .filters-form-status {
-  margin: 0;
-  font-size: 0.9rem;
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
   color: var(--color-brown-dark);
 }
 
@@ -4163,23 +4200,149 @@ function submitEditTemplateDetails() {
 }
 
 .filters-table-wrap {
-  overflow-x: auto;
-  margin-top: 0.5rem;
+  grid-area: list;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  margin-top: 0;
+}
+
+.filters-studio-preview {
+  grid-area: preview;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.filters-studio-side .upload-card {
+  min-height: 48px;
+  padding: 0.4rem 0.55rem;
+}
+
+.filters-studio-side .upload-card-preview {
+  min-height: 36px;
+  max-height: 48px;
+}
+
+.filters-studio-side .upload-card-text {
+  font-size: 0.78rem;
+}
+
+.filters-studio--full .filters-preview-bar,
+.filters-studio--full .filters-add-form,
+.filters-studio--full .filters-table-wrap,
+.filters-studio--full .filters-studio-side {
+  display: none;
 }
 
 .filters-studio {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
-  gap: 1.25rem;
-  align-items: start;
+  gap: 0.5rem 0.85rem;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 
-.filters-studio-side {
-  position: sticky;
-  top: 0;
+.filters-studio--wide {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 32vw);
+  grid-template-rows: auto auto minmax(0, auto) minmax(0, 1fr);
+  grid-template-areas:
+    "bar bar"
+    "preview add"
+    "preview list"
+    "preview adjust";
+}
+
+.filters-studio--full {
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "preview";
+}
+
+.filters-studio-preview--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  background: #000;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+}
+
+.filters-studio-preview--fullscreen :deep(.flp) {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.filters-fullscreen-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 3;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.filters-fullscreen-close:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.filters-preview-bar {
+  grid-area: bar;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+}
+
+.filters-view-toggle {
+  display: flex;
+  background: var(--color-cream-dark);
+  border: 2px solid var(--color-brown-light);
+  border-radius: 10px;
+  padding: 4px;
+}
+
+.filters-view-toggle__btn {
+  padding: 0.4rem 0.9rem;
+  border: none;
+  background: transparent;
+  color: var(--color-brown);
+  cursor: pointer;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+
+.filters-view-toggle__btn:hover:not(.filters-view-toggle__btn--on) {
+  color: var(--color-brown-dark);
+}
+
+.filters-view-toggle__btn--on {
+  background: var(--color-brown-dark);
+  color: var(--color-cream);
+}
+
+.filters-preview-bar-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-brown);
+  line-height: 1.35;
 }
 
 .filters-table tbody tr {
@@ -4197,8 +4360,8 @@ function submitEditTemplateDetails() {
 .filter-adjust {
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
-  padding: 0.85rem 1rem;
+  gap: 0.4rem;
+  padding: 0.5rem 0.7rem;
   border: 1px solid var(--color-brown-light);
   border-radius: 8px;
   background: var(--color-cream);
@@ -4207,24 +4370,24 @@ function submitEditTemplateDetails() {
 .filter-adjust-title {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   font-weight: 700;
   color: var(--color-brown-dark);
 }
 
 .filter-adjust-hint {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   color: var(--color-brown);
-  line-height: 1.35;
+  line-height: 1.3;
 }
 
 .filter-adjust-row {
   display: grid;
-  grid-template-columns: 5.2rem 1fr 2.6rem;
+  grid-template-columns: 5.6rem 1fr 2.8rem;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
+  gap: 0.35rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--color-brown-dark);
 }
@@ -4240,8 +4403,15 @@ function submitEditTemplateDetails() {
 }
 
 @media (max-width: 860px) {
-  .filters-studio {
+  .filters-studio--wide {
     grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto minmax(180px, 32vh) minmax(0, 1fr);
+    grid-template-areas:
+      "bar"
+      "add"
+      "list"
+      "preview"
+      "adjust";
   }
 }
 
@@ -4249,12 +4419,12 @@ function submitEditTemplateDetails() {
   width: 100%;
   border-collapse: collapse;
   font-family: var(--font-body);
-  font-size: 0.9rem;
+  font-size: 0.8rem;
 }
 
 .filters-table th,
 .filters-table td {
-  padding: 0.5rem 0.75rem;
+  padding: 0.28rem 0.45rem;
   text-align: left;
   border-bottom: 1px solid var(--color-brown-light);
 }

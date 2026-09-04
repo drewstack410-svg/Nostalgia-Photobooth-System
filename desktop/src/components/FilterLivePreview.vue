@@ -21,14 +21,22 @@ import {
   buildCubePreview,
   glowPreviewSvg,
   grainPreviewOpacity,
+  saturationPreviewAmount,
   vignettePreviewStyle,
 } from "@/utils/filterPreview";
 import type { CubePreview } from "@/utils/filterPreview";
 import FilterOverlayLayers from "@/components/FilterOverlayLayers.vue";
 
-const props = defineProps<{
-  filter: CameraFilter | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    filter: CameraFilter | null;
+    /** Fill the parent instead of a fixed 3:2 box. */
+    fill?: boolean;
+    /** Show “Live preview” label and filter name under the frame. */
+    chrome?: boolean;
+  }>(),
+  { fill: false, chrome: true },
+);
 
 const store = usePhotoboothStore();
 const videoRef = ref<HTMLVideoElement | null>(null);
@@ -64,12 +72,16 @@ const previewMatrix = computed(() => {
 const adjustmentTable = computed(() => buildAdjustmentTable(adj.value));
 
 const glowSvg = computed(() => glowPreviewSvg(adj.value.glow));
+const saturationAmount = computed(() =>
+  saturationPreviewAmount(adj.value.saturation),
+);
 
 const hasPreviewFilter = computed(
   () =>
     !!previewMatrix.value ||
     !!cubeCurves.value ||
     !!adjustmentTable.value ||
+    !!saturationAmount.value ||
     !!glowSvg.value,
 );
 
@@ -201,8 +213,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flp">
-    <p class="flp-label">Live preview</p>
+  <div class="flp" :class="{ 'flp--fill': fill, 'flp--bare': !chrome }">
+    <p v-if="chrome" class="flp-label">Live preview</p>
     <div class="flp-frame">
       <svg class="flp-defs" aria-hidden="true" focusable="false" width="0" height="0">
         <filter
@@ -228,6 +240,11 @@ onUnmounted(() => {
             <feFuncG type="table" :tableValues="adjustmentTable" />
             <feFuncB type="table" :tableValues="adjustmentTable" />
           </feComponentTransfer>
+          <feColorMatrix
+            v-if="saturationAmount"
+            type="saturate"
+            :values="saturationAmount"
+          />
           <feOffset v-if="glowSvg" dx="0" dy="0" result="preGlow" />
           <feColorMatrix
             v-if="glowSvg"
@@ -279,7 +296,7 @@ onUnmounted(() => {
         :grain-style="grainStyle"
       />
     </div>
-    <p class="flp-hint">
+    <p v-if="chrome" class="flp-hint">
       {{ filter ? filter.name : "Select a filter" }}
     </p>
   </div>
@@ -290,6 +307,33 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.flp--fill {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.flp--fill .flp-label,
+.flp--fill .flp-hint {
+  font-size: 0.75rem;
+}
+
+.flp--fill .flp-frame,
+.flp--bare .flp-frame {
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: auto;
+}
+
+.flp--bare {
+  gap: 0;
+}
+
+.flp--bare .flp-frame {
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .flp-label {

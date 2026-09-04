@@ -150,24 +150,30 @@ function applyBase(px: number[], base?: string): number[] {
 export interface FilterAdjustments {
   /** Film-grain strength, 0–100. 0 = none. */
   grain: number;
-  /** Gamma / exposure-style levels, −100 (crush) to +100 (lift). */
+  /** Exposure in stops, −4.00 to +4.00. 0 = unchanged. */
+  exposure: number;
+  /** Gamma / levels, −100 (crush) to +100 (lift). */
   levels: number;
   /** Contrast, −100 (flat) to +100 (punchy). */
   contrast: number;
-  /** Shadow lift, 0–100. Only raises dark tones. */
+  /** Shadows, −100 (crush) to +100 (lift). */
   shadows: number;
-  /** Edge darkening, 0–100. 0 = none. */
+  /** Edge darken (+) or lighten (−), −100 to +100. */
   vignette: number;
+  /** Saturation, −100 (grey) to +100 (vivid). */
+  saturation: number;
   /** Soft highlight bloom, 0–100. 0 = none. */
   glow: number;
 }
 
 export const DEFAULT_ADJUSTMENTS: FilterAdjustments = {
   grain: 0,
+  exposure: 0,
   levels: 0,
   contrast: 0,
   shadows: 0,
   vignette: 0,
+  saturation: 0,
   glow: 0,
 };
 
@@ -176,7 +182,7 @@ function clamp01(v: number): number {
 }
 
 /**
- * Maps a 0..1 channel through levels (gamma), contrast, then shadow lift.
+ * Maps a 0..1 channel through exposure, levels, contrast, then shadows.
  * Same curve the capture path bakes in, so the live preview stays honest.
  */
 export function applyAdjustmentSample(
@@ -184,14 +190,17 @@ export function applyAdjustmentSample(
   adj: FilterAdjustments,
 ): number {
   let v = clamp01(x);
+  if (adj.exposure) {
+    v *= Math.pow(2, adj.exposure);
+  }
   if (adj.levels !== 0) {
     const gamma = Math.max(0.25, 1 - adj.levels / 200);
-    v = Math.pow(v, gamma);
+    v = Math.pow(clamp01(v), gamma);
   }
   if (adj.contrast !== 0) {
     v = (v - 0.5) * (1 + adj.contrast / 100) + 0.5;
   }
-  if (adj.shadows > 0) {
+  if (adj.shadows !== 0) {
     v = v + Math.pow(1 - clamp01(v), 2) * (adj.shadows / 100) * 0.45;
   }
   return clamp01(v);
@@ -199,7 +208,7 @@ export function applyAdjustmentSample(
 
 /** feComponentTransfer tableValues, or null when the curve is identity. */
 export function buildAdjustmentTable(adj: FilterAdjustments): string | null {
-  if (!adj.levels && !adj.contrast && !adj.shadows) return null;
+  if (!adj.exposure && !adj.levels && !adj.contrast && !adj.shadows) return null;
   const n = 17;
   const pts: string[] = [];
   for (let i = 0; i < n; i++) {
@@ -210,7 +219,7 @@ export function buildAdjustmentTable(adj: FilterAdjustments): string | null {
 
 /** 256-entry LUT used when baking adjustments into a capture. */
 export function buildAdjustmentLut(adj: FilterAdjustments): Uint8Array | null {
-  if (!adj.levels && !adj.contrast && !adj.shadows) return null;
+  if (!adj.exposure && !adj.levels && !adj.contrast && !adj.shadows) return null;
   const lut = new Uint8Array(256);
   for (let i = 0; i < 256; i++) {
     lut[i] = Math.round(applyAdjustmentSample(i / 255, adj) * 255);
@@ -226,26 +235,47 @@ export function applyAdjustmentsToImageData(
   if (lut) {
     const data = imageData.data;
     for (let i = 0; i < data.length; i += 4) {
-      data[i] = lut[data[i]];
-      data[i + 1] = lut[data[i + 1]];
-      data[i + 2] = lut[data[i + 2]];
+      data[i] = lut[data[i]!];
+      data[i + 1] = lut[data[i + 1]!];
+      data[i + 2] = lut[data[i + 2]!];
     }
   }
+  applySaturationToImageData(imageData, adj.saturation);
   applyGlowToImageData(imageData, adj.glow);
   applyVignetteToImageData(imageData, adj.vignette);
 }
 
+/** feColorMatrix saturate value, or null when unchanged. */
+export function saturationPreviewAmount(saturation: number): string | null {
+  if (!saturation) return null;
+  return (1 + saturation / 100).toFixed(3);
+}
+
+function applySaturationToImageData(imageData: ImageData, saturation: number): void {
+  if (!saturation) return;
+  const s = 1 + Math.max(-100, Math.min(100, saturation)) / 100;
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i]!;
+    const g = data[i + 1]!;
+    const b = data[i + 2]!;
+    const y = LR * r + LG * g + LB * b;
+    data[i] = Math.max(0, Math.min(255, y + s * (r - y)));
+    data[i + 1] = Math.max(0, Math.min(255, y + s * (g - y)));
+    data[i + 2] = Math.max(0, Math.min(255, y + s * (b - y)));
+  }
+}
+
 /**
- * Darkens toward the corners. Inner ~35% of the frame stays untouched;
- * falloff is quadratic so the centre of the face doesn't pick up a
- * grey wash. Strength 100 ≈ 72% multiply-down at the corners.
+ * Darkens (+) or lightens (−) toward the corners. Inner ~35% of the
+ * frame stays untouched; falloff is quadratic so faces stay clean.
  */
 export function applyVignetteToImageData(
   imageData: ImageData,
   vignette: number,
 ): void {
-  const amount = Math.max(0, Math.min(100, vignette)) / 100;
-  if (amount <= 0) return;
+  const signed = Math.max(-100, Math.min(100, vignette)) / 100;
+  if (!signed) return;
   const data = imageData.data;
   const w = imageData.width;
   const h = imageData.height;
@@ -254,7 +284,8 @@ export function applyVignetteToImageData(
   const maxDist = Math.hypot(cx, cy) || 1;
   const inner = 0.35;
   const span = 1 - inner;
-  const strength = amount * 0.72;
+  const strength = Math.abs(signed) * 0.72;
+  const darken = signed > 0;
   for (let y = 0; y < h; y++) {
     const dy = (y - cy) / maxDist;
     for (let x = 0; x < w; x++) {
@@ -262,11 +293,18 @@ export function applyVignetteToImageData(
       let t = (d - inner) / span;
       if (t <= 0) continue;
       if (t > 1) t = 1;
-      const m = 1 - strength * t * t;
+      const falloff = strength * t * t;
       const i = (y * w + x) * 4;
-      data[i] *= m;
-      data[i + 1] *= m;
-      data[i + 2] *= m;
+      if (darken) {
+        const m = 1 - falloff;
+        data[i]! *= m;
+        data[i + 1]! *= m;
+        data[i + 2]! *= m;
+      } else {
+        data[i] = data[i]! + (255 - data[i]!) * falloff;
+        data[i + 1] = data[i + 1]! + (255 - data[i + 1]!) * falloff;
+        data[i + 2] = data[i + 2]! + (255 - data[i + 2]!) * falloff;
+      }
     }
   }
 }
@@ -359,14 +397,16 @@ export function grainPreviewOpacity(grain: number): number {
 export function vignettePreviewStyle(
   vignette: number,
 ): Record<string, string> | null {
-  const amount = Math.max(0, Math.min(100, vignette));
-  if (amount <= 0) return null;
+  const signed = Math.max(-100, Math.min(100, vignette));
+  if (!signed) return null;
+  const amount = Math.abs(signed);
   const inner = Math.max(18, 58 - amount * 0.18);
   const mid = Math.min(90, inner + 26);
   const edge = (amount / 100) * 0.78;
   const soft = (amount / 100) * 0.28;
+  const rgb = signed > 0 ? "0,0,0" : "255,255,255";
   return {
-    background: `radial-gradient(ellipse at center, transparent ${inner}%, rgba(0,0,0,${soft.toFixed(3)}) ${mid}%, rgba(0,0,0,${edge.toFixed(3)}) 100%)`,
+    background: `radial-gradient(ellipse at center, transparent ${inner}%, rgba(${rgb},${soft.toFixed(3)}) ${mid}%, rgba(${rgb},${edge.toFixed(3)}) 100%)`,
   };
 }
 

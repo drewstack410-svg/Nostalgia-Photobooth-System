@@ -6,8 +6,8 @@ defineProps<{
   title: string;
   /** Optional description shown below title */
   description?: string;
-  /** Size: default (500px) or large (900px) */
-  size?: "default" | "large" | "wide";
+  /** Size: default (500px), large (900px), wide (studio), or full (viewport) */
+  size?: "default" | "large" | "wide" | "full";
 }>();
 
 const emit = defineEmits<{
@@ -31,6 +31,9 @@ function onOverlayClick(e: MouseEvent) {
       <div
         v-if="open"
         class="admin-form-modal__overlay"
+        :class="{
+          'admin-form-modal__overlay--fill': size === 'wide' || size === 'full',
+        }"
         role="dialog"
         aria-modal="true"
         :aria-labelledby="title ? 'admin-form-modal-title' : undefined"
@@ -41,6 +44,8 @@ function onOverlayClick(e: MouseEvent) {
           :class="{
             'admin-form-modal--large': size === 'large',
             'admin-form-modal--wide': size === 'wide',
+            'admin-form-modal--full': size === 'full',
+            'admin-form-modal--fill': size === 'wide' || size === 'full',
           }"
         >
           <div class="admin-form-modal__header">
@@ -99,8 +104,33 @@ function onOverlayClick(e: MouseEvent) {
   max-width: 900px;
 }
 
-.admin-form-modal--wide {
-  max-width: 1120px;
+.admin-form-modal__overlay--fill {
+  padding: 0.6rem;
+}
+
+.admin-form-modal--wide,
+.admin-form-modal--full {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+}
+
+.admin-form-modal--fill .admin-form-modal__header {
+  padding: 0.75rem 1rem 0;
+}
+
+.admin-form-modal--fill .admin-form-modal__description {
+  margin: 0.25rem 1rem 0;
+  font-size: 0.82rem;
+}
+
+.admin-form-modal--fill .admin-form-modal__body {
+  padding: 0.65rem 1rem 0.85rem;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .admin-form-modal__header {

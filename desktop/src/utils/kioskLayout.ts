@@ -68,6 +68,27 @@ export function lockKioskStartButtonSize(box: WelcomeBox): WelcomeBox {
   return { ...box, w: KIOSK_START_BTN_W, h: KIOSK_START_BTN_H };
 }
 
+/** Live PrintingView: 500px gold slot, 280px square plaque. */
+const PRINT_SLOT_W_PX = 500;
+const PRINT_SLOT_H_PX = 340;
+const PRINT_PLAQUE_PX = 280;
+
+export function kioskPrintSlotBox(): WelcomeBox {
+  const w = PRINT_SLOT_W_PX / WELCOME_CANVAS_W;
+  const h = PRINT_SLOT_H_PX / WELCOME_CANVAS_H;
+  return { x: (1 - w) / 2, y: 0.1, w, h };
+}
+
+export function kioskPrintPlaqueBox(): WelcomeBox {
+  const w = PRINT_PLAQUE_PX / WELCOME_CANVAS_W;
+  const h = PRINT_PLAQUE_PX / WELCOME_CANVAS_H;
+  return { x: (1 - w) / 2, y: 0.54, w, h };
+}
+
+export function kioskPrintStatusBox(): WelcomeBox {
+  return { x: 0.34, y: 0.435, w: 0.32, h: 0.07 };
+}
+
 export function isKioskActionButton(
   screenId: KioskScreenId,
   itemId: string,
@@ -313,7 +334,7 @@ export const KIOSK_SCREENS: KioskScreenDef[] = [
         id: "doneBtn",
         label: "Done button",
         kind: "button",
-        box: { x: 0.78, y: 0.05, w: 0.14, h: 0.09 },
+        box: { x: 0.78, y: 0.045, w: 0.14, h: 0.08 },
         buttonLabel: "Done",
         buttonVariant: "wood",
       },
@@ -321,13 +342,13 @@ export const KIOSK_SCREENS: KioskScreenDef[] = [
         id: "slot",
         label: "Printer slot",
         kind: "widget",
-        box: { x: 0.22, y: 0.12, w: 0.56, h: 0.52 },
+        box: kioskPrintSlotBox(),
       },
       {
         id: "status",
         label: "Print status",
         kind: "text",
-        box: { x: 0.25, y: 0.66, w: 0.5, h: 0.07 },
+        box: kioskPrintStatusBox(),
         text: body("Printing your photo…", 26, {
           fontFamily: "var(--font-display)",
         }),
@@ -336,7 +357,7 @@ export const KIOSK_SCREENS: KioskScreenDef[] = [
         id: "plaque",
         label: "Delivery plaque",
         kind: "widget",
-        box: { x: 0.38, y: 0.74, w: 0.24, h: 0.2 },
+        box: kioskPrintPlaqueBox(),
       },
     ],
   },
@@ -530,14 +551,21 @@ export function normalizeKioskLayout(
       items[id] = lockKioskStartButtonSize(items[id]!);
     }
   }
-  if (screenId === "camera") {
-    const legacy: Record<string, WelcomeBox> = {
-      strip: { x: 0.03, y: 0.07, w: 0.22, h: 0.7 },
-      viewfinder: { x: 0.27, y: 0.05, w: 0.46, h: 0.68 },
-      filters: { x: 0.27, y: 0.75, w: 0.46, h: 0.1 },
-      startBtn: { x: 0.76, y: 0.28, w: 0.18, h: 0.12 },
-      counter: { x: 0.74, y: 0.42, w: 0.22, h: 0.08 },
-    };
+  if (screenId === "camera" || screenId === "printing") {
+    const legacy: Record<string, WelcomeBox> =
+      screenId === "camera"
+        ? {
+            strip: { x: 0.03, y: 0.07, w: 0.22, h: 0.7 },
+            viewfinder: { x: 0.27, y: 0.05, w: 0.46, h: 0.68 },
+            filters: { x: 0.27, y: 0.75, w: 0.46, h: 0.1 },
+            startBtn: { x: 0.76, y: 0.28, w: 0.18, h: 0.12 },
+            counter: { x: 0.74, y: 0.42, w: 0.22, h: 0.08 },
+          }
+        : {
+            slot: { x: 0.22, y: 0.12, w: 0.56, h: 0.52 },
+            status: { x: 0.25, y: 0.66, w: 0.5, h: 0.07 },
+            plaque: { x: 0.38, y: 0.74, w: 0.24, h: 0.2 },
+          };
     for (const item of def.items) {
       const old = legacy[item.id];
       const cur = items[item.id];
@@ -549,6 +577,11 @@ export function normalizeKioskLayout(
         Math.abs(cur.h - old.h) < 0.015;
       if (near) items[item.id] = { ...item.box };
     }
+  }
+  if (screenId === "printing" && items.slot && items.slot.w > 0.28) {
+    items.slot = kioskPrintSlotBox();
+    items.status = kioskPrintStatusBox();
+    items.plaque = kioskPrintPlaqueBox();
   }
   const ids = knownKioskIds(next, screenId);
   const seen = new Set<string>();
