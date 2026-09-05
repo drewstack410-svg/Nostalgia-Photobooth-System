@@ -4,14 +4,13 @@ import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import type { CameraFilter } from "@/stores/photobooth";
-import { loadLut, applyLutToImageData } from "@/utils/lut";
+import { loadLut } from "@/utils/lut";
 import type { ParsedLut } from "@/utils/lut";
-import { applyCaptureLook, drawLookMedia } from "@/utils/applyCaptureLook";
+import { applyCaptureLook } from "@/utils/applyCaptureLook";
 import {
   BW_MATRIX,
   FUJIFILM_MATRIX,
   SEPIA_MATRIX,
-  applyAdjustmentsToImageData,
   buildAdjustmentTable,
   buildCubePreview,
   glowPreviewSvg,
@@ -234,13 +233,19 @@ const livePreviewFilterBlurred = computed(() =>
 watch(
   selectedFilter,
   async (f) => {
-    if (!f || f.effectType !== "cube" || !f.cubeData) {
+    if (!f || f.effectType !== "cube") {
+      cubeCurves.value = null;
+      highlightLut.value = null;
+      return;
+    }
+    const cubeData = await store.ensureFilterCubeData(f);
+    if (!cubeData) {
       cubeCurves.value = null;
       highlightLut.value = null;
       return;
     }
     try {
-      const lut = await loadLut(f.cubeData);
+      const lut = await loadLut(cubeData);
       highlightLut.value = lut;
       const preview = buildCubePreview(lut, f.baseFilter);
       cubeCurves.value = preview;
@@ -973,49 +978,27 @@ async function capturePhotoInner(hadLiveView: boolean) {
         // Unfiltered full frame for the local session folder only.
         const originalImageData = canvas.toDataURL("image/jpeg", 0.92);
 
-        // Apply colour filter
+        // Bake the selected look (tone / .cube / XMP LUT, overlay, sliders)
+        // onto the still — same stack as the live preview and highlight clips.
         const filter = selectedFilter.value;
-        const effectType = filter?.effectType ?? "original";
-
-        /**
-         * Apply a named pixel-level colour effect to whatever is currently on
-         * the canvas. Extracted so it can be called both as a standalone filter
-         * and as the "base" step before a cube LUT.
-         */
-        function applyPixelFilter(type: string) {
-          const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
-          const data = imageData.data;
-          if (type === "sepia") {
-            for (let i = 0; i < data.length; i += 4) {
-              const r = data[i], g = data[i + 1], b = data[i + 2];
-              data[i]     = Math.min(255, r * 0.393 + g * 0.769 + b * 0.189);
-              data[i + 1] = Math.min(255, r * 0.349 + g * 0.686 + b * 0.168);
-              data[i + 2] = Math.min(255, r * 0.272 + g * 0.534 + b * 0.131);
-            }
-          } else if (type === "bw") {
-            for (let i = 0; i < data.length; i += 4) {
-              const gray = Math.min(255, 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
-              data[i] = data[i + 1] = data[i + 2] = gray;
-            }
-          } else if (type === "fujifilm") {
-            for (let i = 0; i < data.length; i += 4) {
-              const r = data[i], g = data[i + 1], b = data[i + 2];
-              const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-              data[i]     = Math.min(255, (r + gray * 0.4) * 0.9);
-              data[i + 1] = Math.min(255, (g + gray * 0.35) * 0.92);
-              data[i + 2] = Math.min(255, (b + gray * 0.2) * 0.85);
+        let lut = highlightLut.value;
+        if (filter?.effectType === "cube" && !lut) {
+          const cubeData = await store.ensureFilterCubeData(filter);
+          if (cubeData) {
+            try {
+              lut = await loadLut(cubeData);
+              highlightLut.value = lut;
+            } catch (e) {
+              console.warn("[Camera] LUT load failed at capture:", e);
             }
           }
-          ctx!.putImageData(imageData, 0, 0);
+        }
+        if (filter?.effectType === "cube" && !lut) {
+          console.warn(
+            `[Camera] Cube filter "${filter.name}" has no LUT data — capture will be unfiltered`,
+          );
         }
 
-        // Film grain: per-pixel monochrome noise (same offset on R/G/B
-        // so it reads as luminance grain rather than colour static),
-        // baked into the capture for Sepia/B&W/Fujifilm — the same three
-        // filters that get the CSS grain overlay in the live preview
-        // (see hasGrainOverlay). `intensity` is the max +/- offset —
-        // bumped from 14 (barely visible on a full-res 3600×2400 photo)
-        // to a clearly-visible level.
         function applyGrain(intensity = 34) {
           const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
           const data = imageData.data;
@@ -1028,63 +1011,33 @@ async function capturePhotoInner(hadLiveView: boolean) {
           ctx!.putImageData(imageData, 0, 0);
         }
 
-        if (effectType === "sepia" || effectType === "bw" || effectType === "fujifilm") {
-          applyPixelFilter(effectType);
-        } else if (effectType === "cube" && filter?.cubeData) {
-          // Step 1 — base colour preset (e.g. sepia), if specified
-          if (filter.baseFilter && filter.baseFilter !== "original") {
-            console.log(`[Camera] Applying base filter: ${filter.baseFilter}`);
-            applyPixelFilter(filter.baseFilter);
-          }
-          // Step 2 — cube LUT on top of the base-filtered result
-          console.log(`[Camera] Applying LUT: ${filter.name}`);
-          const lut = await loadLut(filter.cubeData);
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          applyLutToImageData(imageData, lut);
-          ctx.putImageData(imageData, 0, 0);
-          console.log(`[Camera] LUT applied: ${filter.name}`);
-        }
+        applyCaptureLook(ctx, {
+          effectType: filter?.effectType ?? "original",
+          baseFilter: filter?.baseFilter,
+          lut,
+          overlay:
+            filter?.overlay && filter.overlay.opacity > 0
+              ? {
+                  color: filter.overlay.color,
+                  blendMode: filter.overlay.blendMode,
+                  opacity: filter.overlay.opacity,
+                }
+              : null,
+          media:
+            filter?.mediaOverlay &&
+            lookMediaSource() &&
+            filter.mediaOverlay.opacity > 0
+              ? {
+                  source: lookMediaSource()!,
+                  blendMode: filter.mediaOverlay.blendMode,
+                  opacity: filter.mediaOverlay.opacity,
+                }
+              : null,
+          adjustments: filter ? store.resolvedAdjustments(filter) : null,
+        });
 
-        // Composite the colour wash (Settings → Filters → Overlay), the
-        // equivalent of a Photoshop fill layer set to a blend mode. It goes
-        // on AFTER the tone/LUT and BEFORE grain, which is the same order
-        // the live preview stacks its layers in — see `overlayStyle`.
-        //
-        // globalCompositeOperation takes the very same blend-mode names as
-        // CSS mix-blend-mode and implements the same W3C formulas, so the
-        // preview and the print agree without any conversion.
-        const overlay = filter?.overlay;
-        if (overlay && overlay.opacity > 0) {
-          console.log(
-            `[Camera] Applying overlay ${overlay.color} ${overlay.blendMode} @ ${Math.round(overlay.opacity * 100)}%`,
-          );
-          ctx.save();
-          ctx.globalCompositeOperation =
-            overlay.blendMode as GlobalCompositeOperation;
-          ctx.globalAlpha = overlay.opacity;
-          ctx.fillStyle = overlay.color;
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.restore();
-        }
-
-        const mediaLayer = filter?.mediaOverlay;
-        const mediaEl = lookMediaSource();
-        if (mediaLayer && mediaEl && mediaLayer.opacity > 0) {
-          console.log(
-            `[Camera] Applying media overlay ${mediaLayer.mediaName} ${mediaLayer.blendMode} @ ${Math.round(mediaLayer.opacity * 100)}%`,
-          );
-          drawLookMedia(ctx, mediaEl, mediaLayer.blendMode, mediaLayer.opacity);
-        }
-
-        // Bake exposure / levels / contrast / shadows / saturation /
-        // glow / vignette AFTER overlay and BEFORE grain — same stack
-        // as the live preview.
         if (filter) {
           const adj = store.resolvedAdjustments(filter);
-          const adjusted = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          applyAdjustmentsToImageData(adjusted, adj);
-          ctx.putImageData(adjusted, 0, 0);
-
           if (adj.grain > 0) {
             console.log("[Camera] Applying film grain", adj.grain);
             applyGrain(grainCaptureIntensity(adj.grain));

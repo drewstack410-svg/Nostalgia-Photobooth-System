@@ -125,12 +125,17 @@ const vignetteStyle = computed(() => vignettePreviewStyle(adj.value.vignette));
 watch(
   () => props.filter,
   async (f) => {
-    if (!f || f.effectType !== "cube" || !f.cubeData) {
+    if (!f || f.effectType !== "cube") {
+      cubeCurves.value = null;
+      return;
+    }
+    const cubeData = await store.ensureFilterCubeData(f);
+    if (!cubeData) {
       cubeCurves.value = null;
       return;
     }
     try {
-      const lut = await loadLut(f.cubeData);
+      const lut = await loadLut(cubeData);
       cubeCurves.value = buildCubePreview(lut, f.baseFilter);
     } catch {
       cubeCurves.value = null;

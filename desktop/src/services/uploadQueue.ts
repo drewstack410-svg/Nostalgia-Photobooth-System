@@ -137,8 +137,18 @@ function stampStrips(sessionId: string, status: MediaUploadStatus, shareableUrl?
   });
 }
 
+export function isBrowserOffline(): boolean {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
+export type UploadRetryResult = {
+  ok: boolean;
+  uploaded?: number;
+  noConnection?: boolean;
+};
+
 export async function cloudIsReady(timeoutMs = PING_TIMEOUT_MS): Promise<boolean> {
-  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+  if (isBrowserOffline()) {
     return false;
   }
   try {
@@ -366,33 +376,56 @@ export async function processPendingUploads(): Promise<number> {
   return ok;
 }
 
-export async function retrySessionUpload(sessionId: string): Promise<boolean> {
+export async function retrySessionUpload(
+  sessionId: string,
+): Promise<UploadRetryResult> {
   let job: GalleryUploadJob | undefined = jobs.find(
     (j) => j.sessionId === sessionId,
   );
   if (!job) {
     const rebuilt = await reconstructJobFromDisk(sessionId);
-    if (!rebuilt) return false;
+    if (!rebuilt) return { ok: false };
     job = rebuilt;
     enqueueGalleryUpload(job);
   } else if (job.status === "done") {
-    return true;
+    return { ok: true };
   } else {
     patchJob(sessionId, { status: "pending", error: undefined });
     stampStrips(sessionId, "pending");
   }
-  if (!(await cloudIsReady())) return false;
-  return processSessionUpload(sessionId);
+  if (isBrowserOffline() || !(await cloudIsReady())) {
+    return { ok: false, noConnection: true };
+  }
+  const ok = await processSessionUpload(sessionId);
+  return { ok };
 }
 
-export async function retryPendingUploads(): Promise<number> {
+export async function retryPendingUploads(): Promise<UploadRetryResult> {
   for (const job of jobs) {
     if (job.status === "failed") {
       patchJob(job.sessionId, { status: "pending", error: undefined });
       stampStrips(job.sessionId, "pending");
     }
   }
-  return processPendingUploads();
+  if (isBrowserOffline()) {
+    return { ok: false, uploaded: 0, noConnection: true };
+  }
+  if (processing) return { ok: true, uploaded: 0 };
+  const due = jobs.filter((j) => j.status === "pending" || j.status === "failed");
+  if (!due.length) return { ok: true, uploaded: 0 };
+  if (!(await cloudIsReady())) {
+    return { ok: false, uploaded: 0, noConnection: true };
+  }
+  processing = true;
+  let uploaded = 0;
+  try {
+    for (const job of due) {
+      if (await processSessionUpload(job.sessionId)) uploaded += 1;
+    }
+  } finally {
+    processing = false;
+  }
+  return { ok: uploaded > 0, uploaded };
 }
 
 function sessionFolderFromPath(filePath?: string): string | null {

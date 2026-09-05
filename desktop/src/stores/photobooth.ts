@@ -18,6 +18,12 @@ import { ref, computed } from "vue";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { revokeMediaUrl } from "@/utils/mediaBytes";
 import {
+  deleteFilterLut,
+  getFilterLut,
+  isPackagedCubeRef,
+  putFilterLut,
+} from "@/utils/filterLutStore";
+import {
   assetItemId,
   assetKey,
   clampBox,
@@ -228,6 +234,11 @@ export interface SavedPhotoStrip {
    * full-res from the original captures.
    */
   isComposite?: boolean;
+  /**
+   * True for the unfiltered camera frame kept on disk for staff.
+   * Shown in Admin → Gallery only — never uploaded for the guest QR.
+   */
+  isOriginal?: boolean;
   // Legacy single-image fields — kept for back-compat with strips
   // saved before the per-capture upload change. New strips populate
   // `cloudinaryPhotos` instead. When present, `cloudinaryUrl` mirrors
@@ -366,6 +377,8 @@ export interface CameraFilter {
   mediaOverlay?: FilterMediaOverlay;
   /** LUT data for .cube filters (when effectType === "cube") */
   cubeData?: string;
+  /** True when the LUT text lives in IndexedDB instead of localStorage. */
+  cubeFile?: boolean;
   /**
    * For cube filters: which base colour preset to apply first,
    * before the LUT is applied on top.
@@ -2204,27 +2217,74 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   // ---- Filters ----
+  function filterForStorage(f: CameraFilter): CameraFilter {
+    if (!f.cubeData || isPackagedCubeRef(f.cubeData) || !f.cubeFile) {
+      return f;
+    }
+    const { cubeData: _cube, ...rest } = f;
+    return { ...rest, cubeFile: true };
+  }
+
   function saveFilters() {
     try {
-      localStorage.setItem(STORAGE_KEY_FILTERS, JSON.stringify(filters.value));
+      localStorage.setItem(
+        STORAGE_KEY_FILTERS,
+        JSON.stringify(filters.value.map(filterForStorage)),
+      );
     } catch (e) {
       console.error("Failed to save filters:", e);
     }
   }
 
-  function addFilter(
+  async function ensureFilterCubeData(
+    filter: CameraFilter,
+  ): Promise<string | null> {
+    if (filter.cubeData) return filter.cubeData;
+    if (filter.effectType !== "cube") return null;
+    const text = await getFilterLut(filter.id);
+    if (text) {
+      filter.cubeData = text;
+      filter.cubeFile = true;
+    }
+    return text;
+  }
+
+  async function loadFilterLuts() {
+    let migrated = false;
+    for (const f of filters.value) {
+      if (f.effectType !== "cube" || isPackagedCubeRef(f.cubeData)) continue;
+      if (f.cubeData) {
+        const ok = await putFilterLut(f.id, f.cubeData);
+        if (ok) {
+          f.cubeFile = true;
+          migrated = true;
+        }
+      } else {
+        const text = await getFilterLut(f.id);
+        if (text) {
+          f.cubeData = text;
+          f.cubeFile = true;
+        }
+      }
+    }
+    if (migrated) saveFilters();
+  }
+
+  async function addFilter(
     name: string,
     cubeData: string,
     isActive = true,
-  ): CameraFilter | null {
+  ): Promise<CameraFilter | null> {
     const trimmedName = name.trim() || "Custom LUT";
     const id = `cube-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const stored = await putFilterLut(id, cubeData);
     const filter: CameraFilter = {
       id,
       name: trimmedName,
       effectType: "cube",
       isActive,
       cubeData,
+      cubeFile: stored,
     };
     filters.value.push(filter);
     saveFilters();
@@ -2234,6 +2294,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (isDefaultFilter(id)) return;
     filters.value = filters.value.filter((f) => f.id !== id);
     saveFilters();
+    void deleteFilterLut(id);
     void clearFilterMediaOverlay(id);
   }
   function toggleFilterActive(id: string) {
@@ -3134,6 +3195,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     setCustomBodyFont,
     clearCustomBodyFont,
     addFilter,
+    ensureFilterCubeData,
+    loadFilterLuts,
     isDefaultFilter,
     removeFilter,
     toggleFilterActive,

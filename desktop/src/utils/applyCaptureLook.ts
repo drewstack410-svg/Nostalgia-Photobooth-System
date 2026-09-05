@@ -164,11 +164,8 @@ export function applyCaptureLook(
   }
 
   if (look.adjustments) {
-    const adj = look.adjustments;
-    if (adj.levels || adj.contrast || adj.shadows || adj.vignette || adj.glow) {
-      const adjusted = ctx.getImageData(0, 0, w, h);
-      applyAdjustmentsToImageData(adjusted, adj);
-      ctx.putImageData(adjusted, 0, 0);
-    }
+    const adjusted = ctx.getImageData(0, 0, w, h);
+    applyAdjustmentsToImageData(adjusted, look.adjustments);
+    ctx.putImageData(adjusted, 0, 0);
   }
 }

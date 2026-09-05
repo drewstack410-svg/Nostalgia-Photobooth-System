@@ -103,6 +103,7 @@ onMounted(async () => {
     await store.loadKioskBackgroundsFromDisk();
   }
   await store.loadFilterOverlayMediaFromDisk();
+  await store.loadFilterLuts();
 });
 </script>
 

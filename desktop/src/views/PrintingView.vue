@@ -1165,6 +1165,8 @@ async function saveComposite() {
         dataUrl: string;
         fullDataUrl?: string;
         localPath?: string;
+        originalPath?: string;
+        originalDataUrl?: string;
       };
       const captureResults = await Promise.all(
         store.capturedPhotos.map(async (photo, idx): Promise<CaptureResult> => {
@@ -1224,8 +1226,9 @@ async function saveComposite() {
             }
           }
 
-          // Unfiltered original stays on disk only — never sent with the
-          // QR gallery upload.
+          // Unfiltered original stays on disk and in Admin Gallery —
+          // never sent with the QR gallery upload.
+          let originalPath: string | undefined;
           if (photo.originalDataUrl && window.electronAPI?.savePhoto) {
             try {
               const r = await window.electronAPI.savePhoto(
@@ -1235,6 +1238,7 @@ async function saveComposite() {
                   : `nostalgia_${sessionTs}_${idx + 1}-original.jpg`,
               );
               if (r.success && r.path) {
+                originalPath = r.path;
                 console.log(
                   `[Save] Capture ${idx} original (no filter) saved to:`,
                   r.path,
@@ -1258,6 +1262,8 @@ async function saveComposite() {
             dataUrl: photo.dataUrl,
             fullDataUrl,
             localPath,
+            originalPath,
+            originalDataUrl: photo.originalDataUrl,
           };
         }),
       );
@@ -1317,6 +1323,23 @@ async function saveComposite() {
           uploadStatus: "pending",
         });
       }
+      for (const r of captureResults) {
+        if (!r.originalDataUrl && !r.originalPath) continue;
+        const originalPreview = await makePreviewDataUrl(
+          r.originalDataUrl || r.fullDataUrl || r.dataUrl,
+        );
+        store.addRecentStrip({
+          id: `strip_${sessionTs}_${r.idx}_original`,
+          dataUrl: originalPreview,
+          timestamp: new Date(),
+          path: r.originalPath,
+          sessionId,
+          templateId,
+          sessionIndex: r.idx,
+          isOriginal: true,
+        });
+      }
+
       console.log(
         `[Save] All ${store.capturedPhotos.length} captures saved & added as individual recent strips`,
       );

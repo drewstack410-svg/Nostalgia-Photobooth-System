@@ -6,6 +6,7 @@ import type { MediaUploadStatus } from "@/stores/photobooth";
 import { useDashboardStore } from "@/stores/dashboard";
 import QRCode from "qrcode";
 import {
+  isBrowserOffline,
   jobForSession,
   onUploadQueueChange,
   pendingUploadCount,
@@ -29,6 +30,8 @@ interface GalleryPhoto {
   /** True for the finished templated print (frame applied), shown
    *  alongside the individual captures. */
   isComposite?: boolean;
+  /** Unfiltered local copy — admin gallery only, never uploaded. */
+  isOriginal?: boolean;
   /**
    * The public gallery link this session's QR encodes. It was already
    * stamped onto every recent-strip entry by PrintingView but discarded
@@ -63,28 +66,50 @@ const allSelected = computed(
     selectedIds.value.size === displayPhotos.value.length,
 );
 
+function looksLikeOriginalFile(nameOrPath?: string): boolean {
+  return /-original\.(jpe?g|png)$/i.test(nameOrPath || "");
+}
+
 const displayPhotos = computed(() => {
   if (viewMode.value === "session") {
-    return store.recentStrips.map((p) => ({
-      id: p.id,
-      src: p.dataUrl,
-      name: p.isComposite ? "Printed strip" : `Photo ${p.id}`,
-      timestamp: p.timestamp,
-      path: p.path,
-      isLocal: true,
-      sessionId: p.sessionId,
-      templateId: p.templateId,
-      sessionIndex: p.sessionIndex,
-      isComposite: p.isComposite,
-      // Same resolution order QRScanView uses. The composite "Printed
-      // strip" entry carries shareableUrl but no per-capture
-      // cloudinaryUrl, so both fallbacks are needed.
-      shareUrl:
-        p.shareableUrl || p.cloudinaryUrl || p.cloudinaryPhotos?.[0]?.url || "",
-      uploadStatus: p.uploadStatus,
-    }));
+    return store.recentStrips
+      .map((p) => ({
+        id: p.id,
+        src: p.dataUrl,
+        name: p.isComposite
+          ? "Printed strip"
+          : p.isOriginal
+            ? `Original photo ${(p.sessionIndex ?? 0) + 1}`
+            : `Photo ${(p.sessionIndex ?? 0) + 1}`,
+        timestamp: p.timestamp,
+        path: p.path,
+        isLocal: true,
+        sessionId: p.sessionId,
+        templateId: p.templateId,
+        sessionIndex: p.sessionIndex,
+        isComposite: p.isComposite,
+        isOriginal: p.isOriginal,
+        // Same resolution order QRScanView uses. The composite "Printed
+        // strip" entry carries shareableUrl but no per-capture
+        // cloudinaryUrl, so both fallbacks are needed.
+        shareUrl:
+          p.shareableUrl || p.cloudinaryUrl || p.cloudinaryPhotos?.[0]?.url || "",
+        uploadStatus: p.isOriginal ? undefined : p.uploadStatus,
+      }))
+      .slice()
+      .sort((a, b) => {
+        if (a.isComposite !== b.isComposite) return a.isComposite ? 1 : -1;
+        const ai = a.sessionIndex ?? 0;
+        const bi = b.sessionIndex ?? 0;
+        if (ai !== bi) return ai - bi;
+        if (a.isOriginal !== b.isOriginal) return a.isOriginal ? 1 : -1;
+        return 0;
+      });
   }
-  return savedPhotos.value;
+  return savedPhotos.value.map((p) => ({
+    ...p,
+    isOriginal: p.isOriginal || looksLikeOriginalFile(p.name) || looksLikeOriginalFile(p.path),
+  }));
 });
 
 async function loadSavedPhotos() {
@@ -107,10 +132,13 @@ async function loadSavedPhotos() {
         return {
           id: photo.path,
           src: src || "",
-          name: photo.name,
+          name: looksLikeOriginalFile(photo.name)
+            ? photo.name.replace(/.*\//, "").replace(/-original/i, " (original)")
+            : photo.name,
           timestamp: new Date(photo.created),
           path: photo.path,
           isLocal: false,
+          isOriginal: looksLikeOriginalFile(photo.name) || looksLikeOriginalFile(photo.path),
           shareUrl: sib?.shareableUrl || "",
         };
       }),
@@ -296,7 +324,7 @@ async function confirmReprint() {
   // sheet from the raw captures, so feeding the composite back in would
   // wrongly treat it as an extra photo.
   const sessionStrips = store.recentStrips
-    .filter((s) => s.sessionId === seed.sessionId && !s.isComposite)
+    .filter((s) => s.sessionId === seed.sessionId && !s.isComposite && !s.isOriginal)
     .slice()
     .sort((a, b) => (a.sessionIndex ?? 0) - (b.sessionIndex ?? 0));
 
@@ -404,16 +432,20 @@ function formatDate(date: Date) {
 }
 
 const retryBusy = ref(false);
+const retryNotice = ref("");
+const NO_CONNECTION_MSG = "No internet connection.";
 const queuePending = ref(pendingUploadCount());
 let stopQueueWatch: (() => void) | null = null;
 
 function sessionUploadStatus(photo: GalleryPhoto): MediaUploadStatus | "" {
+  if (photo.isOriginal) return "";
   if (resolveShareUrl(photo)) return "done";
   const job = jobForSession(photo.sessionId);
   return photo.uploadStatus || job?.status || "";
 }
 
 function sessionNeedsRetry(photo: GalleryPhoto): boolean {
+  if (photo.isOriginal) return false;
   if (!photo.sessionId) return false;
   if (resolveShareUrl(photo)) return false;
   return true;
@@ -429,11 +461,18 @@ const canRetryUploads = computed(
 
 async function retryUploads(sessionId?: string) {
   if (retryBusy.value) return;
+  retryNotice.value = "";
+  if (isBrowserOffline()) {
+    retryNotice.value = NO_CONNECTION_MSG;
+    return;
+  }
   retryBusy.value = true;
   try {
     if (sessionId) {
-      const ok = await retrySessionUpload(sessionId);
-      if (!ok) {
+      const result = await retrySessionUpload(sessionId);
+      if (result.noConnection) {
+        retryNotice.value = NO_CONNECTION_MSG;
+      } else if (!result.ok) {
         console.warn("[Gallery] Retry upload failed for", sessionId);
       } else if (qrPhoto.value?.sessionId === sessionId) {
         const url = resolveShareUrl(qrPhoto.value);
@@ -443,7 +482,10 @@ async function retryUploads(sessionId?: string) {
         }
       }
     } else {
-      await retryPendingUploads();
+      const result = await retryPendingUploads();
+      if (result.noConnection) {
+        retryNotice.value = NO_CONNECTION_MSG;
+      }
     }
     queuePending.value = pendingUploadCount();
   } finally {
@@ -451,16 +493,22 @@ async function retryUploads(sessionId?: string) {
   }
 }
 
+function clearRetryNoticeOnOnline() {
+  retryNotice.value = "";
+}
+
 onMounted(() => {
   stopQueueWatch = onUploadQueueChange(() => {
     queuePending.value = pendingUploadCount();
   });
+  window.addEventListener("online", clearRetryNoticeOnOnline);
   if (isElectron.value) {
     loadSavedPhotos();
   }
 });
 
 onUnmounted(() => {
+  window.removeEventListener("online", clearRetryNoticeOnOnline);
   stopQueueWatch?.();
   stopQueueWatch = null;
 });
@@ -553,6 +601,13 @@ onUnmounted(() => {
         </template>
       </div>
     </div>
+    <p
+      v-if="retryNotice"
+      class="gallery-retry-notice"
+      role="status"
+    >
+      {{ retryNotice }}
+    </p>
 
     <!-- Loading State -->
     <div v-if="isLoading" class="loading-state">
@@ -600,6 +655,7 @@ onUnmounted(() => {
           v-else-if="sessionUploadStatus(photo) === 'failed'"
           class="photo-badge photo-badge--failed"
         >Upload failed</span>
+        <span v-else-if="photo.isOriginal" class="photo-badge photo-badge--original">Original</span>
         <span v-else-if="photo.isComposite" class="photo-badge">Printed</span>
         <div class="photo-overlay">
           <span class="photo-date">{{ formatDate(photo.timestamp) }}</span>
@@ -620,13 +676,24 @@ onUnmounted(() => {
 
         <div class="modal-info">
           <p class="modal-date">{{ formatDate(selectedPhoto.timestamp) }}</p>
+          <p v-if="selectedPhoto.isOriginal" class="modal-original-note">
+            Unfiltered original — saved locally, not uploaded.
+          </p>
           <p v-if="selectedPhoto.path" class="modal-path">
             {{ selectedPhoto.path }}
           </p>
         </div>
 
+        <p
+          v-if="retryNotice"
+          class="gallery-retry-notice gallery-retry-notice--modal"
+          role="status"
+        >
+          {{ retryNotice }}
+        </p>
         <div class="modal-actions">
           <button
+            v-if="!selectedPhoto.isOriginal"
             type="button"
             class="btn btn-reprint"
             @click="openReprintForPhoto(selectedPhoto)"
@@ -635,7 +702,12 @@ onUnmounted(() => {
           </button>
           <!-- Re-show the digital-copies QR. Tap-reachable rather than
                hover-only, since this runs on a touchscreen. -->
-          <button type="button" class="btn btn-secondary" @click="showQr(selectedPhoto)">
+          <button
+            v-if="!selectedPhoto.isOriginal"
+            type="button"
+            class="btn btn-secondary"
+            @click="showQr(selectedPhoto)"
+          >
             Show QR
           </button>
           <button
@@ -679,6 +751,13 @@ onUnmounted(() => {
           No online link for this session — the upload is pending or didn't
           complete (the booth may have been offline). Photos are still here:
           tap Retry Upload, or use Download / Reprint.
+        </p>
+        <p
+          v-if="retryNotice"
+          class="gallery-retry-notice gallery-retry-notice--modal"
+          role="status"
+        >
+          {{ retryNotice }}
         </p>
         <div class="modal-actions">
           <button
@@ -798,6 +877,18 @@ onUnmounted(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 0.75rem;
+}
+
+.gallery-retry-notice {
+  margin: 0 0 1rem;
+  color: #8a2b2b;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.gallery-retry-notice--modal {
+  text-align: center;
+  margin: 0 0 0.75rem;
 }
 
 .gallery-header h1 {
@@ -1019,6 +1110,12 @@ onUnmounted(() => {
   color: var(--color-cream);
 }
 
+.photo-badge--original {
+  background: var(--color-cream);
+  color: var(--color-brown-dark);
+  border: 1px solid var(--color-brown-light);
+}
+
 /* Modal */
 .photo-modal {
   position: fixed;
@@ -1091,6 +1188,13 @@ onUnmounted(() => {
   font-weight: 600;
   color: var(--color-brown-dark);
   font-family: var(--font-display);
+}
+
+.modal-original-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--color-brown);
 }
 
 .modal-path {

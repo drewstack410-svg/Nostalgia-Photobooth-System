@@ -200,7 +200,7 @@ function clearTitleBackground() {
     store.setKioskBackgroundFill(kioskId.value, "theme");
     kioskBgTab.value = "theme";
   } else {
-    store.clearTitleBackground();
+  store.clearTitleBackground();
   }
 }
 
@@ -799,7 +799,7 @@ function onEditorKey(e: KeyboardEvent) {
     const layout = store.ensureKioskLayout(kioskId.value);
     current = getKioskItemBox(layout, id);
   } else {
-    const layout = store.ensureWelcomeLayout();
+  const layout = store.ensureWelcomeLayout();
     current = getItemBox(layout, id);
   }
   if (!current) return;
@@ -933,7 +933,7 @@ const activeBgColor = computed(() => {
 });
 
 watch(activeBgColor, (c) => {
-  hexDraft.value = c;
+    hexDraft.value = c;
 });
 
 function chooseBgMode(mode: "image" | "video" | "color" | "theme") {
@@ -1706,8 +1706,8 @@ const screenDirty = computed(() => layoutDirty());
                           ($event.target as HTMLInputElement).value,
                         )
                       : store.setWelcomeBackgroundColor(
-                          ($event.target as HTMLInputElement).value,
-                        )
+                      ($event.target as HTMLInputElement).value,
+                    )
                   "
                 />
                 <input
@@ -1787,14 +1787,14 @@ const screenDirty = computed(() => layoutDirty());
             </div>
             <p v-if="titleBgBusy" class="form-hint">Saving background…</p>
             <p v-if="titleBgError" class="form-error">{{ titleBgError }}</p>
-            <button
+              <button
               v-if="inspectorCanClear"
-              type="button"
-              class="btn-clear"
-              @click="clearTitleBackground"
-            >
+                type="button"
+                class="btn-clear"
+                @click="clearTitleBackground"
+              >
               Clear
-            </button>
+              </button>
           </template>
 
           <template v-else-if="selectedLayer === 'logo'">
@@ -1869,7 +1869,7 @@ const screenDirty = computed(() => layoutDirty());
                   ×
                 </button>
               </template>
-              <template v-else>
+          <template v-else>
                 <span class="upload-card-icon">+</span>
                 <span class="upload-card-text">Upload button</span>
               </template>

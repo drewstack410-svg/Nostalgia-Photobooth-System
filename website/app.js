@@ -600,16 +600,18 @@
     return { cols, rows };
   }
 
-  // Grid tab: square layout from how many photos this sitting has.
-  // 4 → 2×2, 6 → 3×3, 8 → 4×4. Extra cells stay empty.
+  // Grid tab: tight rows/cols for the photos that exist.
+  // 4 → 2×2, 6 → 3×2, 8 → 4×2. No extra empty row.
   function resolveShotGrid(shotCount) {
-    const sessionShots = parseGridAxis(session.shots);
-    const n = Math.max(1, shotCount, sessionShots || 0);
-    if (n <= 4) return { cols: 2, rows: 2 };
-    if (n <= 6) return { cols: 3, rows: 3 };
-    if (n <= 8) return { cols: 4, rows: 4 };
-    const side = Math.ceil(Math.sqrt(n));
-    return { cols: side, rows: side };
+    const n = Math.max(1, shotCount);
+    if (n === 1) return { cols: 1, rows: 1 };
+    if (n === 2) return { cols: 2, rows: 1 };
+    if (n === 3) return { cols: 3, rows: 1 };
+    if (n === 4) return { cols: 2, rows: 2 };
+    if (n <= 6) return { cols: 3, rows: Math.ceil(n / 3) };
+    if (n <= 8) return { cols: 4, rows: Math.ceil(n / 4) };
+    const cols = Math.min(4, Math.ceil(Math.sqrt(n)));
+    return { cols, rows: Math.ceil(n / cols) };
   }
 
   function defaultSlots(n, portrait) {

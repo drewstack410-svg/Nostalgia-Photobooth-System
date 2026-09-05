@@ -722,9 +722,9 @@ function triggerLutUpload() {
   filterLutInputRef.value?.click();
 }
 
-function commitImportedFilter(name: string, cubeData: string) {
+async function commitImportedFilter(name: string, cubeData: string) {
   parseCubeText(cubeData);
-  const added = store.addFilter(name, cubeData, newFilterActive.value);
+  const added = await store.addFilter(name, cubeData, newFilterActive.value);
   if (added) store.setFilterGrain(added.id, newFilterGrain.value);
   filterFormStatus.value = "success";
   filterFormMessage.value = `Added filter "${name}".`;
