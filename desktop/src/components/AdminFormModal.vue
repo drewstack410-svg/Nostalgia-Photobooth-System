@@ -8,14 +8,18 @@ defineProps<{
   description?: string;
   /** Size: default (500px), large (900px), wide (studio), or full (viewport) */
   size?: "default" | "large" | "wide" | "full";
+  /** Sit above another open dialog (e.g. Photo layout over Templates). */
+  nested?: boolean;
 }>();
 
 const emit = defineEmits<{
   "update:open": [value: boolean];
+  close: [];
 }>();
 
 function close() {
   emit("update:open", false);
+  emit("close");
 }
 
 function onOverlayClick(e: MouseEvent) {
@@ -33,6 +37,7 @@ function onOverlayClick(e: MouseEvent) {
         class="admin-form-modal__overlay"
         :class="{
           'admin-form-modal__overlay--fill': size === 'wide' || size === 'full',
+          'admin-form-modal__overlay--nested': nested,
         }"
         role="dialog"
         aria-modal="true"
@@ -86,6 +91,10 @@ function onOverlayClick(e: MouseEvent) {
   justify-content: center;
   z-index: 1000;
   padding: 1.5rem;
+}
+
+.admin-form-modal__overlay--nested {
+  z-index: 1100;
 }
 
 .admin-form-modal {

@@ -33,6 +33,7 @@ import {
   type WelcomeAsset,
   type WelcomeBox,
 } from "@/utils/welcomeLayout";
+import VintageScreenChrome from "@/components/VintageScreenChrome.vue";
 
 type Handle = "nw" | "ne" | "sw" | "se";
 
@@ -91,16 +92,23 @@ function filterToneClass(f: CameraFilter): string {
 const fill = computed(() => layout.value.backgroundFill);
 const colorBg = computed(() => layout.value.backgroundColor);
 const mediaUrl = computed(() => {
-  if (fill.value === "color") return null;
-  if (fill.value === "theme") return store.kioskThemeBackgroundUrl(props.screenId);
-  return store.kioskBackgroundUrl(props.screenId);
-});
-const mediaType = computed(() => {
-  if (fill.value === "theme") {
-    return store.kioskThemeBackgroundType(props.screenId);
+  if (fill.value === "color" || fill.value === "theme") return null;
+  if (store.kioskHasCustomBackground(props.screenId)) {
+    return store.kioskBackgroundUrl(props.screenId);
   }
-  return store.kioskBackgroundType(props.screenId);
+  if (props.screenId === "payment") {
+    return store.hasLoadedPaymentBackground
+      ? store.kioskBackgroundUrl(props.screenId)
+      : null;
+  }
+  return store.hasLoadedTitleBackground
+    ? store.kioskThemeBackgroundUrl(props.screenId)
+    : null;
 });
+const mediaType = computed(() => store.kioskBackgroundType(props.screenId));
+const showBoothChrome = computed(
+  () => fill.value === "theme" || (fill.value !== "color" && !mediaUrl.value),
+);
 
 onMounted(() => {
   if (props.interactive) store.ensureKioskLayout(props.screenId);
@@ -350,7 +358,7 @@ function dotsCount() {
       'kiosk-stage--interactive': interactive,
       'kiosk-stage--canvas': canvas,
       'kiosk-stage--dragging': dragging,
-      'kiosk-stage--theme': fill === 'theme' && !mediaUrl,
+      'kiosk-stage--theme': showBoothChrome,
     }"
     @click="pick('background', $event)"
     @dragover="onDragOver"
@@ -382,6 +390,7 @@ function dotsCount() {
         @loadeddata="playBgVideo"
       />
     </div>
+    <VintageScreenChrome v-if="showBoothChrome" />
 
     <div
       v-for="item in def.items"
@@ -765,6 +774,31 @@ function dotsCount() {
   height: 100%;
   object-fit: cover;
   display: block;
+  pointer-events: none;
+}
+
+.kiosk-stage--theme .kiosk-bg--color {
+  background-color: var(--color-cream, #f4ead5);
+  background-image:
+    linear-gradient(rgba(245, 240, 225, 0.9), rgba(245, 240, 225, 0.9)),
+    radial-gradient(
+      ellipse at 20% 30%,
+      rgba(139, 115, 85, 0.05) 0%,
+      transparent 50%
+    ),
+    radial-gradient(
+      ellipse at 80% 70%,
+      rgba(139, 115, 85, 0.05) 0%,
+      transparent 50%
+    );
+}
+
+.kiosk-stage--theme .kiosk-bg--color::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("/background-texture.svg") center / cover no-repeat;
+  mix-blend-mode: soft-light;
   pointer-events: none;
 }
 

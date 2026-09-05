@@ -37,19 +37,19 @@ const screenHasOwnBackground = computed(() => {
   const kiosk = kioskMap[name];
   if (kiosk) {
     const layout = store.kioskLayoutOf(kiosk);
-    if (layout?.backgroundFill === "color") return true;
-    if (layout?.backgroundFill === "theme" && store.kioskThemeBackgroundUrl(kiosk)) {
-      return true;
-    }
-    if (layout?.backgroundFill === "media" && store.kioskBackgroundUrl(kiosk)) {
-      return true;
-    }
+    if (!layout || layout.backgroundFill === "theme") return false;
+    if (layout.backgroundFill === "color") return true;
+    if (kiosk === "payment") return store.hasLoadedPaymentBackground;
+    return (
+      store.kioskHasCustomBackground(kiosk) || store.hasLoadedTitleBackground
+    );
   }
   return (
     (route.name === "title" &&
       (store.welcomeBackgroundFill === "color" ||
-        !!store.effectiveTitleBackgroundUrl)) ||
-    (route.name === "bill-acceptor" && !!store.effectivePaymentBackgroundUrl)
+        (store.welcomeBackgroundFill === "media" &&
+          store.hasLoadedTitleBackground))) ||
+    (route.name === "bill-acceptor" && store.hasLoadedPaymentBackground)
   );
 });
 

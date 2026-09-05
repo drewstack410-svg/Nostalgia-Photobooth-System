@@ -23,9 +23,11 @@ import type { PaperSize } from "@/utils/printLayout";
 import type { TemplateCell } from "@/stores/photobooth";
 import { prepareFrameDataUrl } from "@/utils/pngAlpha";
 import {
+  cellShotNumber,
   layoutFileSlug,
-  parsePhotoLayoutJson,
+  parsePhotoLayoutDocumentJson,
   serializePhotoLayout,
+  stampCellShots,
 } from "@/utils/photoLayoutFile";
 
 const props = withDefaults(
@@ -45,6 +47,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: "update:modelValue", cells: TemplateCell[]): void;
+  (e: "import-meta", payload: { photoCount: number; name?: string }): void;
 }>();
 
 const stage = ref<HTMLElement | null>(null);
@@ -121,6 +124,7 @@ function gridSeed(count: number): TemplateCell[] {
     w,
     h,
     rotation: 0,
+    shot: i + 1,
   }));
 }
 
@@ -153,7 +157,7 @@ function imageSize(src: string): Promise<{ w: number; h: number }> {
  * truth for "slot 5 shows shot 1 again".
  */
 function shotFor(i: number) {
-  return (i % Math.max(1, props.photoCount)) + 1;
+  return cellShotNumber(cells.value[i], i, props.photoCount);
 }
 
 /**
@@ -199,13 +203,16 @@ async function seed() {
       const windows = detected && orderForShots(detected, count);
       if (windows && windows.length) {
         const { w: fw, h: fh } = await imageSize(props.frameImageUrl);
-        cells.value = windows.map((r) => ({
-          x: r.x / fw,
-          y: r.y / fh,
-          w: r.width / fw,
-          h: r.height / fh,
-          rotation: 0,
-        }));
+        cells.value = stampCellShots(
+          windows.map((r) => ({
+            x: r.x / fw,
+            y: r.y / fh,
+            w: r.width / fw,
+            h: r.height / fh,
+            rotation: 0,
+          })),
+          count,
+        );
         seedNote.value = `Started from the ${windows.length} window(s) detected in the frame artwork.`;
         commit();
         return;
@@ -261,12 +268,18 @@ async function onImportFile(event: Event) {
   if (!file) return;
   try {
     const text = await file.text();
-    const imported = parsePhotoLayoutJson(text);
+    const imported = parsePhotoLayoutDocumentJson(text);
     snapshot();
-    cells.value = imported;
+    cells.value = imported.cells;
     selected.value = -1;
     commit();
-    seedNote.value = `Imported ${imported.length} slot(s) from ${file.name}.`;
+    if (imported.photoCount) {
+      emit("import-meta", {
+        photoCount: imported.photoCount,
+        name: imported.name,
+      });
+    }
+    seedNote.value = `Imported ${imported.cells.length} slot(s) from ${file.name}.`;
   } catch (err) {
     seedNote.value =
       err instanceof Error ? err.message : "Could not import that layout file.";
@@ -298,6 +311,7 @@ function duplicateSlot() {
       w: src.w,
       h: src.h,
       rotation: src.rotation,
+      shot: src.shot ?? shotFor(selected.value),
     },
   ];
   selected.value = cells.value.length - 1;

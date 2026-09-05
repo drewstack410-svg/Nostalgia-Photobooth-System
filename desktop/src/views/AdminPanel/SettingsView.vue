@@ -831,6 +831,17 @@ function closeLayoutEditor() {
   layoutEditorCells.value = [];
 }
 
+function onLayoutImportMeta(meta: { photoCount: number }) {
+  const t = layoutEditorTemplate.value;
+  if (!t || !meta.photoCount) return;
+  store.updateTemplateDetails(t.id, { photoCount: meta.photoCount });
+  const fresh = store.templates.find((x) => x.id === t.id);
+  layoutEditorTemplate.value = {
+    ...(fresh ?? t),
+    photoCount: meta.photoCount,
+  };
+}
+
 async function saveLayoutEditor() {
   const t = layoutEditorTemplate.value;
   if (!t) return;
@@ -3599,6 +3610,7 @@ function submitEditTemplateDetails() {
       v-model:open="showEditTemplateModal"
       :title="editingTemplate ? `Edit — ${editingTemplate.name}` : 'Edit template'"
       description="Change this template's name, price, and how many photos the guest shoots."
+      nested
     >
       <form
         v-if="editingTemplate"
@@ -3696,6 +3708,8 @@ function submitEditTemplateDetails() {
       :open="!!layoutEditorTemplate"
       :title="`Photo layout — ${layoutEditorTemplate?.name ?? ''}`"
       size="large"
+      nested
+      @update:open="(open) => { if (!open) closeLayoutEditor(); }"
       @close="closeLayoutEditor"
     >
       <div v-if="layoutEditorTemplate" class="layout-editor-modal">
@@ -3707,6 +3721,7 @@ function submitEditTemplateDetails() {
           :frame-rows="layoutEditorTemplate.frameRows"
           :frame-cols="layoutEditorTemplate.frameCols"
           :layout-name="layoutEditorTemplate.name"
+          @import-meta="onLayoutImportMeta"
         />
 
         <div class="modal-actions">

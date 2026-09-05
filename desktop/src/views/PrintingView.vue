@@ -23,6 +23,7 @@ import {
   flattenPngDataUrlToWhite,
 } from "@/utils/pngAlpha";
 import { makeGalleryShortCode } from "@/utils/gallerySession";
+import { cellCaptureIndex } from "@/utils/photoLayoutFile";
 import { submitGalleryUpload } from "@/services/uploadQueue";
 import type { GalleryUploadAsset } from "@/services/uploadQueue";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
@@ -714,7 +715,10 @@ async function createCompositeImage(
                   : null);
               const slotTotal = slots ? slots.length : fSlotCount;
               for (let i = 0; i < slotTotal; i++) {
-                const img = loadedImages[i % count];
+                const img =
+                  loadedImages[
+                    cellCaptureIndex(template.cells?.[i], i, count)
+                  ];
                 let cellX: number;
                 let cellY: number;
                 let cw: number;

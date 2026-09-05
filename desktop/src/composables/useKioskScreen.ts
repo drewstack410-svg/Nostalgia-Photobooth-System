@@ -61,18 +61,24 @@ export function useKioskScreen(screenId: KioskScreenId) {
   );
 
   const mediaBg = computed(() => {
-    if (!layout.value || layout.value.backgroundFill === "color") return null;
-    const url =
+    if (
+      !layout.value ||
+      layout.value.backgroundFill === "color" ||
       layout.value.backgroundFill === "theme"
-        ? store.kioskThemeBackgroundUrl(screenId)
-        : store.kioskBackgroundUrl(screenId);
+    ) {
+      return null;
+    }
+    const hasFile =
+      store.kioskHasCustomBackground(screenId) ||
+      (screenId === "payment"
+        ? store.hasLoadedPaymentBackground
+        : store.hasLoadedTitleBackground);
+    if (!hasFile) return null;
+    const url = store.kioskBackgroundUrl(screenId);
     if (!url) return null;
     return {
       url,
-      type:
-        layout.value.backgroundFill === "theme"
-          ? store.kioskThemeBackgroundType(screenId)
-          : store.kioskBackgroundType(screenId),
+      type: store.kioskBackgroundType(screenId),
     };
   });
 

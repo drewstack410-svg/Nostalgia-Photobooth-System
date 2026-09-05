@@ -17,6 +17,7 @@ import { getPaperSizePx, getTemplateCellRects, occupancyFill } from "@/utils/pri
 import { getFrameWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
 import { prepareFrameDataUrl } from "@/utils/pngAlpha";
+import { cellCaptureIndex, cellShotNumber } from "@/utils/photoLayoutFile";
 
 const props = withDefaults(
   defineProps<{
@@ -159,7 +160,8 @@ const shots = computed(() => {
 
 function photoFor(i: number): string | undefined {
   const s = shots.value;
-  return s > 0 ? props.photos[i % s] : undefined;
+  if (s <= 0) return undefined;
+  return props.photos[cellCaptureIndex(props.template.cells?.[i], i, s)];
 }
 
 // The next shot lands in EVERY cell that maps to it, so on a
@@ -167,7 +169,10 @@ function photoFor(i: number): string | undefined {
 const activeCells = computed(() => {
   const s = shots.value;
   if (props.activeIndex < 0 || props.activeIndex >= s) return [];
-  return cells.value.filter((_, i) => i % s === props.activeIndex);
+  return cells.value.filter(
+    (_, i) =>
+      cellCaptureIndex(props.template.cells?.[i], i, s) === props.activeIndex,
+  );
 });
 </script>
 
@@ -188,7 +193,9 @@ const activeCells = computed(() => {
         :style="photoStyle"
         alt=""
       />
-      <span v-else class="tlp-slot-num">{{ (i % shots) + 1 }}</span>
+      <span v-else class="tlp-slot-num">{{
+        cellShotNumber(template.cells?.[i], i, shots)
+      }}</span>
     </div>
 
     <!-- 2. Frame artwork on top — its transparent windows reveal the

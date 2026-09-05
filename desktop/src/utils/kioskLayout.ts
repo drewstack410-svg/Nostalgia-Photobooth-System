@@ -602,7 +602,7 @@ export function defaultKioskLayout(screenId: KioskScreenId): KioskLayout {
     buttons,
     assets: [],
     order,
-    backgroundFill: screenId === "payment" ? "media" : "theme",
+    backgroundFill: "theme",
     backgroundColor: "#f4ead5",
   };
 }

@@ -31,13 +31,48 @@ function parseCell(raw: unknown): TemplateCell | null {
   const rotation = Number(o.rotation ?? 0);
   if (![x, y, w, h].every(Number.isFinite)) return null;
   if (w <= 0 || h <= 0) return null;
+  const shotRaw = Number(o.shot);
+  const shot =
+    Number.isFinite(shotRaw) && shotRaw >= 1 ? Math.floor(shotRaw) : undefined;
   return {
     x: clamp(x, -0.5, 1.5),
     y: clamp(y, -0.5, 1.5),
     w: clamp(w, 0.01, 1),
     h: clamp(h, 0.01, 1),
     rotation: Number.isFinite(rotation) ? rotation : 0,
+    ...(shot ? { shot } : {}),
   };
+}
+
+/** The number painted on a slot — explicit `shot` wins over position. */
+export function cellShotNumber(
+  cell: TemplateCell | undefined,
+  index: number,
+  photoCount: number,
+): number {
+  if (typeof cell?.shot === "number" && cell.shot > 0) return Math.floor(cell.shot);
+  return (index % Math.max(1, photoCount)) + 1;
+}
+
+/** 0-based capture index for compositing / live preview. */
+export function cellCaptureIndex(
+  cell: TemplateCell | undefined,
+  index: number,
+  photoCount: number,
+): number {
+  const n = Math.max(1, photoCount);
+  return (cellShotNumber(cell, index, n) - 1) % n;
+}
+
+export function stampCellShots(
+  cells: TemplateCell[],
+  photoCount: number,
+): TemplateCell[] {
+  const n = Math.max(1, photoCount);
+  return cells.map((c, i) => ({
+    ...c,
+    shot: cellShotNumber(c, i, n),
+  }));
 }
 
 export function layoutFileSlug(name: string): string {
@@ -64,18 +99,27 @@ export function serializePhotoLayout(input: {
       ? { photoCount: input.photoCount }
       : {}),
     ...(input.paperSize ? { paperSize: input.paperSize } : {}),
-    cells: input.cells.map((c) => ({
+    cells: input.cells.map((c, i) => ({
       x: c.x,
       y: c.y,
       w: c.w,
       h: c.h,
       rotation: c.rotation || 0,
+      shot: cellShotNumber(c, i, input.photoCount || input.cells.length),
     })),
   };
 }
 
-export function parsePhotoLayoutFile(raw: unknown): TemplateCell[] {
+export type PhotoLayoutDocument = {
+  cells: TemplateCell[];
+  photoCount?: number;
+  name?: string;
+};
+
+export function parsePhotoLayoutDocument(raw: unknown): PhotoLayoutDocument {
   let list: unknown[] | null = null;
+  let photoCount: number | undefined;
+  let name: string | undefined;
   if (Array.isArray(raw)) {
     list = raw;
   } else if (raw && typeof raw === "object") {
@@ -89,6 +133,9 @@ export function parsePhotoLayoutFile(raw: unknown): TemplateCell[] {
     }
     if (Array.isArray(o.cells)) list = o.cells;
     else if (Array.isArray(o.slots)) list = o.slots;
+    const n = Number(o.photoCount);
+    if (Number.isFinite(n) && n >= 1) photoCount = Math.floor(n);
+    if (typeof o.name === "string" && o.name.trim()) name = o.name.trim();
   }
   if (!list) {
     throw new Error("That file has no photo slots to import.");
@@ -97,15 +144,26 @@ export function parsePhotoLayoutFile(raw: unknown): TemplateCell[] {
   if (!cells.length) {
     throw new Error("That layout file has no valid photo slots.");
   }
-  return cells;
+  const count =
+    photoCount ||
+    Math.max(cells.length, ...cells.map((c) => c.shot || 0), 1);
+  return { cells: stampCellShots(cells, count), photoCount: count, name };
+}
+
+export function parsePhotoLayoutFile(raw: unknown): TemplateCell[] {
+  return parsePhotoLayoutDocument(raw).cells;
 }
 
 export function parsePhotoLayoutJson(text: string): TemplateCell[] {
+  return parsePhotoLayoutDocumentJson(text).cells;
+}
+
+export function parsePhotoLayoutDocumentJson(text: string): PhotoLayoutDocument {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
     throw new Error("That file is not valid JSON.");
   }
-  return parsePhotoLayoutFile(raw);
+  return parsePhotoLayoutDocument(raw);
 }

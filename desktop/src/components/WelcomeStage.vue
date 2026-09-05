@@ -7,6 +7,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import BoxButton from "@/components/BoxButton.vue";
+import VintageScreenChrome from "@/components/VintageScreenChrome.vue";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import {
   WELCOME_CANVAS_W,
@@ -63,9 +64,12 @@ const logoSrc = computed(
   () => store.customLogoUrl || `${import.meta.env.BASE_URL}Logo.svg`,
 );
 const startBtnLabel = `${import.meta.env.BASE_URL}start-button-text.svg`;
-const hasCustomTitleBg = computed(() => !!store.effectiveTitleBackgroundUrl);
+const hasCustomTitleBg = computed(() => !!store.hasLoadedTitleBackground);
 const showMediaBg = computed(
-  () => store.welcomeBackgroundFill !== "color" && hasCustomTitleBg.value,
+  () => store.welcomeBackgroundFill === "media" && hasCustomTitleBg.value,
+);
+const showBoothChrome = computed(
+  () => !!props.canvas && store.welcomeBackgroundFill === "theme",
 );
 
 const layout = computed(() => store.welcomeLayout);
@@ -354,6 +358,7 @@ const HANDLES: Handle[] = ["nw", "ne", "sw", "se"];
       'welcome-stage--canvas': canvas,
       'welcome-stage--laid-out': useAbs,
       'welcome-stage--dragging': dragging,
+      'welcome-stage--theme': showBoothChrome,
     }"
     @click="pick('background', $event)"
     @dragover="onDragOver"
@@ -382,6 +387,7 @@ const HANDLES: Handle[] = ["nw", "ne", "sw", "se"];
         @loadeddata="playBgVideo"
       />
     </div>
+    <VintageScreenChrome v-if="showBoothChrome" />
 
     <div class="welcome-content" :class="{ show: isReady }">
       <div
@@ -576,6 +582,30 @@ const HANDLES: Handle[] = ["nw", "ne", "sw", "se"];
   position: absolute;
   inset: 0;
   z-index: 0;
+}
+
+.welcome-stage--theme .welcome-bg--color {
+  background-image:
+    linear-gradient(rgba(245, 240, 225, 0.9), rgba(245, 240, 225, 0.9)),
+    radial-gradient(
+      ellipse at 20% 30%,
+      rgba(139, 115, 85, 0.05) 0%,
+      transparent 50%
+    ),
+    radial-gradient(
+      ellipse at 80% 70%,
+      rgba(139, 115, 85, 0.05) 0%,
+      transparent 50%
+    );
+}
+
+.welcome-stage--theme .welcome-bg--color::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("/background-texture.svg") center / cover no-repeat;
+  mix-blend-mode: soft-light;
+  pointer-events: none;
 }
 
 .welcome-bg-media {

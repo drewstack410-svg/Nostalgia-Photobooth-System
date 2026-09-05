@@ -200,7 +200,8 @@ function clearTitleBackground() {
     store.setKioskBackgroundFill(kioskId.value, "theme");
     kioskBgTab.value = "theme";
   } else {
-  store.clearTitleBackground();
+    store.clearTitleBackground();
+    titleBgMediaChoice.value = "theme";
   }
 }
 
@@ -888,6 +889,11 @@ watch(selectedScreen, async (id) => {
   selectedLayer.value = "background";
   if (id === "welcome") {
     store.ensureWelcomeLayout();
+    const fill = store.welcomeBackgroundFill;
+    titleBgMediaChoice.value =
+      fill === "color" ? "color" : fill === "media" ? (
+        store.titleBackgroundType === "image" ? "image" : "video"
+      ) : "theme";
     clearHistory();
   } else if (isKioskScreenId(id)) {
     const layout = store.ensureKioskLayout(id);
@@ -909,7 +915,7 @@ const startBtnInputRef = ref<HTMLInputElement | null>(null);
 const kioskBtnInputRef = ref<HTMLInputElement | null>(null);
 const titleBgImageInputRef = ref<HTMLInputElement | null>(null);
 const titleBgVideoInputRef = ref<HTMLInputElement | null>(null);
-const titleBgMediaChoice = ref<"image" | "video" | "color">("image");
+const titleBgMediaChoice = ref<"theme" | "image" | "video" | "color">("theme");
 const titleBgError = ref("");
 const titleBgBusy = ref(false);
 const hexDraft = ref(store.welcomeBackgroundColor);
@@ -937,7 +943,6 @@ watch(activeBgColor, (c) => {
 });
 
 function chooseBgMode(mode: "image" | "video" | "color" | "theme") {
-  titleBgMediaChoice.value = mode === "theme" ? "color" : mode;
   if (kioskId.value) {
     store.setKioskBackgroundFill(
       kioskId.value,
@@ -946,7 +951,10 @@ function chooseBgMode(mode: "image" | "video" | "color" | "theme") {
     kioskBgTab.value = mode;
     return;
   }
-  store.setWelcomeBackgroundFill(mode === "color" ? "color" : "media");
+  titleBgMediaChoice.value = mode;
+  store.setWelcomeBackgroundFill(
+    mode === "color" ? "color" : mode === "theme" ? "theme" : "media",
+  );
 }
 
 const kioskBgTab = ref<"theme" | "image" | "video" | "color">("theme");
@@ -955,28 +963,26 @@ const kioskBgIsCustom = computed(() =>
   kioskId.value ? store.kioskHasCustomBackground(kioskId.value) : false,
 );
 const inspectorBgUrl = computed(() => {
-  if (kioskId.value) return store.kioskBackgroundUrl(kioskId.value);
-  return store.effectiveTitleBackgroundUrl;
+  if (kioskId.value) {
+    return store.kioskHasCustomBackground(kioskId.value)
+      ? store.kioskBackgroundUrl(kioskId.value)
+      : null;
+  }
+  return store.titleBackgroundUrl;
 });
 const inspectorBgType = computed(() => {
   if (kioskId.value) return store.kioskBackgroundType(kioskId.value);
-  return store.effectiveTitleBackgroundType;
+  return store.titleBackgroundType;
 });
 const inspectorHasImage = computed(
-  () =>
-    inspectorBgType.value === "image" &&
-    !!inspectorBgUrl.value &&
-    (kioskId.value ? kioskBgIsCustom.value : true),
+  () => inspectorBgType.value === "image" && !!inspectorBgUrl.value,
 );
 const inspectorHasVideo = computed(
-  () =>
-    inspectorBgType.value === "video" &&
-    !!inspectorBgUrl.value &&
-    (kioskId.value ? kioskBgIsCustom.value : true),
+  () => inspectorBgType.value === "video" && !!inspectorBgUrl.value,
 );
 const inspectorCanClear = computed(() => {
   if (kioskId.value) return kioskBgIsCustom.value;
-  return titleBgMediaChoice.value !== "color" && !!store.titleBackgroundUrl;
+  return !!store.titleBackgroundUrl;
 });
 
 function applyHexColor() {
@@ -992,15 +998,20 @@ function applyHexColor() {
 watch(
   () => [store.welcomeBackgroundFill, store.titleBackgroundType] as const,
   ([fill, type]) => {
+    if (kioskId.value) return;
     if (fill === "color") {
       titleBgMediaChoice.value = "color";
+      return;
+    }
+    if (fill === "theme") {
+      titleBgMediaChoice.value = "theme";
       return;
     }
     if (type === "video" || type === "image") {
       titleBgMediaChoice.value = type;
       return;
     }
-    titleBgMediaChoice.value = "video";
+    titleBgMediaChoice.value = "image";
   },
   { immediate: true },
 );
@@ -1627,17 +1638,21 @@ const screenDirty = computed(() => layoutDirty());
           <template v-if="selectedLayer === 'background'">
             <div
               class="bg-tabs"
-              :class="{ 'bg-tabs--kiosk': !!kioskId }"
               role="tablist"
               aria-label="Background type"
             >
               <button
-                v-if="kioskId"
                 type="button"
                 role="tab"
                 class="bg-tabs__tab"
-                :class="{ 'bg-tabs__tab--on': kioskBgTab === 'theme' }"
-                :aria-selected="kioskBgTab === 'theme'"
+                :class="{
+                  'bg-tabs__tab--on': kioskId
+                    ? kioskBgTab === 'theme'
+                    : titleBgMediaChoice === 'theme',
+                }"
+                :aria-selected="
+                  kioskId ? kioskBgTab === 'theme' : titleBgMediaChoice === 'theme'
+                "
                 @click="chooseBgMode('theme')"
               >
                 Theme
@@ -1685,9 +1700,12 @@ const screenDirty = computed(() => layoutDirty());
                 Color
               </button>
             </div>
-            <p v-if="kioskId && kioskBgTab === 'theme'" class="inspector__hint">
-              Uses the booth's default background. Switch to Image, Video, or
-              Color to replace it.
+            <p
+              v-if="kioskId ? kioskBgTab === 'theme' : titleBgMediaChoice === 'theme'"
+              class="inspector__hint"
+            >
+              Default booth frame — wood border, corner ornaments, and paper.
+              Switch to Image, Video, or Color to replace it.
             </p>
             <div
               v-show="kioskId ? kioskBgTab === 'color' : titleBgMediaChoice === 'color'"
@@ -3326,15 +3344,11 @@ const screenDirty = computed(() => layoutDirty());
 
 .bg-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   padding: 3px;
   background: var(--color-cream);
   border: 2px solid var(--color-brown-light);
   border-radius: 10px;
-}
-
-.bg-tabs--kiosk {
-  grid-template-columns: repeat(4, 1fr);
 }
 
 .bg-tabs__tab {

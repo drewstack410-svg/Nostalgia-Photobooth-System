@@ -100,6 +100,12 @@ export interface TemplateCell {
   h: number;
   /** Clockwise degrees about the slot's centre. 0 = axis-aligned. */
   rotation: number;
+  /**
+   * 1-based capture this slot shows. Export/import writes this so a
+   * 12-window sheet keeps 1…12 after it is loaded onto another
+   * template. When omitted, compositing uses `index % photoCount`.
+   */
+  shot?: number;
 }
 
 export interface Template {
@@ -266,7 +272,7 @@ export interface SavedPhotoStrip {
 }
 
 export type TitleBackgroundType = "image" | "video" | null;
-export type WelcomeBackgroundFill = "media" | "color";
+export type WelcomeBackgroundFill = "theme" | "media" | "color";
 export type FilterEffectType =
   | "sepia"
   | "bw"
@@ -1651,7 +1657,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
 
   const DEFAULT_WELCOME_BG_COLOR = "#f4ead5";
   const welcomeBackgroundColor = ref(DEFAULT_WELCOME_BG_COLOR);
-  const welcomeBackgroundFill = ref<WelcomeBackgroundFill>("media");
+  const welcomeBackgroundFill = ref<WelcomeBackgroundFill>("theme");
 
   function normalizeHexColor(raw: string): string | null {
     const t = raw.trim().replace(/^#/, "");
@@ -1668,7 +1674,11 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     );
     if (color) welcomeBackgroundColor.value = color;
     const fill = localStorage.getItem(STORAGE_KEY_WELCOME_BG_FILL);
-    if (fill === "color" || fill === "media") welcomeBackgroundFill.value = fill;
+    if (fill === "color" || fill === "theme") {
+      welcomeBackgroundFill.value = fill;
+    } else if (fill === "media" && titleBackgroundUrl.value) {
+      welcomeBackgroundFill.value = "media";
+    }
   }
 
   function setWelcomeBackgroundColor(raw: string) {
@@ -1705,6 +1715,10 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   );
   const effectiveTitleBackgroundType = computed<TitleBackgroundType>(
     () => (titleBackgroundUrl.value ? titleBackgroundType.value : "video"),
+  );
+  /** True only when a real title file loaded — not the fallback path. */
+  const hasLoadedTitleBackground = computed(
+    () => !!(titleBackgroundUrl.value || packagedTitleUrl.value),
   );
   const customDisplayFontUrl = ref<string | null>(null);
   const customBodyFontUrl = ref<string | null>(null);
@@ -1910,6 +1924,9 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   );
   const effectivePaymentBackgroundType = computed<TitleBackgroundType>(
     () => (paymentBackgroundUrl.value ? paymentBackgroundType.value : "video"),
+  );
+  const hasLoadedPaymentBackground = computed(
+    () => !!(paymentBackgroundUrl.value || packagedPaymentUrl.value),
   );
 
   function setPaymentBackgroundBlob(type: TitleBackgroundType, blob: Blob) {
@@ -2152,6 +2169,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   function clearTitleBackground() {
     titleBackgroundType.value = null;
     titleBackgroundUrl.value = null;
+    setWelcomeBackgroundFill("theme");
     localStorage.removeItem(STORAGE_KEY_BG_TYPE);
     localStorage.removeItem(STORAGE_KEY_BG_URL);
     if (window.electronAPI) {
@@ -2194,6 +2212,12 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
         setTitleBackgroundBlob(result.mediaType, blob);
       } else if (!packagedTitleUrl.value) {
         packagedTitleUrl.value = await loadPackagedBackground("title");
+      }
+      if (
+        welcomeBackgroundFill.value === "media" &&
+        !titleBackgroundUrl.value
+      ) {
+        setWelcomeBackgroundFill("theme");
       }
     } catch (e) {
       console.error("Failed to load title background from disk:", e);
@@ -3059,8 +3083,10 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     titleBackgroundUrl,
     effectiveTitleBackgroundUrl,
     effectiveTitleBackgroundType,
+    hasLoadedTitleBackground,
     effectivePaymentBackgroundUrl,
     effectivePaymentBackgroundType,
+    hasLoadedPaymentBackground,
     customDisplayFontUrl,
     customBodyFontUrl,
     filters,
