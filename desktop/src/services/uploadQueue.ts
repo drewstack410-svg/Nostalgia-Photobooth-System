@@ -23,6 +23,7 @@ const AUTO_RESUME_MS = 20_000;
 export type GalleryAssetKind =
   | "photo"
   | "print"
+  | "gif"
   | "highlight-strip"
   | "highlight-full";
 
@@ -219,8 +220,9 @@ async function uploadAsset(
   payload: { dataUrl?: string; bytes?: Uint8Array; mime: string },
   publicId: string,
 ): Promise<{ url?: string; publicId?: string } | null> {
-  const isVideo = payload.mime.startsWith("video/");
-  if (isVideo) {
+  const isBinary =
+    payload.mime.startsWith("video/") || payload.mime === "image/gif";
+  if (isBinary) {
     let bytes = payload.bytes;
     if (!bytes && payload.dataUrl) {
       const comma = payload.dataUrl.indexOf(",");
@@ -281,6 +283,7 @@ export async function processSessionUpload(sessionId: string): Promise<boolean> 
     let printId: string | undefined;
     const stripIds: string[] = [];
     const fullVids: string[] = [];
+    let gifId: string | undefined;
 
     for (const asset of job.assets) {
       const payload = await loadAssetPayload(job, asset);
@@ -300,6 +303,8 @@ export async function processSessionUpload(sessionId: string): Promise<boolean> 
         printId = uploaded.publicId;
       } else if (asset.kind === "highlight-strip") {
         stripIds.push(uploaded.publicId);
+      } else if (asset.kind === "gif") {
+        gifId = uploaded.publicId;
       } else {
         fullVids.push(uploaded.publicId);
       }
@@ -313,6 +318,7 @@ export async function processSessionUpload(sessionId: string): Promise<boolean> 
         videoIds: stripIds.length ? stripIds : undefined,
         fullIds: photoIds.length ? photoIds : undefined,
         fullVids: fullVids.length ? fullVids : undefined,
+        gifId,
         layout: job.layout,
       }),
       FILE_UPLOAD_TIMEOUT_MS,
@@ -438,6 +444,7 @@ function sessionFolderFromPath(filePath?: string): string | null {
 function mimeFromName(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() || "";
   if (ext === "png") return "image/png";
+  if (ext === "gif") return "image/gif";
   if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
   if (ext === "mp4" || ext === "m4v" || ext === "mov") return "video/mp4";
   if (ext === "webm") return "video/webm";
@@ -475,6 +482,13 @@ async function reconstructJobFromDisk(
         filename: name,
         publicId: `nostalgia_${sessionTs}_print`,
         mime: "image/png",
+      });
+    } else if (/^session\.gif$/i.test(name)) {
+      assets.push({
+        kind: "gif",
+        filename: name,
+        publicId: `nostalgia_${sessionTs}_gif`,
+        mime: "image/gif",
       });
     } else if (/^highlight-strip\./i.test(name)) {
       assets.push({

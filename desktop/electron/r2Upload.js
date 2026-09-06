@@ -9,23 +9,69 @@ const https = require("https");
 const crypto = require("crypto");
 const { URL } = require("url");
 
-function envFileCandidates() {
-  const out = [
-    path.join(__dirname, "..", ".env"),
-    path.join(process.cwd(), ".env"),
-    path.join(process.cwd(), "desktop", ".env"),
-  ];
-  try {
-    if (process.resourcesPath) {
-      out.push(path.join(process.resourcesPath, ".env"));
-    }
-  } catch (_) { /* ignore */ }
+function resolveEnvPaths() {
+  const projectEnv = path.join(__dirname, "..", ".env");
+  let userEnv = "";
+  let packaged = "";
   try {
     const { app } = require("electron");
     if (app?.getPath) {
-      out.unshift(path.join(app.getPath("userData"), ".env"));
+      userEnv = path.join(app.getPath("userData"), ".env");
     }
-  } catch (_) { /* not running under Electron */ }
+  } catch (_) {
+    /* vite / node, or app path not ready */
+  }
+  try {
+    if (process.resourcesPath) {
+      packaged = path.join(process.resourcesPath, ".env");
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  return { userEnv, packaged, projectEnv };
+}
+
+/**
+ * Installer .env is copied to %APPDATA% so operators can edit it.
+ * Only the first launch used to copy, so a rebuild never replaced a
+ * stale AppData file. Refresh when the packaged copy is newer.
+ */
+function syncPackagedEnvToUserData() {
+  const { userEnv, packaged } = resolveEnvPaths();
+  if (!userEnv || !packaged || packaged === "." || !fs.existsSync(packaged)) {
+    return;
+  }
+  try {
+    const needCopy =
+      !fs.existsSync(userEnv) ||
+      fs.statSync(packaged).mtimeMs > fs.statSync(userEnv).mtimeMs;
+    if (!needCopy) return;
+    fs.copyFileSync(packaged, userEnv);
+    console.log("[R2] Updated userData .env from packaged resources");
+  } catch (err) {
+    console.warn("[R2] Could not copy .env to userData:", err.message);
+  }
+}
+
+function envFileCandidates() {
+  const { userEnv, packaged, projectEnv } = resolveEnvPaths();
+  const out = [];
+  if (userEnv) out.push(userEnv);
+  if (packaged && packaged !== ".") out.push(packaged);
+  out.push(
+    path.join(process.cwd(), ".env"),
+    path.join(process.cwd(), "desktop", ".env"),
+  );
+  try {
+    if (process.execPath) {
+      out.push(path.join(path.dirname(process.execPath), ".env"));
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  // Project desktop/.env last so `npm run electron:dev` always uses the
+  // file you just edited, even if an old AppData copy still exists.
+  out.push(projectEnv);
   return out;
 }
 
@@ -77,7 +123,7 @@ function extFromContentType(contentType) {
   return "bin";
 }
 
-function loadEnvFile(filePath) {
+function loadEnvFile(filePath, { override = false } = {}) {
   if (!filePath || !fs.existsSync(filePath)) return false;
   const text = fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
   for (const raw of text.split(/\r?\n/)) {
@@ -93,16 +139,22 @@ function loadEnvFile(filePath) {
     ) {
       val = val.slice(1, -1);
     }
-    if (!process.env[key]) process.env[key] = val;
+    if (override || !process.env[key]) process.env[key] = val;
   }
   return true;
 }
 
 function loadEnvFromDisk() {
+  syncPackagedEnvToUserData();
+  let loaded = "";
+  const seen = new Set();
   for (const candidate of envFileCandidates()) {
-    if (loadEnvFile(candidate)) return candidate;
+    const resolved = path.resolve(candidate);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    if (loadEnvFile(candidate, { override: true })) loaded = candidate;
   }
-  return "";
+  return loaded;
 }
 
 function getR2Config() {

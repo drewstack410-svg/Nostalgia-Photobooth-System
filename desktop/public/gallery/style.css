@@ -175,6 +175,13 @@ body {
   display: block;
 }
 
+.stage-gif {
+  -webkit-touch-callout: default;
+  -webkit-user-select: none;
+  user-select: none;
+  pointer-events: auto;
+}
+
 .stage-video {
   max-width: 100%;
   max-height: 100%;

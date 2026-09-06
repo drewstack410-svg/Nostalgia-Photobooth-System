@@ -1,4 +1,4 @@
-﻿// Nostalgia Photobooth — public gallery viewer
+// Nostalgia Photobooth — public gallery viewer
 // ---------------------------------------------
 // Vanilla JS, no framework, no build step.
 //
@@ -101,6 +101,7 @@
     });
   }
 
+  const gifId = session.gif || "";
   const highlightUrls = vids.map((id) => imageUrl(id));
   const fullHighlightUrls = fullVids.map((id) => imageUrl(id));
 
@@ -135,9 +136,25 @@
     }
   }
 
-  // GIF tab — same button as before, now plays the framed strip video.
+  // GIF tab — a real animated GIF shown as an <img> so phones can
+  // long-press → Save Image / Add to Photos, same as a picture.
+  // Older sessions only have the highlight MP4; keep that as fallback.
+  const gifImageUrl = gifId ? imageUrl(gifId) : "";
   const gifVideoUrl = framedStripUrl() || highlightUrls[0] || "";
-  if (gifVideoUrl) {
+  if (gifImageUrl) {
+    views.push({
+      key: "gif",
+      label: "GIF",
+      kind: "gif",
+      asImage: true,
+      url: gifImageUrl,
+      downloadUrl: imageUrl(gifId, {
+        download: true,
+        name: "nostalgia",
+      }),
+      downloadName: "nostalgia.gif",
+    });
+  } else if (gifVideoUrl) {
     views.push({
       key: "gif",
       label: "GIF",
@@ -318,8 +335,10 @@
       el.setAttribute("aria-selected", isActive ? "true" : "false");
     });
     const view = getView(key);
-    const isGifVideo = view && view.kind === "gif";
+    const isGifImage = view && view.kind === "gif" && view.asImage;
+    const isGifVideo = view && view.kind === "gif" && !view.asImage;
     stageEl.classList.toggle("is-video", !!isGifVideo);
+    stageEl.classList.toggle("is-gif-image", !!isGifImage);
     stageEl.classList.toggle("is-highlight-strip", false);
     stageEl.classList.toggle("is-png", isPngView(view));
     stageEl.classList.toggle("is-grid", !!(view && view.kind === "grid"));
@@ -336,6 +355,7 @@
     closeHighlightLightbox();
     revokeVideoSrc();
     renderStage(view);
+    updateGifHoldHint(view);
   }
 
   function renderStage(view) {
@@ -370,6 +390,11 @@
       return;
     }
 
+    if (view.kind === "gif" && view.asImage) {
+      renderGifImage(view);
+      return;
+    }
+
     if (view.kind === "gif") {
       renderGifVideo(view);
       return;
@@ -392,6 +417,39 @@
     };
     probe.src = view.url;
     updateSaveLabel(view);
+  }
+
+  function renderGifImage(view) {
+    loadingEl.hidden = false;
+    errorEl.hidden = true;
+    updateSaveLabel(view);
+    const img = document.createElement("img");
+    img.className = "stage-img stage-gif";
+    img.alt = "GIF";
+    img.src = view.url;
+    img.onload = () => {
+      if (activeKey !== view.key) return;
+      loadingEl.hidden = true;
+    };
+    img.onerror = () => {
+      if (activeKey !== view.key) return;
+      loadingEl.hidden = true;
+      errorEl.hidden = false;
+    };
+    stageInner.appendChild(img);
+  }
+
+  function updateGifHoldHint(view) {
+    if (!footnoteEl) return;
+    if (inAppBrowserName()) return;
+    if (view && view.kind === "gif" && view.asImage) {
+      footnoteEl.hidden = false;
+      footnoteEl.textContent =
+        "Press and hold the GIF to save it to Photos.";
+      return;
+    }
+    footnoteEl.hidden = true;
+    footnoteEl.textContent = "";
   }
 
   function revokeVideoSrc() {
@@ -1126,6 +1184,24 @@
     setSaveBusy(true);
     try {
       const files = [];
+      if (view.kind === "gif" && view.asImage) {
+        const url = view.downloadUrl || view.url;
+        if (url) {
+          try {
+            files.push(
+              await fetchAsFile(
+                url,
+                view.downloadName || "nostalgia.gif",
+                "image/gif",
+              ),
+            );
+          } catch (_) {
+            await saveByUrl(url, view.downloadName || "nostalgia.gif");
+          }
+        }
+        if (files.length) await saveFiles(files);
+        return;
+      }
       if (framedStripUrl()) {
         try {
           const strip = await fetchStripVideoFile();
@@ -1184,7 +1260,22 @@
     if (!navigator.share || view.kind === "grid") return;
     try {
       const files = [];
-      if (view.kind === "gif") {
+      if (view.kind === "gif" && view.asImage) {
+        const url = view.downloadUrl || view.url;
+        if (url) {
+          try {
+            files.push(
+              await fetchAsFile(
+                url,
+                view.downloadName || "nostalgia.gif",
+                "image/gif",
+              ),
+            );
+          } catch (_) {
+            /* fall through to URL share */
+          }
+        }
+      } else if (view.kind === "gif") {
         const url = view.url || framedStripUrl();
         if (url) {
           try {
@@ -1490,10 +1581,12 @@
         const sessionVids = [].concat(data.vids || []).map(String).filter(Boolean);
         const sessionFullVids = [].concat(data.fullVids || []).map(String).filter(Boolean);
         const sessionPrint = String(data.print || "").trim();
+        const sessionGif = String(data.gif || "").trim();
         if (
           !sessionIds.length &&
           !sessionFullIds.length &&
           !sessionPrint &&
+          !sessionGif &&
           !sessionVids.length &&
           !sessionFullVids.length
         ) {
@@ -1506,6 +1599,7 @@
           ids: sessionIds,
           fullIds: sessionFullIds,
           printId: sessionPrint,
+          gif: sessionGif,
           vids: sessionVids,
           fullVids: sessionFullVids,
           layoutSlots: parseSlots(String(data.slots || "")),
@@ -1543,6 +1637,7 @@
       ids: sessionIds,
       fullIds: [],
       printId: sessionPrint,
+      gif: "",
       vids: sessionVids,
       fullVids: [],
       layoutSlots: parseSlots((searchParams.get("slots") || "").trim()),

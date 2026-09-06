@@ -17,37 +17,8 @@ app.commandLine.appendSwitch("enable-accelerated-video-encode");
 app.commandLine.appendSwitch("enable-accelerated-video-decode");
 
 function loadRuntimeEnv() {
-  let userEnv = "";
-  let packaged = "";
-  try {
-    userEnv = path.join(app.getPath("userData"), ".env");
-  } catch (_) { /* app path not ready */ }
-  try {
-    packaged = path.join(process.resourcesPath || "", ".env");
-  } catch (_) { /* unpackaged */ }
-  if (
-    userEnv &&
-    packaged &&
-    packaged !== "." &&
-    !fs.existsSync(userEnv) &&
-    fs.existsSync(packaged)
-  ) {
-    try {
-      fs.copyFileSync(packaged, userEnv);
-      console.log("[Main] Copied packaged .env to", userEnv);
-    } catch (err) {
-      console.warn("[Main] Could not copy .env to userData:", err.message);
-    }
-  }
-  const candidates = [
-    userEnv,
-    packaged,
-    path.join(__dirname, "..", ".env"),
-    path.join(path.dirname(process.execPath), ".env"),
-  ].filter(Boolean);
-  for (const file of candidates) {
-    if (r2.loadEnvFile(file)) console.log("[Main] Loaded env from", file);
-  }
+  const loaded = r2.loadEnvFromDisk();
+  if (loaded) console.log("[Main] Loaded env from", loaded);
 }
 loadRuntimeEnv();
 

@@ -31,6 +31,8 @@ export type GalleryManifest = {
   /** Full uncropped stills for the gallery download row. */
   fullIds?: string[];
   print?: string;
+  /** Animated GIF of the captures — shown as an <img> so phones can long-press save. */
+  gif?: string;
   /** Framed strip highlight (and fallback clips). */
   vids?: string[];
   /** Per-shot uncropped highlight clips. */
@@ -63,6 +65,7 @@ export async function publishGallerySession(opts: {
   videoIds?: string[];
   fullIds?: string[];
   fullVids?: string[];
+  gifId?: string;
   layout?: GalleryLayoutMeta;
 }): Promise<string> {
   const {
@@ -72,11 +75,13 @@ export async function publishGallerySession(opts: {
     videoIds,
     fullIds,
     fullVids,
+    gifId,
     layout,
   } = opts;
   if (
     publicIds.length === 0 &&
     !printId &&
+    !gifId &&
     !(videoIds && videoIds.length) &&
     !(fullIds && fullIds.length) &&
     !(fullVids && fullVids.length)
@@ -97,6 +102,7 @@ export async function publishGallerySession(opts: {
     print: printId || undefined,
     vids: videoIds && videoIds.length ? videoIds : undefined,
     fullVids: fullVids && fullVids.length ? fullVids : undefined,
+    gif: gifId || undefined,
     slots: layout?.slots,
     par: layout?.par,
     rows: layout?.rows,

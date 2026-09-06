@@ -886,18 +886,13 @@ async function createCompositeImage(
 
 // Save the composite image
 /**
- * Claims this sitting's "<MM-DD-YY>/Session N" folder, drops the printed
- * sheet into it, and kicks off the session GIF.
- *
- * The GIF is deliberately fire-and-forget: encoding a handful of frames
- * takes a second or two and the print is already on its way out, so
- * nobody should be made to wait on it. Returns the folder (or null when
- * the folder could not be created, in which case callers fall back to the
- * old flat filenames rather than losing the customer's photos).
+ * Claims this sitting's "<MM-DD-YY>/Session N" folder and drops the
+ * printed sheet into it. Returns the folder (or null when the folder
+ * could not be created, in which case callers fall back to the old
+ * flat filenames rather than losing the customer's photos).
  */
 async function beginSessionFolder(
   stripDataUrl: string,
-  captureDataUrls: string[],
 ): Promise<string | null> {
   const api = window.electronAPI;
   if (!api?.beginSession) return null;
@@ -920,22 +915,6 @@ async function beginSessionFolder(
     } catch (e) {
       console.warn("[Session] strip save error:", e);
     }
-  }
-
-  if (captureDataUrls.length && api.saveSessionBytes) {
-    const gifFolder = folder;
-    void buildSessionGif(captureDataUrls, { maxWidth: 480, delayMs: 600 })
-      .then((bytes) =>
-        api.saveSessionBytes!({
-          bytes,
-          filename: `${gifFolder}/session.gif`,
-        }),
-      )
-      .then((r) => {
-        if (r?.success) console.log("[Session] gif saved:", r.path);
-        else console.warn("[Session] gif save failed:", r?.error);
-      })
-      .catch((e) => console.warn("[Session] gif build failed:", e));
   }
 
   return folder;
@@ -1015,12 +994,18 @@ async function saveComposite() {
       // to Pictures, so the strip, the captures and the GIF all land
       // together. Null means the folder couldn't be made — the captures
       // then fall back to the old flat filenames rather than being lost.
-      const sessionFolder = await beginSessionFolder(
-        printComposite,
-        store.capturedPhotos
-          .map((p) => p.fullDataUrl || p.dataUrl)
-          .filter(Boolean),
-      );
+      const sessionFolder = await beginSessionFolder(printComposite);
+      const gifFrameUrls = store.capturedPhotos
+        .map((p) => p.fullDataUrl || p.dataUrl)
+        .filter(Boolean);
+      const gifBytesPromise = gifFrameUrls.length
+        ? buildSessionGif(gifFrameUrls, { maxWidth: 480, delayMs: 600 }).catch(
+            (e) => {
+              console.warn("[Session] gif build failed:", e);
+              return null;
+            },
+          )
+        : Promise.resolve(null);
 
       // Also upload the finished TEMPLATED print (frame applied) so the
       // digital gallery can offer it as a download next to the
@@ -1308,6 +1293,29 @@ async function saveComposite() {
           publicId: `nostalgia_${sessionTs}_${item.name}`,
           mime: item.mime || `video/${item.ext}`,
           bytes: item.bytes,
+        });
+      }
+
+      const gifBytes = await gifBytesPromise;
+      if (gifBytes && gifBytes.byteLength) {
+        if (sessionFolder && window.electronAPI?.saveSessionBytes) {
+          try {
+            const r = await window.electronAPI.saveSessionBytes({
+              bytes: gifBytes,
+              filename: `${sessionFolder}/session.gif`,
+            });
+            if (r?.success) console.log("[Session] gif saved:", r.path);
+            else console.warn("[Session] gif save failed:", r?.error);
+          } catch (e) {
+            console.warn("[Session] gif save error:", e);
+          }
+        }
+        assets.push({
+          kind: "gif",
+          filename: "session.gif",
+          publicId: `nostalgia_${sessionTs}_gif`,
+          mime: "image/gif",
+          bytes: gifBytes,
         });
       }
 
