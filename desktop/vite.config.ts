@@ -49,6 +49,34 @@ if (loaded) {
   console.warn('[R2] No desktop/.env found — R2 uploads will be skipped')
 }
 
+const LEGACY_R2_PUBLIC =
+  'https://pub-60ed42d101464039b0a65609342fdea3.r2.dev'
+const CURRENT_R2_PUBLIC =
+  'https://pub-9d3f2264233d455dbccecef6d8efddfa.r2.dev'
+
+function uniqueHosts(hosts: string[]) {
+  const out: string[] = []
+  for (const host of hosts) {
+    const n = String(host || '').replace(/\/+$/, '')
+    if (n && !out.includes(n)) out.push(n)
+  }
+  return out
+}
+
+async function fetchFirstOk(urls: string[]) {
+  let last: Response | null = null
+  for (const target of urls) {
+    try {
+      const up = await fetch(target)
+      last = up
+      if (up.ok) return up
+    } catch {
+      /* try next host */
+    }
+  }
+  return last
+}
+
 function r2DevProxy() {
   return {
     name: 'r2-dev-proxy',
@@ -82,13 +110,27 @@ function r2DevProxy() {
             })
           return
         }
-        if (url.startsWith('/r2/') && req.method === 'GET') {
+        if (
+          (url.startsWith('/r2/') || url.startsWith('/r2-2/')) &&
+          req.method === 'GET'
+        ) {
           const r2 = loadR2()
           const cfg = r2.getR2Config()
-          const rest = url.slice('/r2/'.length)
-          const target = `${cfg.publicUrl}/${rest}`
-          void fetch(target)
+          const rest = url.startsWith('/r2-2/')
+            ? url.slice('/r2-2/'.length)
+            : url.slice('/r2/'.length)
+          const preferred = url.startsWith('/r2-2/')
+            ? [CURRENT_R2_PUBLIC, cfg.publicUrl, LEGACY_R2_PUBLIC]
+            : [LEGACY_R2_PUBLIC, cfg.publicUrl, CURRENT_R2_PUBLIC]
+          const targets = uniqueHosts(preferred).map((host) => `${host}/${rest}`)
+          void fetchFirstOk(targets)
             .then(async (up) => {
+              if (!up) {
+                res.statusCode = 502
+                res.setHeader('Content-Type', 'text/plain')
+                res.end('R2 upstream failed')
+                return
+              }
               const buf = Buffer.from(await up.arrayBuffer())
               res.statusCode = up.status
               const contentType = up.headers.get('content-type')
@@ -103,13 +145,28 @@ function r2DevProxy() {
             })
           return
         }
-        const sessionMatch = url.match(/^\/session\/([a-zA-Z0-9]+)\.json$/)
+        const sessionMatch = url.match(
+          /^\/session(-2)?\/([a-zA-Z0-9]+)\.json$/,
+        )
         if (sessionMatch && req.method === 'GET') {
           const r2 = loadR2()
           const cfg = r2.getR2Config()
-          const target = `${cfg.publicUrl}/${cfg.folder}/s/${sessionMatch[1]}.json`
-          void fetch(target)
+          const folder = cfg.folder || 'nostalgia-photobooth'
+          const code = sessionMatch[2]
+          const preferred = sessionMatch[1]
+            ? [CURRENT_R2_PUBLIC, cfg.publicUrl, LEGACY_R2_PUBLIC]
+            : [LEGACY_R2_PUBLIC, cfg.publicUrl, CURRENT_R2_PUBLIC]
+          const targets = uniqueHosts(preferred).map(
+            (host) => `${host}/${folder}/s/${code}.json`,
+          )
+          void fetchFirstOk(targets)
             .then(async (up) => {
+              if (!up) {
+                res.statusCode = 502
+                res.setHeader('Content-Type', 'application/json')
+                res.end(JSON.stringify({ error: 'R2 upstream failed' }))
+                return
+              }
               const buf = Buffer.from(await up.arrayBuffer())
               res.statusCode = up.status
               res.setHeader(

@@ -54,6 +54,7 @@
   }
 
   const r2Base = session.r2Base;
+  const r2Proxy = session.r2Proxy || "/r2";
   const cloud = session.cloud;
   const tag = session.tag;
   const ids = session.ids;
@@ -228,6 +229,7 @@
       img.alt = `Capture ${i + 1}`;
       img.loading = "lazy";
       img.src = url;
+      bindR2SrcFallback(img);
       btn.appendChild(img);
 
       const check = document.createElement("span");
@@ -282,6 +284,7 @@
 
       const vid = document.createElement("video");
       vid.src = item.url;
+      bindR2SrcFallback(vid);
       vid.muted = true;
       vid.playsInline = true;
       vid.setAttribute("playsinline", "");
@@ -377,6 +380,7 @@
           img.alt = `Capture ${i + 1}`;
           img.loading = "lazy";
           img.src = imageUrl(view.ids[i]);
+          bindR2SrcFallback(img);
           grid.appendChild(img);
         } else {
           const empty = document.createElement("div");
@@ -408,6 +412,7 @@
     const probe = new Image();
     probe.onload = () => {
       img.src = view.url;
+      bindR2SrcFallback(img);
       stageInner.appendChild(img);
       loadingEl.hidden = true;
     };
@@ -427,6 +432,7 @@
     img.className = "stage-img stage-gif";
     img.alt = "GIF";
     img.src = view.url;
+    bindR2SrcFallback(img);
     img.onload = () => {
       if (activeKey !== view.key) return;
       loadingEl.hidden = true;
@@ -552,6 +558,21 @@
       video.src = obj;
     } catch (err) {
       if (err && err.message === "webm-unsupported") throw err;
+      const alt = swapR2Proxy(url);
+      if (alt && alt !== url) {
+        try {
+          const res = await fetch(alt, { cache: "no-store" });
+          if (!res.ok) throw new Error("video fetch " + res.status);
+          const buf = await res.arrayBuffer();
+          const type = guessVideoMime(alt, res.headers.get("content-type"));
+          const obj = URL.createObjectURL(new Blob([buf], { type }));
+          videoSrcCleanup = () => URL.revokeObjectURL(obj);
+          video.src = obj;
+          return;
+        } catch (_) {
+          /* fall through */
+        }
+      }
       video.src = url;
     }
   }
@@ -940,6 +961,7 @@
     const vid = document.createElement("video");
     vid.className = "highlight-strip-video";
     vid.src = urls[0];
+    bindR2SrcFallback(vid);
     vid.muted = true;
     vid.loop = true;
     vid.playsInline = true;
@@ -1010,6 +1032,7 @@
         watchStripSize(ar.w, ar.h);
       };
       frame.src = frameUrl;
+      bindR2SrcFallback(frame);
       strip.appendChild(frame);
     } else {
       vid.addEventListener("loadedmetadata", () => {
@@ -1174,12 +1197,21 @@
   shareBtn.addEventListener("click", () => shareActiveView());
 
   async function fetchAsFile(url, filename, fallbackType) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("fetch failed");
-    const blob = await res.blob();
-    return new File([blob], filename, {
-      type: blob.type || fallbackType || "application/octet-stream",
-    });
+    async function once(target) {
+      const res = await fetch(target);
+      if (!res.ok) throw new Error("fetch failed");
+      const blob = await res.blob();
+      return new File([blob], filename, {
+        type: blob.type || fallbackType || "application/octet-stream",
+      });
+    }
+    try {
+      return await once(url);
+    } catch (err) {
+      const alt = swapR2Proxy(url);
+      if (alt && alt !== url) return await once(alt);
+      throw err;
+    }
   }
 
   async function saveFiles(files) {
@@ -1552,11 +1584,33 @@
     return raw.replace(/^\/+/, "");
   }
 
-  // Same-origin `/r2/...` so phones never have to resolve r2.dev
+  function swapR2Proxy(url) {
+    const s = String(url || "");
+    if (s.includes("/r2-2/")) return s.replace("/r2-2/", "/r2/");
+    if (s.includes("/r2/")) return s.replace("/r2/", "/r2-2/");
+    return "";
+  }
+
+  function bindR2SrcFallback(el) {
+    if (!el) return;
+    el.addEventListener(
+      "error",
+      () => {
+        if (el.dataset.r2Tried) return;
+        const alt = swapR2Proxy(el.currentSrc || el.src);
+        if (!alt) return;
+        el.dataset.r2Tried = "1";
+        el.src = alt;
+      },
+      { once: true },
+    );
+  }
+
+  // Same-origin `/r2` or `/r2-2` so phones never have to resolve r2.dev
   // (that host is what Chrome reports as ERR_NAME_NOT_RESOLVED).
   function imageUrl(publicId, options = {}) {
-    if (r2Base) {
-      return `/r2/${mediaKey(publicId)}`;
+    if (r2Base || r2Proxy) {
+      return `${r2Proxy}/${mediaKey(publicId)}`;
     }
     return cloudinaryImageUrl(cloud, publicId, options);
   }
@@ -1585,19 +1639,41 @@
 
   async function loadManifestSession(code) {
     const cfg = window.NOSTALGIA_GALLERY || {};
-    const base = String(cfg.r2Base || "").trim().replace(/\/+$/, "");
     const folder = String(cfg.r2Folder || "nostalgia-photobooth")
       .replace(/^\/+|\/+$/g, "");
-    const urls = [
-      // Same-origin Vercel/Vite proxy — avoids R2 CORS on phones.
-      `/session/${encodeURIComponent(code)}.json`,
-      base && folder ? `${base}/${folder}/s/${encodeURIComponent(code)}.json` : "",
-    ].filter(Boolean);
-    if (!urls.length) return null;
+    const origins = Array.isArray(cfg.origins) ? cfg.origins.slice() : [];
+    const primary = String(cfg.r2Base || "").trim().replace(/\/+$/, "");
+    if (
+      primary &&
+      !origins.some(
+        (o) => String(o.base || "").replace(/\/+$/, "") === primary,
+      )
+    ) {
+      origins.push({ proxy: "/r2", session: "/session", base: primary });
+    }
+    const candidates = [];
+    const seen = new Set();
+    function add(url, origin) {
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      candidates.push({ url, origin });
+    }
+    origins.forEach((origin) => {
+      const sessionPath = String(origin.session || "/session").replace(/\/+$/, "");
+      add(`${sessionPath}/${encodeURIComponent(code)}.json`, origin);
+    });
+    origins.forEach((origin) => {
+      const base = String(origin.base || "").trim().replace(/\/+$/, "");
+      if (base && folder) {
+        add(`${base}/${folder}/s/${encodeURIComponent(code)}.json`, origin);
+      }
+    });
+    if (!candidates.length) return null;
 
-    for (let i = 0; i < urls.length; i++) {
+    for (let i = 0; i < candidates.length; i++) {
+      const item = candidates[i];
       try {
-        const res = await fetch(urls[i], { cache: "no-cache" });
+        const res = await fetch(item.url, { cache: "no-cache" });
         if (!res.ok) continue;
         const data = await res.json();
         const sessionIds = [].concat(data.ids || []).map(String).filter(Boolean);
@@ -1616,8 +1692,10 @@
         ) {
           continue;
         }
+        const origin = item.origin || {};
         return {
-          r2Base: base,
+          r2Base: String(origin.base || primary || "").replace(/\/+$/, ""),
+          r2Proxy: String(origin.proxy || "/r2").replace(/\/+$/, "") || "/r2",
           cloud: "",
           tag: code,
           ids: sessionIds,
@@ -1634,7 +1712,7 @@
           title: String(data.title || "Nostalgia Photobooth").trim(),
         };
       } catch (err) {
-        console.warn("[Gallery] Manifest fetch failed:", urls[i], err);
+        console.warn("[Gallery] Manifest fetch failed:", item.url, err);
       }
     }
     return null;
@@ -1656,6 +1734,7 @@
     }
     return {
       r2Base: legacyBase,
+      r2Proxy: "/r2",
       cloud: legacyCloud,
       tag: (searchParams.get("tag") || "").trim(),
       ids: sessionIds,
