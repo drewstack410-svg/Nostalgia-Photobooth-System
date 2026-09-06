@@ -136,12 +136,20 @@
     }
   }
 
-  // GIF tab — a real animated GIF shown as an <img> so phones can
-  // long-press → Save Image / Add to Photos, same as a picture.
-  // Older sessions only have the highlight MP4; keep that as fallback.
+  // GIF tab looks like the highlight strip (looping photostrip video).
+  // Hold-to-save and Save to Camera Roll store that strip MP4.
   const gifImageUrl = gifId ? imageUrl(gifId) : "";
   const gifVideoUrl = framedStripUrl() || highlightUrls[0] || "";
-  if (gifImageUrl) {
+  if (gifVideoUrl) {
+    views.push({
+      key: "gif",
+      label: "GIF",
+      kind: "gif",
+      url: gifVideoUrl,
+      downloadUrl: gifVideoUrl,
+      downloadName: "highlight-strip.mp4",
+    });
+  } else if (gifImageUrl) {
     views.push({
       key: "gif",
       label: "GIF",
@@ -153,14 +161,6 @@
         name: "nostalgia",
       }),
       downloadName: "nostalgia.gif",
-    });
-  } else if (gifVideoUrl) {
-    views.push({
-      key: "gif",
-      label: "GIF",
-      kind: "gif",
-      url: gifVideoUrl,
-      downloadName: "nostalgia_strip.mp4",
     });
   }
 
@@ -437,15 +437,76 @@
       errorEl.hidden = false;
     };
     stageInner.appendChild(img);
+    bindHoldToSave(img);
+  }
+
+  function gifSaveTarget(view) {
+    if (!view || view.kind !== "gif") return null;
+    const url = view.url || view.downloadUrl || framedStripUrl();
+    if (!url) return null;
+    const name = view.downloadName || "highlight-strip.mp4";
+    const type = /\.gif(\?|$)/i.test(`${name} ${url}`)
+      ? "image/gif"
+      : "video/mp4";
+    return { url, name, type };
+  }
+
+  function bindHoldToSave(el, suppressRef) {
+    const HOLD_MS = 520;
+    let timer = 0;
+    let startX = 0;
+    let startY = 0;
+
+    function clearTimer() {
+      if (!timer) return;
+      clearTimeout(timer);
+      timer = 0;
+    }
+
+    function onDown(e) {
+      if (typeof e.button === "number" && e.button !== 0) return;
+      const pt = e.touches ? e.touches[0] : e;
+      startX = pt.clientX;
+      startY = pt.clientY;
+      clearTimer();
+      if (el.setPointerCapture && e.pointerId != null) {
+        try {
+          el.setPointerCapture(e.pointerId);
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      timer = setTimeout(() => {
+        timer = 0;
+        if (suppressRef) suppressRef();
+        if (navigator.vibrate) navigator.vibrate(12);
+        void saveActiveView();
+      }, HOLD_MS);
+    }
+
+    function onMove(e) {
+      const pt = e.touches ? e.touches[0] : e;
+      if (!pt) return;
+      if (Math.hypot(pt.clientX - startX, pt.clientY - startY) > 14) {
+        clearTimer();
+      }
+    }
+
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", clearTimer);
+    el.addEventListener("pointercancel", clearTimer);
+    el.addEventListener("contextmenu", (e) => e.preventDefault());
   }
 
   function updateGifHoldHint(view) {
     if (!footnoteEl) return;
     if (inAppBrowserName()) return;
-    if (view && view.kind === "gif" && view.asImage) {
+    if (view && view.kind === "gif") {
       footnoteEl.hidden = false;
-      footnoteEl.textContent =
-        "Press and hold the GIF to save it to Photos.";
+      footnoteEl.textContent = view.asImage
+        ? "Press and hold the GIF to save it to Photos."
+        : "Press and hold the strip to save the video.";
       return;
     }
     footnoteEl.hidden = true;
@@ -551,11 +612,20 @@
       loadingEl.hidden = true;
       errorEl.hidden = false;
     });
+    let suppressNextClick = false;
     playBtn.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        return;
+      }
       video.play().catch(() => showPlay());
     });
     video.addEventListener("click", () => {
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        return;
+      }
       if (video.paused) video.play().catch(() => showPlay());
       else video.pause();
     });
@@ -563,6 +633,9 @@
     wrap.appendChild(video);
     wrap.appendChild(playBtn);
     stageInner.appendChild(wrap);
+    bindHoldToSave(wrap, () => {
+      suppressNextClick = true;
+    });
 
     try {
       await bindVideoSrc(video, url);
@@ -1184,20 +1257,14 @@
     setSaveBusy(true);
     try {
       const files = [];
-      if (view.kind === "gif" && view.asImage) {
-        const url = view.downloadUrl || view.url;
-        if (url) {
-          try {
-            files.push(
-              await fetchAsFile(
-                url,
-                view.downloadName || "nostalgia.gif",
-                "image/gif",
-              ),
-            );
-          } catch (_) {
-            await saveByUrl(url, view.downloadName || "nostalgia.gif");
-          }
+      const gifSave = gifSaveTarget(view);
+      if (gifSave) {
+        try {
+          files.push(
+            await fetchAsFile(gifSave.url, gifSave.name, gifSave.type),
+          );
+        } catch (_) {
+          await saveByUrl(gifSave.url, gifSave.name);
         }
         if (files.length) await saveFiles(files);
         return;
@@ -1210,26 +1277,7 @@
           await saveByUrl(framedStripUrl(), "nostalgia_strip.mp4");
         }
       }
-      if (view.kind === "gif") {
-        const url = view.url || framedStripUrl();
-        const already = files.some((f) => /\.mp4$/i.test(f.name));
-        if (url && !already) {
-          try {
-            const strip = await fetchAsFile(
-              url,
-              view.downloadName || "nostalgia_strip.mp4",
-              "video/mp4",
-            );
-            files.push(
-              new File([strip], view.downloadName || "nostalgia_strip.mp4", {
-                type: "video/mp4",
-              }),
-            );
-          } catch (_) {
-            await saveByUrl(url, view.downloadName || "nostalgia_strip.mp4");
-          }
-        }
-      } else if (view.kind === "grid") {
+      if (view.kind === "grid") {
         const blob = await buildGridBlob(view.ids);
         files.push(new File([blob], view.downloadName, { type: "image/jpeg" }));
       } else if (view.downloadUrl) {
@@ -1260,38 +1308,14 @@
     if (!navigator.share || view.kind === "grid") return;
     try {
       const files = [];
-      if (view.kind === "gif" && view.asImage) {
-        const url = view.downloadUrl || view.url;
-        if (url) {
-          try {
-            files.push(
-              await fetchAsFile(
-                url,
-                view.downloadName || "nostalgia.gif",
-                "image/gif",
-              ),
-            );
-          } catch (_) {
-            /* fall through to URL share */
-          }
-        }
-      } else if (view.kind === "gif") {
-        const url = view.url || framedStripUrl();
-        if (url) {
-          try {
-            const strip = await fetchAsFile(
-              url,
-              view.downloadName || "nostalgia_strip.mp4",
-              "video/mp4",
-            );
-            files.push(
-              new File([strip], view.downloadName || "nostalgia_strip.mp4", {
-                type: "video/mp4",
-              }),
-            );
-          } catch (_) {
-            /* fall through to URL share */
-          }
+      const gifSave = gifSaveTarget(view);
+      if (gifSave) {
+        try {
+          files.push(
+            await fetchAsFile(gifSave.url, gifSave.name, gifSave.type),
+          );
+        } catch (_) {
+          /* fall through to URL share */
         }
       } else if (view.url) {
         try {
