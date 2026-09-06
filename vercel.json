@@ -6,11 +6,11 @@
   "rewrites": [
     {
       "source": "/r2/:path*",
-      "destination": "https://pub-60ed42d101464039b0a65609342fdea3.r2.dev/:path*"
+      "destination": "https://pub-9d3f2264233d455dbccecef6d8efddfa.r2.dev/:path*"
     },
     {
       "source": "/session/:code.json",
-      "destination": "https://pub-60ed42d101464039b0a65609342fdea3.r2.dev/nostalgia-photobooth/s/:code.json"
+      "destination": "https://pub-9d3f2264233d455dbccecef6d8efddfa.r2.dev/nostalgia-photobooth/s/:code.json"
     },
     { "source": "/s/:code", "destination": "/index.html" },
     { "source": "/s/:code/", "destination": "/index.html" }

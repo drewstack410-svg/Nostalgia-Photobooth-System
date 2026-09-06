@@ -577,11 +577,147 @@ async function uploadToR2({ imageDataUrl, folder, publicId }) {
   }
 }
 
+function galleryCorsOrigins(cfg) {
+  const origins = new Set([
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+  ]);
+  const gallery = (
+    process.env.VITE_GALLERY_BASE_URL ||
+    cfg.publicUrl ||
+    ""
+  ).trim();
+  try {
+    if (gallery) origins.add(new URL(gallery).origin);
+  } catch (_) {
+    /* ignore */
+  }
+  return [...origins];
+}
+
+function corsConfigurationXml(origins) {
+  const rules = origins
+    .map(
+      (origin) => `  <CORSRule>
+    <AllowedOrigin>${origin}</AllowedOrigin>
+    <AllowedMethod>GET</AllowedMethod>
+    <AllowedMethod>HEAD</AllowedMethod>
+    <AllowedHeader>*</AllowedHeader>
+    <ExposeHeader>ETag</ExposeHeader>
+    <ExposeHeader>Content-Type</ExposeHeader>
+    <ExposeHeader>Content-Length</ExposeHeader>
+    <ExposeHeader>Accept-Ranges</ExposeHeader>
+    <MaxAgeSeconds>86400</MaxAgeSeconds>
+  </CORSRule>`,
+    )
+    .join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+${rules}
+  <CORSRule>
+    <AllowedOrigin>*</AllowedOrigin>
+    <AllowedMethod>GET</AllowedMethod>
+    <AllowedMethod>HEAD</AllowedMethod>
+    <AllowedHeader>*</AllowedHeader>
+    <MaxAgeSeconds>86400</MaxAgeSeconds>
+  </CORSRule>
+</CORSConfiguration>
+`;
+}
+
+/**
+ * Public r2.dev objects are readable, but browsers still need CORS
+ * when the Vercel gallery origin fetches them. Apply GET/HEAD rules
+ * so phones are not blocked after a bucket swap.
+ */
+async function ensureR2Cors() {
+  const cfg = getR2Config();
+  if (!cfg.ok) {
+    return { ok: false, error: `Missing ${cfg.missing.join(", ")}` };
+  }
+  try {
+    const body = Buffer.from(corsConfigurationXml(galleryCorsOrigins(cfg)), "utf8");
+    const payloadHash = sha256Hex(body);
+    const host = new URL(cfg.endpoint).host;
+    const canonicalUri = `/${encodePath(cfg.bucket)}`;
+    const now = new Date();
+    const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+    const dateStamp = amzDate.slice(0, 8);
+    const region = "auto";
+    const service = "s3";
+    const contentType = "application/xml";
+    const headersToSign = {
+      host,
+      "content-type": contentType,
+      "x-amz-content-sha256": payloadHash,
+      "x-amz-date": amzDate,
+    };
+    const signedHeaderNames = Object.keys(headersToSign).sort();
+    const canonicalHeaders = signedHeaderNames
+      .map((n) => `${n}:${headersToSign[n]}\n`)
+      .join("");
+    const signedHeaders = signedHeaderNames.join(";");
+    const canonicalRequest = [
+      "PUT",
+      canonicalUri,
+      "cors=",
+      canonicalHeaders,
+      signedHeaders,
+      payloadHash,
+    ].join("\n");
+    const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+    const stringToSign = [
+      "AWS4-HMAC-SHA256",
+      amzDate,
+      credentialScope,
+      sha256Hex(canonicalRequest),
+    ].join("\n");
+    const signature = crypto
+      .createHmac(
+        "sha256",
+        signingKey(cfg.secretAccessKey, dateStamp, region, service),
+      )
+      .update(stringToSign, "utf8")
+      .digest("hex");
+    const authorization = `AWS4-HMAC-SHA256 Credential=${cfg.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+    const res = await httpsPut(
+      `${cfg.endpoint}${canonicalUri}?cors`,
+      {
+        Host: host,
+        "Content-Type": contentType,
+        "Content-Length": body.length,
+        "x-amz-content-sha256": payloadHash,
+        "x-amz-date": amzDate,
+        Authorization: authorization,
+      },
+      body,
+      15000,
+    );
+    if (res.status < 200 || res.status >= 300) {
+      const hint =
+        res.status === 403
+          ? " (API token needs Admin Read & Write on the bucket to set CORS)"
+          : "";
+      return {
+        ok: false,
+        error: `PutBucketCors HTTP ${res.status}${hint}: ${res.text || "no body"}`,
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 module.exports = {
   loadEnvFile,
   loadEnvFromDisk,
   getR2Config,
   pingR2,
+  ensureR2Cors,
   toNodeBuffer,
   uploadBuffer,
   uploadToR2,

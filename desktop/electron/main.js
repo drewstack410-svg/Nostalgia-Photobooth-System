@@ -347,6 +347,12 @@ app.whenReady().then(async () => {
     } else {
       console.error(`[R2] Not connected to Cloudflare. ${status.error || ""}`);
     }
+    if (status.configured && status.apiOk && typeof r2.ensureR2Cors === "function") {
+      return r2.ensureR2Cors().then((cors) => {
+        if (cors.ok) console.log("[R2] Gallery CORS rules applied to bucket");
+        else console.warn("[R2] Could not set bucket CORS:", cors.error);
+      });
+    }
   });
 
   // Route getDisplayMedia() straight at the middleware's window so the
