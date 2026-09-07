@@ -524,7 +524,7 @@ function updateOverlay(f: CameraFilter, patch: Partial<FilterOverlay>) {
 }
 
 const FILTER_MEDIA_ACCEPT =
-  ".png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.m4v,.webm";
+  ".png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.m4v,.webm,video/mp4,video/quicktime,video/webm";
 const filterMediaInputRef = ref<HTMLInputElement | null>(null);
 const filterMediaError = ref("");
 const filterMediaBusy = ref(false);
@@ -542,7 +542,7 @@ function triggerFilterMediaUpload() {
 
 function onFilterMediaVideoError() {
   filterMediaError.value =
-    "This video won't play here. Export an H.264 MP4 (or H.264 MOV) and try again.";
+    "This MOV won't play in the booth. Export H.264 (not ProRes/Animation) as MP4 or MOV and try again.";
 }
 
 async function onFilterMediaChange(event: Event) {
@@ -649,6 +649,10 @@ watch(editingFilterId, () => {
 
 function selectFilterRow(id: string) {
   editingFilterId.value = id;
+}
+
+function renameFilter(id: string, event: Event) {
+  store.updateFilterName(id, (event.target as HTMLInputElement).value);
 }
 
 function updateAdjustment(key: keyof FilterAdjustments, value: number) {
@@ -2537,7 +2541,16 @@ function submitEditTemplateDetails() {
               }"
               @click="selectFilterRow(f.id)"
             >
-              <td class="filters-table-name">{{ f.name }}</td>
+              <td class="filters-table-name" @click.stop>
+                <input
+                  type="text"
+                  class="filters-table-name-input"
+                  :value="f.name"
+                  :aria-label="`Rename filter ${f.name}`"
+                  @change="renameFilter(f.id, $event)"
+                  @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+                />
+              </td>
               <td>
                 <label class="filters-table-status">
                   <input
@@ -2637,6 +2650,20 @@ function submitEditTemplateDetails() {
         </table>
       </div>
       <aside class="filters-studio-side">
+        <div v-if="editingFilter" class="filter-adjust">
+          <h3 class="filter-adjust-title">Filter</h3>
+          <label class="filter-adjust-row filter-adjust-row--name">
+            <span>Name</span>
+            <input
+              type="text"
+              class="filters-name-input filters-name-input--wide"
+              :value="editingFilter.name"
+              aria-label="Filter name"
+              @change="renameFilter(editingFilter.id, $event)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
+          </label>
+        </div>
         <div v-if="editingFilter" class="filter-adjust">
           <h3 class="filter-adjust-title">Media overlay</h3>
           <div
@@ -4407,6 +4434,14 @@ function submitEditTemplateDetails() {
   color: var(--color-brown-dark);
 }
 
+.filter-adjust-row--name {
+  grid-template-columns: 5.6rem 1fr;
+}
+
+.filters-name-input--wide {
+  max-width: none;
+}
+
 .filter-adjust-row input[type="range"] {
   width: 100%;
 }
@@ -4462,6 +4497,32 @@ function submitEditTemplateDetails() {
 .filters-table-name {
   font-weight: 600;
   color: var(--color-brown-dark);
+  min-width: 8rem;
+}
+
+.filters-table-name-input {
+  width: 100%;
+  min-width: 7rem;
+  padding: 0.3rem 0.5rem;
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-brown-dark);
+  box-sizing: border-box;
+}
+
+.filters-table-name-input:hover,
+.filters-table-name-input:focus {
+  border-color: var(--color-brown-light);
+  background: var(--color-cream);
+  outline: none;
+}
+
+.filters-table-name-input:focus {
+  border-color: var(--color-gold);
 }
 
 /* Colour-overlay controls: colour, blend mode and opacity on one row. */

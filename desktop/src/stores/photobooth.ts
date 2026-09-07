@@ -65,14 +65,35 @@ import {
   DEFAULT_ADJUSTMENTS,
   type FilterAdjustments,
 } from "@/utils/filterPreview";
+import {
+  normalizeQuicktimeToMp4,
+  playbackMimeForOverlayVideo,
+} from "@/utils/quicktimeMp4";
 
 export { DEFAULT_ADJUSTMENTS };
 export type { FilterAdjustments };
 
 /** IPC Uint8Array is ArrayBufferLike; Blob wants a plain ArrayBuffer. */
-function blobFromIpcBytes(bytes: Uint8Array, type: string): Blob {
-  const copy = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(copy).set(bytes);
+function coerceIpcBytes(bytes: unknown): Uint8Array {
+  if (bytes instanceof Uint8Array) return bytes;
+  if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes);
+  if (ArrayBuffer.isView(bytes)) {
+    return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  }
+  if (bytes && typeof bytes === "object") {
+    const rec = bytes as { type?: string; data?: number[]; byteLength?: number };
+    if (rec.type === "Buffer" && Array.isArray(rec.data)) {
+      return Uint8Array.from(rec.data);
+    }
+  }
+  return new Uint8Array(0);
+}
+
+function blobFromIpcBytes(bytes: unknown, type: string): Blob {
+  const raw = coerceIpcBytes(bytes);
+  const copy = new ArrayBuffer(raw.byteLength);
+  const view = new Uint8Array(copy);
+  for (let i = 0; i < raw.byteLength; i++) view[i] = raw[i];
   return new Blob([copy], { type });
 }
 
@@ -1060,15 +1081,38 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     return layout ? JSON.stringify(layout) : "";
   }
 
+  const LAYOUT_PERSIST_MS = 400;
+  let welcomePersistTimer: ReturnType<typeof setTimeout> | null = null;
+  const kioskPersistTimers: Partial<
+    Record<KioskScreenId, ReturnType<typeof setTimeout>>
+  > = {};
+
   function persistWelcomeLayout() {
-    if (!welcomeLayout.value) {
-      localStorage.removeItem(STORAGE_KEY_WELCOME_LAYOUT);
-      lastPersistedWelcomeLayout.value = "";
-      return;
+    try {
+      if (!welcomeLayout.value) {
+        localStorage.removeItem(STORAGE_KEY_WELCOME_LAYOUT);
+        lastPersistedWelcomeLayout.value = "";
+        return;
+      }
+      const raw = JSON.stringify(welcomeLayout.value);
+      localStorage.setItem(STORAGE_KEY_WELCOME_LAYOUT, raw);
+      lastPersistedWelcomeLayout.value = raw;
+    } catch (e) {
+      console.error("Failed to save welcome layout:", e);
     }
-    const raw = JSON.stringify(welcomeLayout.value);
-    localStorage.setItem(STORAGE_KEY_WELCOME_LAYOUT, raw);
-    lastPersistedWelcomeLayout.value = raw;
+  }
+
+  function schedulePersistWelcomeLayout() {
+    if (welcomePersistTimer) clearTimeout(welcomePersistTimer);
+    welcomePersistTimer = setTimeout(() => {
+      welcomePersistTimer = null;
+      persistWelcomeLayout();
+    }, LAYOUT_PERSIST_MS);
+  }
+
+  function commitWelcomeLayout(next: WelcomeLayout) {
+    welcomeLayout.value = next;
+    schedulePersistWelcomeLayout();
   }
 
   const welcomeLayoutDirty = computed(
@@ -1091,6 +1135,10 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   function saveWelcomeLayout() {
+    if (welcomePersistTimer) {
+      clearTimeout(welcomePersistTimer);
+      welcomePersistTimer = null;
+    }
     persistWelcomeLayout();
   }
 
@@ -1121,10 +1169,12 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     const h = w * aspect;
     const cx = cur.x + cur.w / 2;
     const cy = cur.y + cur.h / 2;
-    welcomeLayout.value = normalizeWelcomeLayout({
-      ...layout,
-      [id]: clampBox({ x: cx - w / 2, y: cy - h / 2, w, h }),
-    });
+    commitWelcomeLayout(
+      normalizeWelcomeLayout({
+        ...layout,
+        [id]: clampBox({ x: cx - w / 2, y: cy - h / 2, w, h }),
+      }),
+    );
   }
 
   function ensureWelcomeLayout(): WelcomeLayout {
@@ -1143,7 +1193,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     const layout = ensureWelcomeLayout();
     const next = clampBox(box);
     if (id === "logo" || id === "start") {
-      welcomeLayout.value = normalizeWelcomeLayout({ ...layout, [id]: next });
+      commitWelcomeLayout(normalizeWelcomeLayout({ ...layout, [id]: next }));
       if (id === "logo") {
         titleLogoScale.value = clampScale(
           (next.w * WELCOME_CANVAS_W) / WELCOME_LOGO_NATIVE_W,
@@ -1162,12 +1212,12 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     }
     if (!isAssetId(id)) return;
     const key = assetKey(id);
-    welcomeLayout.value = normalizeWelcomeLayout({
+    commitWelcomeLayout(normalizeWelcomeLayout({
       ...layout,
       assets: layout.assets.map((a) =>
         a.id === key ? { ...a, ...next } : a,
       ),
-    });
+    }));
   }
 
   function addWelcomeAsset(
@@ -1184,7 +1234,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     const label =
       name ||
       (kind === "video" ? "Video" : kind === "text" ? "Text" : "Image");
-    welcomeLayout.value = normalizeWelcomeLayout({
+    commitWelcomeLayout(normalizeWelcomeLayout({
       ...layout,
       assets: [
         ...layout.assets,
@@ -1198,7 +1248,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
         },
       ],
       order: [...layout.order, itemId],
-    });
+    }));
     return itemId;
   }
 
@@ -1206,10 +1256,10 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (!isAssetId(id)) return;
     const layout = ensureWelcomeLayout();
     const key = assetKey(id);
-    welcomeLayout.value = normalizeWelcomeLayout({
+    commitWelcomeLayout(normalizeWelcomeLayout({
       ...layout,
       assets: layout.assets.filter((a) => a.id !== key),
-    });
+    }));
   }
 
   function replaceWelcomeAssetSrc(
@@ -1220,14 +1270,14 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (!isAssetId(id)) return;
     const layout = ensureWelcomeLayout();
     const key = assetKey(id);
-    welcomeLayout.value = normalizeWelcomeLayout({
+    commitWelcomeLayout(normalizeWelcomeLayout({
       ...layout,
       assets: layout.assets.map((a) =>
         a.id === key
           ? { ...a, src, kind: kind ?? a.kind ?? "image", text: undefined }
           : a,
       ),
-    });
+    }));
   }
 
   function updateWelcomeAssetText(
@@ -1237,7 +1287,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (!isAssetId(id)) return;
     const layout = ensureWelcomeLayout();
     const key = assetKey(id);
-    welcomeLayout.value = normalizeWelcomeLayout({
+    commitWelcomeLayout(normalizeWelcomeLayout({
       ...layout,
       assets: layout.assets.map((a) => {
         if (a.id !== key || a.kind !== "text") return a;
@@ -1245,7 +1295,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
         const line = text.content.split("\n")[0].trim();
         return { ...a, text, name: line.slice(0, 32) || "Text" };
       }),
-    });
+    }));
   }
 
   function sendWelcomeLayer(
@@ -1253,27 +1303,26 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     dir: "back" | "front" | "backward" | "forward",
   ) {
     const layout = ensureWelcomeLayout();
-    welcomeLayout.value = normalizeWelcomeLayout({
+    commitWelcomeLayout(normalizeWelcomeLayout({
       ...layout,
       order: moveLayerOrder(layout.order, id, dir),
-    });
+    }));
   }
 
   function setWelcomeLayerOrder(order: string[]) {
     const layout = ensureWelcomeLayout();
-    welcomeLayout.value = normalizeWelcomeLayout({ ...layout, order });
+    commitWelcomeLayout(normalizeWelcomeLayout({ ...layout, order }));
   }
 
   function resetWelcomeLayout() {
-    welcomeLayout.value = defaultWelcomeLayout(
-      titleLogoScale.value,
-      startButtonScale.value,
+    commitWelcomeLayout(
+      defaultWelcomeLayout(titleLogoScale.value, startButtonScale.value),
     );
   }
 
   function applyWelcomeLayout(layout: WelcomeLayout) {
     const next = normalizeWelcomeLayout(layout);
-    welcomeLayout.value = next;
+    commitWelcomeLayout(next);
     titleLogoScale.value = clampScale(
       (next.logo.w * WELCOME_CANVAS_W) / WELCOME_LOGO_NATIVE_W,
     );
@@ -1316,16 +1365,44 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   function persistKioskLayout(id: KioskScreenId) {
-    const layout = kioskLayouts.value[id];
-    const key = STORAGE_KEY_KIOSK_LAYOUT + id;
-    if (!layout) {
-      localStorage.removeItem(key);
-      lastPersistedKiosk.value = { ...lastPersistedKiosk.value, [id]: "" };
-      return;
+    try {
+      const layout = kioskLayouts.value[id];
+      const key = STORAGE_KEY_KIOSK_LAYOUT + id;
+      if (!layout) {
+        localStorage.removeItem(key);
+        lastPersistedKiosk.value = { ...lastPersistedKiosk.value, [id]: "" };
+        return;
+      }
+      const raw = JSON.stringify(layout);
+      localStorage.setItem(key, raw);
+      lastPersistedKiosk.value = { ...lastPersistedKiosk.value, [id]: raw };
+    } catch (e) {
+      console.error("Failed to save kiosk layout:", id, e);
     }
-    const raw = JSON.stringify(layout);
-    localStorage.setItem(key, raw);
-    lastPersistedKiosk.value = { ...lastPersistedKiosk.value, [id]: raw };
+  }
+
+  function schedulePersistKioskLayout(id: KioskScreenId) {
+    const prev = kioskPersistTimers[id];
+    if (prev) clearTimeout(prev);
+    kioskPersistTimers[id] = setTimeout(() => {
+      delete kioskPersistTimers[id];
+      persistKioskLayout(id);
+    }, LAYOUT_PERSIST_MS);
+  }
+
+  function flushScreenLayouts() {
+    if (welcomePersistTimer) {
+      clearTimeout(welcomePersistTimer);
+      welcomePersistTimer = null;
+      persistWelcomeLayout();
+    }
+    for (const id of [...KIOSK_SCREEN_IDS]) {
+      const t = kioskPersistTimers[id];
+      if (!t) continue;
+      clearTimeout(t);
+      delete kioskPersistTimers[id];
+      persistKioskLayout(id);
+    }
   }
 
   function loadKioskLayouts() {
@@ -1347,6 +1424,11 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   function saveKioskLayout(id: KioskScreenId) {
+    const t = kioskPersistTimers[id];
+    if (t) {
+      clearTimeout(t);
+      delete kioskPersistTimers[id];
+    }
     persistKioskLayout(id);
   }
 
@@ -1380,6 +1462,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       ...kioskLayouts.value,
       [id]: normalizeKioskLayout(id, layout),
     };
+    schedulePersistKioskLayout(id);
   }
 
   function resetKioskLayout(id: KioskScreenId) {
@@ -1387,6 +1470,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       ...kioskLayouts.value,
       [id]: defaultKioskLayout(id),
     };
+    schedulePersistKioskLayout(id);
   }
 
   function setKioskItem(id: KioskScreenId, itemId: string, box: WelcomeBox) {
@@ -1674,10 +1758,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     );
     if (color) welcomeBackgroundColor.value = color;
     const fill = localStorage.getItem(STORAGE_KEY_WELCOME_BG_FILL);
-    if (fill === "color" || fill === "theme") {
+    if (fill === "color" || fill === "theme" || fill === "media") {
       welcomeBackgroundFill.value = fill;
-    } else if (fill === "media" && titleBackgroundUrl.value) {
-      welcomeBackgroundFill.value = "media";
     }
   }
 
@@ -1768,6 +1850,9 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
             const saved = storedByDefaultId.get(d.id);
             if (!saved) return d;
             const merged: CameraFilter = { ...d, isActive: saved.isActive };
+            if (typeof saved.name === "string" && saved.name.trim()) {
+              merged.name = saved.name.trim();
+            }
             if (saved.grainEnabled !== undefined) {
               merged.grainEnabled = saved.grainEnabled;
             }
@@ -2463,14 +2548,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   function overlayMimeFor(file: File, kind: OverlayMediaKind): string {
-    if (file.type) {
-      if (file.type === "video/quicktime") return "video/mp4";
-      return file.type;
-    }
-    if (kind === "video") {
-      if (/\.webm$/i.test(file.name)) return "video/webm";
-      return "video/mp4";
-    }
+    if (kind === "video") return playbackMimeForOverlayVideo(file.name, file.type);
+    if (file.type) return file.type;
     if (/\.png$/i.test(file.name)) return "image/png";
     if (/\.webp$/i.test(file.name)) return "image/webp";
     if (/\.gif$/i.test(file.name)) return "image/gif";
@@ -2478,14 +2557,6 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   function overlayPlaybackMime(file: File, kind: OverlayMediaKind): string {
-    if (kind === "video") {
-      if (/\.webm$/i.test(file.name) || file.type === "video/webm") {
-        return "video/webm";
-      }
-      // Chromium on Windows will not decode a blob tagged video/quicktime,
-      // even when the MOV is H.264. Tag MP4/MOV/M4V as video/mp4.
-      return "video/mp4";
-    }
     return overlayMimeFor(file, kind);
   }
 
@@ -2504,8 +2575,12 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (!kind) return false;
     const mime = overlayPlaybackMime(file, kind);
     const buf = new Uint8Array(await file.arrayBuffer());
-    const copy = new Uint8Array(buf.byteLength);
-    copy.set(buf);
+    const normalized =
+      kind === "video" && mime === "video/mp4"
+        ? normalizeQuicktimeToMp4(buf)
+        : buf;
+    const copy = new Uint8Array(normalized.byteLength);
+    copy.set(normalized);
     setOverlayMediaRuntime(id, kind, new Blob([copy], { type: mime }));
     f.mediaOverlay = sanitizeMediaOverlay({
       blendMode: f.mediaOverlay?.blendMode ?? DEFAULT_MEDIA_OVERLAY.blendMode,
@@ -2520,7 +2595,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
         filterId: id,
         bytes: copy,
         mime,
-        filename: file.name,
+        filename:
+          kind === "video" && mime === "video/mp4" ? "overlay.mp4" : file.name,
       });
       if (!res.success) {
         console.error("[Store] Failed to save filter overlay media:", res.error);
@@ -2555,14 +2631,17 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       try {
         const result = await window.electronAPI.getFilterOverlayMedia(f.id);
         if (result.success && result.bytes && result.mediaType) {
-          const mime =
+          let mime =
             result.mime ||
             (result.mediaType === "video" ? "video/mp4" : "image/png");
-          setOverlayMediaRuntime(
-            f.id,
-            result.mediaType,
-            blobFromIpcBytes(result.bytes, mime),
-          );
+          let blob = blobFromIpcBytes(result.bytes, mime);
+          if (result.mediaType === "video" && mime !== "video/webm") {
+            const raw = new Uint8Array(await blob.arrayBuffer());
+            const normalized = normalizeQuicktimeToMp4(raw);
+            mime = "video/mp4";
+            blob = blobFromIpcBytes(normalized, mime);
+          }
+          setOverlayMediaRuntime(f.id, result.mediaType, blob);
         }
       } catch (e) {
         console.error("[Store] Failed to load filter overlay media:", f.id, e);
@@ -3042,6 +3121,14 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   loadWelcomeBackgroundFill();
   loadKioskLayouts();
 
+  if (typeof window !== "undefined") {
+    const flushOnLeave = () => flushScreenLayouts();
+    window.addEventListener("pagehide", flushOnLeave);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flushOnLeave();
+    });
+  }
+
   return {
     // -----------------------------
     // Templates State & Getters
@@ -3170,6 +3257,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     setWelcomeLayerOrder,
     saveWelcomeLayout,
     revertWelcomeLayout,
+    flushScreenLayouts,
     kioskLayouts,
     kioskLayoutOf,
     kioskLayoutDirty,

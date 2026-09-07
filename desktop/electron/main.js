@@ -7,6 +7,7 @@ const http = require('http');
 const paymentMiddleware = require('./paymentMiddleware');
 const pocketbaseServer = require('./pocketbaseServer');
 const r2 = require('./r2Upload');
+const { normalizeQuicktimeToMp4 } = require('./quicktimeMp4');
 
 // Must be set before app ready. Packaged kiosks often sit on the GPU
 // blocklist or have no Quick Sync driver; without these switches
@@ -15,6 +16,7 @@ app.commandLine.appendSwitch("ignore-gpu-blocklist");
 app.commandLine.appendSwitch("enable-gpu-rasterization");
 app.commandLine.appendSwitch("enable-accelerated-video-encode");
 app.commandLine.appendSwitch("enable-accelerated-video-decode");
+app.commandLine.appendSwitch("enable-features", "PlatformHEVCDecoderSupport");
 
 function loadRuntimeEnv() {
   const loaded = r2.loadEnvFromDisk();
@@ -49,25 +51,34 @@ let liveViewInterval = null;
 // If app.isPackaged is true, we're in production regardless of NODE_ENV
 const isDev = !app.isPackaged;
 
+const APP_NAME = "NOSTALGIA BOOTH";
+app.setName(APP_NAME);
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.nostalgia.photobooth");
+}
+
 /**
- * Window/taskbar icon (the Nostalgia wordmark). Previously this pointed
- * at ../public/icon.png, which does not exist — so Electron silently
- * fell back to its own default icon. `public/` is copied into `dist/` at
- * build time, so the packaged path differs from the dev path; try both
- * and fall back to undefined (Electron default) rather than crashing.
+ * Same file the NSIS installer / exe uses (`build/icon.ico`). Prefer
+ * the .ico so the window, taskbar, and installer stay identical.
  */
 function appIconPath() {
   const candidates = [
-    path.join(__dirname, '../dist/app-icon.png'),   // packaged
-    path.join(__dirname, '../public/app-icon.png'), // dev
-    path.join(__dirname, '../build/icon.png'),      // repo master
-  ];
+    process.resourcesPath ? path.join(process.resourcesPath, "icon.ico") : null,
+    path.join(__dirname, "../build/icon.ico"),
+    path.join(__dirname, "../public/icon.ico"),
+    path.join(__dirname, "../dist/icon.ico"),
+    path.join(__dirname, "../build/icon.png"),
+    path.join(__dirname, "../public/app-icon.png"),
+    path.join(__dirname, "../dist/app-icon.png"),
+  ].filter(Boolean);
   for (const p of candidates) {
     try {
       if (fs.existsSync(p)) return p;
-    } catch (_) { /* keep looking */ }
+    } catch (_) {
+      /* keep looking */
+    }
   }
-  console.warn('[Main] app icon not found; using Electron default');
+  console.warn("[Main] app icon not found; using Electron default");
   return undefined;
 }
 
@@ -127,6 +138,7 @@ function createWindow() {
     fullscreen: true, // Always start fullscreen for kiosk
     frame: false, // Frameless for kiosk mode
     kiosk: !isDev, // Kiosk mode in production
+    title: APP_NAME,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -1082,9 +1094,13 @@ ipcMain.handle("save-filter-overlay-media", async (_event, { filterId, bytes, mi
     for (const name of overlayFilesForFilter(dir, filterId)) {
       fs.unlinkSync(path.join(dir, name));
     }
-    const ext = overlayExtFromMimeOrName(mime, filename);
+    let ext = overlayExtFromMimeOrName(mime, filename);
+    let buf = r2.toNodeBuffer(bytes);
+    if (["mov", "qt", "mp4", "m4v"].includes(ext) || /quicktime|mp4|m4v/i.test(String(mime || ""))) {
+      buf = normalizeQuicktimeToMp4(buf);
+      if (ext !== "webm") ext = "mp4";
+    }
     const filePath = path.join(dir, `${safeFilterOverlayId(filterId)}.${ext}`);
-    const buf = r2.toNodeBuffer(bytes);
     fs.writeFileSync(filePath, buf);
     console.log(`[Main] Filter overlay media saved (${buf.length} bytes):`, filePath);
     return { success: true, path: filePath };
@@ -1105,8 +1121,15 @@ ipcMain.handle("get-filter-overlay-media", async (_event, { filterId }) => {
     const buffer = fs.readFileSync(filePath);
     const ext = path.extname(filePath).toLowerCase().slice(1);
     const mediaType = overlayMediaTypeFromExt(ext);
-    const mime = overlayMimeFromExt(ext);
-    return { success: true, bytes: buffer, mime, mediaType, filename: files[0] };
+    const bytes =
+      mediaType === "video" && ext !== "webm"
+        ? normalizeQuicktimeToMp4(buffer)
+        : buffer;
+    const mime =
+      mediaType === "video" && ext !== "webm"
+        ? "video/mp4"
+        : overlayMimeFromExt(ext);
+    return { success: true, bytes, mime, mediaType, filename: files[0] };
   } catch (error) {
     console.error("[Main] Error reading filter overlay media:", error);
     return { success: false, error: error.message, bytes: null, mime: null, mediaType: null, filename: null };

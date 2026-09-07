@@ -28,12 +28,19 @@ async function playOverlayVideo() {
   const el = mediaEl.value;
   if (!(el instanceof HTMLVideoElement)) return;
   el.muted = true;
+  el.defaultMuted = true;
   el.loop = true;
   el.playsInline = true;
+  el.setAttribute("playsinline", "");
+  el.setAttribute("webkit-playsinline", "");
   try {
     await el.play();
   } catch {
-    /* autoplay can wait until loadeddata */
+    const retry = () => {
+      el.play().catch(() => {});
+    };
+    el.addEventListener("canplay", retry, { once: true });
+    el.addEventListener("loadeddata", retry, { once: true });
   }
 }
 
@@ -74,7 +81,9 @@ defineExpose({ mediaEl });
     muted
     loop
     playsinline
+    preload="auto"
     @loadeddata="playOverlayVideo"
+    @canplay="playOverlayVideo"
     aria-hidden="true"
   />
   <div

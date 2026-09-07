@@ -470,13 +470,7 @@ function saveScreen() {
 }
 
 function leaveWorkspace() {
-  if (kioskId.value) {
-    if (store.kioskLayoutDirty(kioskId.value)) {
-      store.revertKioskLayout(kioskId.value);
-    }
-  } else if (store.welcomeLayoutDirty) {
-    store.revertWelcomeLayout();
-  }
+  store.flushScreenLayouts();
   clearHistory();
   selectedScreen.value = null;
   selectedLayer.value = "background";
@@ -751,6 +745,11 @@ function onEditorKey(e: KeyboardEvent) {
   const meta = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
 
+  if (meta && key === "s") {
+    e.preventDefault();
+    saveScreen();
+    return;
+  }
   if (meta && key === "z" && !e.shiftKey) {
     e.preventDefault();
     undo();
@@ -873,11 +872,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   previewAlive = false;
   if (saveFlashTimer) clearTimeout(saveFlashTimer);
-  if (kioskId.value && store.kioskLayoutDirty(kioskId.value)) {
-    store.revertKioskLayout(kioskId.value);
-  } else if (store.welcomeLayoutDirty) {
-    store.revertWelcomeLayout();
-  }
+  store.flushScreenLayouts();
   resizeObserver?.disconnect();
   visibilityObserver?.disconnect();
   document.removeEventListener("mousedown", closeShortcutsOnOutside);
@@ -886,6 +881,7 @@ onBeforeUnmount(() => {
 });
 
 watch(selectedScreen, async (id) => {
+  store.flushScreenLayouts();
   selectedLayer.value = "background";
   if (id === "welcome") {
     store.ensureWelcomeLayout();
@@ -1505,10 +1501,10 @@ const screenDirty = computed(() => layoutDirty());
         <button
           type="button"
           class="screen-save"
-          :disabled="!screenDirty && !saveFlash"
+          :disabled="saveFlash"
           @click="saveScreen"
         >
-          {{ saveFlash ? "Saved" : "Save" }}
+          {{ saveFlash || !screenDirty ? "Saved" : "Save" }}
         </button>
       </div>
 

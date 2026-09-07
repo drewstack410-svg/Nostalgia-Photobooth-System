@@ -165,7 +165,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
       saveToPbTimeout = null;
       const authStore = useAuthStore();
       if (!authStore.checkAuth()) {
-        lastSyncError.value = true;
+        // No admin session — keep local totals; do not treat this as a failed sync.
         return;
       }
       const ok = await saveDashboardToPb(getCurrentState());
@@ -181,7 +181,6 @@ export const useDashboardStore = defineStore("dashboard", () => {
   async function flushSaveToPb(): Promise<boolean> {
     const authStore = useAuthStore();
     if (!authStore.checkAuth()) {
-      lastSyncError.value = true;
       return false;
     }
     const ok = await saveDashboardToPb(getCurrentState());
@@ -246,17 +245,31 @@ export const useDashboardStore = defineStore("dashboard", () => {
     } as DashboardPbState;
   }
 
+  function dashboardStateHasRows(state: DashboardPbState): boolean {
+    return (
+      Object.keys(state.salesByTemplateIdByMonth ?? {}).length > 0 ||
+      Object.keys(state.priceByTemplateId ?? {}).length > 0 ||
+      Object.keys(state.reprintSalesByMonth ?? {}).length > 0 ||
+      Object.keys(state.reprintTotalByMonth ?? {}).length > 0 ||
+      (state.customItems?.length ?? 0) > 0 ||
+      Object.keys(state.customItemSalesByMonth ?? {}).length > 0
+    );
+  }
+
   /**
    * Loads dashboard from PocketBase and applies to store. Call when user is logged in.
-   * @returns true if load succeeded, false if not authenticated or error.
+   * An empty PocketBase result must not erase local totals (wrong kiosk id,
+   * or a server that has never received a sync).
    */
   async function initFromPocketBase(): Promise<boolean> {
     const state = await loadDashboardFromPb();
-    if (state) {
-      applyPbState(state);
+    if (!state) return false;
+    if (!dashboardStateHasRows(state) && dashboardStateHasRows(getCurrentState())) {
+      scheduleSaveToPb();
       return true;
     }
-    return false;
+    applyPbState(state);
+    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -275,19 +288,25 @@ export const useDashboardStore = defineStore("dashboard", () => {
     return getValueForPeriod(byDate, day, month, year);
   }
 
-  /** Template rows for the selected period (each template's pieces, price, total). */
+  /** Template rows for the selected period (loaded templates plus any ids that already have sales). */
   const salesPerTemplate = computed<TemplateSale[]>(() => {
     const templates = photobooth.templates;
     const prices = priceByTemplateId.value;
     const day = selectedDay.value;
     const month = selectedMonth.value;
     const year = selectedYear.value;
-    return templates.map((t) => {
-      const pieces = getPiecesForTemplate(t.id, day, month, year);
-      const price = prices[t.id] ?? 0;
+    const byId = new Map(templates.map((t) => [t.id, t] as const));
+    const ids = [
+      ...templates.map((t) => t.id),
+      ...Object.keys(salesByTemplateIdByMonth.value).filter((id) => !byId.has(id)),
+    ];
+    return ids.map((id) => {
+      const t = byId.get(id);
+      const pieces = getPiecesForTemplate(id, day, month, year);
+      const price = prices[id] ?? 0;
       return {
-        templateId: t.id,
-        templateName: t.name,
+        templateId: id,
+        templateName: t?.name ?? id,
         piecesSold: pieces,
         pricePerTemplate: price,
         total: pieces * price,
@@ -427,18 +446,32 @@ export const useDashboardStore = defineStore("dashboard", () => {
     persistPrices();
   }
 
-  /** Increments pieces sold for the template by 1 for today. Persists and schedules PB save. */
-  function recordSale(templateId: string) {
+  const recordedSessionSales = new Set<string>();
+
+  /** Increments pieces sold for the template for today. Persists and schedules PB save. */
+  function recordSale(templateId: string, quantity = 1) {
+    const qty = Math.max(1, Math.floor(quantity) || 1);
     const now = new Date();
     const key = dateKey(now.getFullYear(), now.getMonth() + 1, now.getDate());
     const next = { ...salesByTemplateIdByMonth.value };
     if (!next[templateId]) next[templateId] = {};
     next[templateId] = {
       ...next[templateId],
-      [key]: (next[templateId][key] ?? 0) + 1,
+      [key]: (next[templateId][key] ?? 0) + qty,
     };
     salesByTemplateIdByMonth.value = next;
     persistSales();
+  }
+
+  /** One sale per completed guest sitting (idempotent on session id). */
+  function recordSessionSale(
+    sessionId: string,
+    templateId: string,
+    quantity = 1,
+  ) {
+    if (!sessionId || !templateId || recordedSessionSales.has(sessionId)) return;
+    recordedSessionSales.add(sessionId);
+    recordSale(templateId, quantity);
   }
 
   /**
@@ -875,6 +908,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     setPiecesSold,
     setPricePerTemplate,
     recordSale,
+    recordSessionSale,
     recordReprintSale,
     recordCustomItemSale,
     setReprintPiecesForMonth,

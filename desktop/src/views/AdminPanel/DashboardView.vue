@@ -45,8 +45,8 @@ async function confirmReset() {
   }
   resetError.value = "";
   resetSubmitting.value = true;
-  try {
-    await pb.admins.authWithPassword(envEmail, pwd);
+    try {
+      await pb.collection("_superusers").authWithPassword(envEmail, pwd);
   } catch {
     resetError.value = "Wrong password.";
     resetSubmitting.value = false;

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
+import { useDashboardStore } from "@/stores/dashboard";
 // Guest copies go to Cloudflare R2 via the upload queue (pending + retry).
 import {
   getPaperSizePx,
@@ -33,6 +34,7 @@ import { useKioskScreen } from "@/composables/useKioskScreen";
 
 const router = useRouter();
 const store = usePhotoboothStore();
+const dashboardStore = useDashboardStore();
 const { laidOut, boxStyle, buttonLabel, buttonLook, buttonArt } = useKioskScreen("printing");
 
 const printTemplate = computed(
@@ -948,6 +950,18 @@ async function saveComposite() {
     const printOpaque = printComposite
       ? await flattenPngDataUrlToWhite(printComposite)
       : "";
+
+    if (printComposite && !store.reprintMode) {
+      const templateId =
+        (store.sessionTemplate ?? store.selectedTemplate)?.id;
+      if (templateId) {
+        dashboardStore.recordSessionSale(
+          `session_${sessionTs}`,
+          templateId,
+          Math.max(1, store.printCopies || 1),
+        );
+      }
+    }
 
     if (window.electronAPI && printComposite) {
       console.log("[Save] Electron API available, attempting to save...");

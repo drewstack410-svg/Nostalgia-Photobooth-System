@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { defineAsyncComponent, h, ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
+import { applyBoothConfig } from "@/lib/boothConfig";
 import { useDashboardStore } from "@/stores/dashboard";
 import { usePhotoboothStore } from "@/stores/photobooth";
 
@@ -29,9 +30,10 @@ function goBack() {
   router.push("/");
 }
 
-onMounted(() => {
+onMounted(async () => {
   usePhotoboothStore();
-  dashboardStore.initFromPocketBase();
+  await applyBoothConfig();
+  void dashboardStore.initFromPocketBase();
 });
 </script>
 

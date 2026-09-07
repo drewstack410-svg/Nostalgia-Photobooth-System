@@ -1,7 +1,7 @@
 {
   "name": "nostalgia-photobooth",
   "version": "1.0.0",
-  "description": "A vintage-themed photobooth application for touchscreen kiosks",
+  "description": "NOSTALGIA BOOTH — vintage photobooth software for touchscreen kiosks",
   "main": "electron/main.js",
   "scripts": {
     "pb:serve": "node scripts/ensure-pocketbase.js && vendor/pocketbase/pocketbase.exe serve --http=127.0.0.1:8090 --dir=./pb_data --migrationsDir=pb_migrations",
@@ -41,7 +41,7 @@
   },
   "build": {
     "appId": "com.nostalgia.photobooth",
-    "productName": "Nostalgia Photobooth",
+    "productName": "NOSTALGIA BOOTH",
     "icon": "build/icon.ico",
     "directories": {
       "output": "dist-electron",
@@ -50,6 +50,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "build/icon.ico",
       "node_modules/@brick-a-brack/napi-canon-cameras/**/*",
       "!node_modules/@brick-a-brack/napi-canon-cameras/src/**/*",
       "!node_modules/@brick-a-brack/napi-canon-cameras/build/**/*"
@@ -85,6 +86,10 @@
       {
         "from": "public/backgrounds",
         "to": "backgrounds"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
       }
     ],
     "mac": {
@@ -92,7 +97,6 @@
     },
     "win": {
       "target": "nsis",
-      "signAndEditExecutable": false,
       "icon": "build/icon.ico"
     },
     "nsis": {
@@ -103,7 +107,7 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico",
-      "shortcutName": "Nostalgia Photobooth"
+      "shortcutName": "NOSTALGIA BOOTH"
     },
     "linux": {
       "target": "AppImage"

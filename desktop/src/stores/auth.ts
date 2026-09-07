@@ -39,7 +39,7 @@ export const useAuthStore = defineStore("auth", () => {
     }
 
     try {
-      await pb.admins.authWithPassword(envEmail, password);
+      await pb.collection("_superusers").authWithPassword(envEmail, password);
       return true;
     } catch (err: unknown) {
       const msg = err && typeof err === "object" && "status" in err ? (err as { status: number }).status : 0;
