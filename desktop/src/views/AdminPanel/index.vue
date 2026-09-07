@@ -1,12 +1,25 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { defineAsyncComponent, h, ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useDashboardStore } from "@/stores/dashboard";
 import { usePhotoboothStore } from "@/stores/photobooth";
-import SettingsView from "./SettingsView.vue";
-import DashboardView from "./DashboardView.vue";
-import GalleryView from "./GalleryView.vue";
-import ScreenEditorView from "./ScreenEditorView.vue";
+
+const TabLoading = {
+  render: () => h("p", { class: "admin-tab-loading" }, "Loading…"),
+};
+
+function lazyTab(loader: () => Promise<unknown>) {
+  return defineAsyncComponent({
+    loader: loader as () => Promise<{ default: unknown }>,
+    loadingComponent: TabLoading,
+    delay: 0,
+  });
+}
+
+const SettingsView = lazyTab(() => import("./SettingsView.vue"));
+const DashboardView = lazyTab(() => import("./DashboardView.vue"));
+const GalleryView = lazyTab(() => import("./GalleryView.vue"));
+const ScreenEditorView = lazyTab(() => import("./ScreenEditorView.vue"));
 
 const router = useRouter();
 const dashboardStore = useDashboardStore();
@@ -94,15 +107,17 @@ onMounted(() => {
                 ? "Settings"
                 : activeTab === "screens"
                   ? "Screen Editor"
-                  : "Gallery"
+                  : activeTab === "gallery"
+                    ? "Gallery"
+                    : "Admin"
           }}
         </h1>
       </header>
 
-      <DashboardView v-show="activeTab === 'dashboard'" />
-      <SettingsView v-show="activeTab === 'settings'" />
-      <GalleryView v-show="activeTab === 'gallery'" />
-      <ScreenEditorView v-show="activeTab === 'screens'" />
+      <DashboardView v-if="activeTab === 'dashboard'" />
+      <SettingsView v-else-if="activeTab === 'settings'" />
+      <GalleryView v-else-if="activeTab === 'gallery'" />
+      <ScreenEditorView v-else-if="activeTab === 'screens'" />
     </main>
   </div>
 </template>
@@ -111,7 +126,7 @@ onMounted(() => {
 .admin-panel {
   height: 100%;
   display: flex;
-  background: transparent;
+  background: var(--color-cream, #f4ead5);
   overflow: hidden;
   position: relative;
 }
@@ -226,5 +241,12 @@ onMounted(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+.admin-tab-loading {
+  margin: 2rem 1.25rem;
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  color: var(--color-brown);
 }
 </style>

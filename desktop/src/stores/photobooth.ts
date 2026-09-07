@@ -1716,9 +1716,9 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   const effectiveTitleBackgroundType = computed<TitleBackgroundType>(
     () => (titleBackgroundUrl.value ? titleBackgroundType.value : "video"),
   );
-  /** True only when a real title file loaded — not the fallback path. */
+  /** Operator upload only. Packaged/default videos are not the Theme. */
   const hasLoadedTitleBackground = computed(
-    () => !!(titleBackgroundUrl.value || packagedTitleUrl.value),
+    () => !!titleBackgroundUrl.value,
   );
   const customDisplayFontUrl = ref<string | null>(null);
   const customBodyFontUrl = ref<string | null>(null);
@@ -1926,7 +1926,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     () => (paymentBackgroundUrl.value ? paymentBackgroundType.value : "video"),
   );
   const hasLoadedPaymentBackground = computed(
-    () => !!(paymentBackgroundUrl.value || packagedPaymentUrl.value),
+    () => !!paymentBackgroundUrl.value,
   );
 
   function setPaymentBackgroundBlob(type: TitleBackgroundType, blob: Blob) {
@@ -1975,8 +1975,6 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
             result.mime || (result.mediaType === "video" ? "video/mp4" : "image/jpeg"),
           ),
         );
-      } else if (!packagedPaymentUrl.value) {
-        packagedPaymentUrl.value = await loadPackagedBackground("payment");
       }
     } catch (e) {
       console.error("Failed to load payment background from disk:", e);
@@ -2210,8 +2208,6 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
           result.mime || (result.mediaType === "video" ? "video/mp4" : "image/jpeg"),
         );
         setTitleBackgroundBlob(result.mediaType, blob);
-      } else if (!packagedTitleUrl.value) {
-        packagedTitleUrl.value = await loadPackagedBackground("title");
       }
       if (
         welcomeBackgroundFill.value === "media" &&

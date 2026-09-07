@@ -5,6 +5,7 @@ import { usePhotoboothStore } from "@/stores/photobooth";
 import TemplatePreview from "@/components/TemplatePreview.vue";
 import KioskDecor from "@/components/KioskDecor.vue";
 import { useKioskScreen } from "@/composables/useKioskScreen";
+import { isOperatorRoute } from "@/utils/operatorRoute";
 
 const router = useRouter();
 const store = usePhotoboothStore();
@@ -38,6 +39,10 @@ const WARNING_COUNTDOWN = 10; // seconds before auto-return
 
 let isUnmounted = false;
 
+function onGuestIdle(): boolean {
+  return !isUnmounted && !isOperatorRoute(router.currentRoute.value.name);
+}
+
 function resetInactivityTimer() {
   // Clear existing timers
   if (inactivityTimer) {
@@ -57,20 +62,20 @@ function resetInactivityTimer() {
   showInactivityWarning.value = false;
   inactivityCountdown.value = WARNING_COUNTDOWN;
 
-  if (isUnmounted) return;
+  if (isUnmounted || isOperatorRoute(router.currentRoute.value.name)) return;
 
   // Start new inactivity timer
   inactivityTimer = setTimeout(() => {
-    if (isUnmounted) return;
+    if (!onGuestIdle()) return;
     showInactivityWarning.value = true;
     inactivityCountdown.value = WARNING_COUNTDOWN;
 
     // Start countdown after a small delay to ensure UI is updated
     warningTimer = setTimeout(() => {
       warningTimer = null;
-      if (isUnmounted) return;
+      if (!onGuestIdle()) return;
       countdownInterval = setInterval(() => {
-        if (isUnmounted) {
+        if (!onGuestIdle()) {
           if (countdownInterval) {
             clearInterval(countdownInterval);
             countdownInterval = null;
@@ -92,7 +97,7 @@ function resetInactivityTimer() {
 }
 
 function returnToHome() {
-  if (isUnmounted) return;
+  if (!onGuestIdle()) return;
   resetInactivityTimer();
   router.push("/");
 }

@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from "vue-router";
 import TitleScreen from "@/views/TitleScreen.vue";
+import AdminPanel from "@/views/AdminPanel/index.vue";
 import { useAuthStore } from "@/stores/auth";
 
 const router = createRouter({
@@ -60,7 +61,7 @@ const router = createRouter({
     {
       path: "/admin",
       name: "admin",
-      component: () => import("@/views/AdminPanel/index.vue"),
+      component: AdminPanel,
       // Auth removed — see note on /gallery above.
     },
   ],

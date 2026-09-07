@@ -5,6 +5,7 @@ import { usePhotoboothStore } from "@/stores/photobooth";
 import type { MediaUploadStatus } from "@/stores/photobooth";
 import { useDashboardStore } from "@/stores/dashboard";
 import QRCode from "qrcode";
+import { makePreviewDataUrl } from "@/utils/imagePreview";
 import {
   isBrowserOffline,
   jobForSession,
@@ -46,6 +47,9 @@ const router = useRouter();
 const store = usePhotoboothStore();
 const dashboardStore = useDashboardStore();
 const savedPhotos = ref<GalleryPhoto[]>([]);
+/** Disk session files that never made it into localStorage (quota / R2 retry). */
+const diskSessionPhotos = ref<GalleryPhoto[]>([]);
+const localPreviewByPath = ref<Record<string, string>>({});
 const isLoading = ref(false);
 const selectedPhoto = ref<GalleryPhoto | null>(null);
 const viewMode = ref<"session" | "saved">("session");
@@ -70,12 +74,48 @@ function looksLikeOriginalFile(nameOrPath?: string): boolean {
   return /-original\.(jpe?g|png)$/i.test(nameOrPath || "");
 }
 
+function normalizePath(filePath?: string): string {
+  return (filePath || "").replace(/\\/g, "/").toLowerCase();
+}
+
+function fileNameOf(filePath?: string): string {
+  return normalizePath(filePath).split("/").pop() || "";
+}
+
+function isSessionDiskFile(filePath?: string): boolean {
+  return /\/session \d+\//i.test(normalizePath(filePath));
+}
+
+function isPrintCropName(name: string): boolean {
+  return /photo-\d+-print\.(jpe?g|png)$/i.test(name);
+}
+
+function sessionIndexFromName(name: string): number {
+  const m = name.match(/photo-(\d+)/i);
+  return m ? Number(m[1]) - 1 : 0;
+}
+
+function sortSessionPhotos(a: GalleryPhoto, b: GalleryPhoto): number {
+  const at = new Date(a.timestamp).getTime();
+  const bt = new Date(b.timestamp).getTime();
+  if (at !== bt) return bt - at;
+  if (a.isComposite !== b.isComposite) return a.isComposite ? 1 : -1;
+  const ai = a.sessionIndex ?? 0;
+  const bi = b.sessionIndex ?? 0;
+  if (ai !== bi) return ai - bi;
+  if (a.isOriginal !== b.isOriginal) return a.isOriginal ? 1 : -1;
+  return 0;
+}
+
 const displayPhotos = computed(() => {
   if (viewMode.value === "session") {
-    return store.recentStrips
-      .map((p) => ({
+    const used = new Set<string>();
+    const fromStrips: GalleryPhoto[] = store.recentStrips.map((p) => {
+      const key = normalizePath(p.path);
+      if (key) used.add(key);
+      return {
         id: p.id,
-        src: p.dataUrl,
+        src: p.dataUrl || (key ? localPreviewByPath.value[key] : "") || "",
         name: p.isComposite
           ? "Printed strip"
           : p.isOriginal
@@ -89,27 +129,33 @@ const displayPhotos = computed(() => {
         sessionIndex: p.sessionIndex,
         isComposite: p.isComposite,
         isOriginal: p.isOriginal,
-        // Same resolution order QRScanView uses. The composite "Printed
-        // strip" entry carries shareableUrl but no per-capture
-        // cloudinaryUrl, so both fallbacks are needed.
         shareUrl:
           p.shareableUrl || p.cloudinaryUrl || p.cloudinaryPhotos?.[0]?.url || "",
         uploadStatus: p.isOriginal ? undefined : p.uploadStatus,
-      }))
-      .slice()
-      .sort((a, b) => {
-        if (a.isComposite !== b.isComposite) return a.isComposite ? 1 : -1;
-        const ai = a.sessionIndex ?? 0;
-        const bi = b.sessionIndex ?? 0;
-        if (ai !== bi) return ai - bi;
-        if (a.isOriginal !== b.isOriginal) return a.isOriginal ? 1 : -1;
-        return 0;
-      });
+      };
+    });
+    const extras = diskSessionPhotos.value.filter((p) => {
+      const key = normalizePath(p.path);
+      return key && !used.has(key);
+    });
+    return fromStrips.concat(extras).sort(sortSessionPhotos);
   }
   return savedPhotos.value.map((p) => ({
     ...p,
     isOriginal: p.isOriginal || looksLikeOriginalFile(p.name) || looksLikeOriginalFile(p.path),
   }));
+});
+
+const sessionPhotoCount = computed(() => {
+  const used = new Set(
+    store.recentStrips.map((s) => normalizePath(s.path)).filter(Boolean),
+  );
+  let extra = 0;
+  for (const p of diskSessionPhotos.value) {
+    const key = normalizePath(p.path);
+    if (key && !used.has(key)) extra += 1;
+  }
+  return store.recentStrips.length + extra;
 });
 
 async function loadSavedPhotos() {
@@ -170,6 +216,67 @@ const qrBusy = ref(false);
 function sessionFolderOf(filePath?: string): string {
   if (!filePath) return "";
   return filePath.replace(/\\/g, "/").replace(/\/[^/]+$/, "").toLowerCase();
+}
+
+async function hydrateSessionFromDisk() {
+  if (!window.electronAPI) return;
+  try {
+    const listed = await window.electronAPI.listSavedPhotos();
+    const known = new Set(
+      store.recentStrips.map((s) => normalizePath(s.path)).filter(Boolean),
+    );
+    const previews: Record<string, string> = { ...localPreviewByPath.value };
+    const extras: GalleryPhoto[] = [];
+
+    for (const photo of listed) {
+      if (!isSessionDiskFile(photo.path)) continue;
+      const key = normalizePath(photo.path);
+      const name = fileNameOf(photo.name || photo.path);
+      if (!key || isPrintCropName(name)) continue;
+
+      const alreadyListed = known.has(key);
+      const strip = alreadyListed
+        ? store.recentStrips.find((s) => normalizePath(s.path) === key)
+        : undefined;
+      if (alreadyListed && strip?.dataUrl) continue;
+
+      const raw = await window.electronAPI.readPhoto(photo.path);
+      if (!raw) continue;
+      const src = await makePreviewDataUrl(raw);
+      previews[key] = src;
+
+      if (alreadyListed) continue;
+
+      const folder = sessionFolderOf(photo.path);
+      const sib = store.recentStrips.find(
+        (s) =>
+          !!s.shareableUrl &&
+          (normalizePath(s.path) === key || sessionFolderOf(s.path) === folder),
+      );
+      extras.push({
+        id: photo.path,
+        src,
+        name: looksLikeOriginalFile(name)
+          ? name.replace(/-original/i, " (original)")
+          : /^strip\.png$/i.test(name)
+            ? "Printed strip"
+            : name,
+        timestamp: new Date(photo.created),
+        path: photo.path,
+        isLocal: true,
+        isComposite: /^strip\.png$/i.test(name),
+        isOriginal: looksLikeOriginalFile(name),
+        sessionIndex: sessionIndexFromName(name),
+        shareUrl: sib?.shareableUrl || "",
+      });
+      known.add(key);
+    }
+
+    localPreviewByPath.value = previews;
+    diskSessionPhotos.value = extras;
+  } catch (err) {
+    console.error("Failed to hydrate session photos from disk:", err);
+  }
 }
 
 function resolveShareUrl(photo: GalleryPhoto): string {
@@ -503,7 +610,7 @@ onMounted(() => {
   });
   window.addEventListener("online", clearRetryNoticeOnOnline);
   if (isElectron.value) {
-    loadSavedPhotos();
+    void hydrateSessionFromDisk();
   }
 });
 
@@ -524,14 +631,14 @@ onUnmounted(() => {
             :class="{ active: viewMode === 'session' }"
             @click="viewMode = 'session'"
           >
-            Session ({{ store.recentStrips.length }})
+            Session ({{ sessionPhotoCount }})
           </button>
           <button
             class="toggle-btn"
             :class="{ active: viewMode === 'saved' }"
             @click="
               viewMode = 'saved';
-              loadSavedPhotos();
+              if (!savedPhotos.length) loadSavedPhotos();
             "
           >
             Saved ({{ savedPhotos.length }})
@@ -610,7 +717,7 @@ onUnmounted(() => {
     </p>
 
     <!-- Loading State -->
-    <div v-if="isLoading" class="loading-state">
+    <div v-if="viewMode === 'saved' && isLoading" class="loading-state">
       <div class="spinner"></div>
       <p>Loading photos...</p>
     </div>

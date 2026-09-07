@@ -4,7 +4,7 @@
  * Sales by Template, and Excel export (single sheet with styling).
  */
 import { computed, onMounted, ref } from "vue";
-import * as XLSX from "xlsx-js-style";
+// xlsx-js-style is huge — only pull it in when the operator exports.
 import DataTable from "@/components/DataTable.vue";
 import type { DataTableColumn } from "@/components/DataTable.vue";
 import { useDashboardStore } from "@/stores/dashboard";
@@ -388,7 +388,9 @@ function addItem() {
 }
 
 /** Builds a single Excel sheet: summary, Sales by Item table, Sales by Template table; applies header/section styles. */
-function exportToExcel() {
+async function exportToExcel() {
+  const mod = await import("xlsx-js-style");
+  const XLSX = (mod as { default?: typeof mod }).default ?? mod;
   const m = dashboard.selectedMonth;
   const y = dashboard.selectedYear;
   const d = dashboard.selectedDay;

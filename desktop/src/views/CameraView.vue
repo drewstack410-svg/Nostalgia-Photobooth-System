@@ -44,6 +44,7 @@ import {
 } from "@/utils/openCamera";
 import KioskDecor from "@/components/KioskDecor.vue";
 import { useKioskScreen } from "@/composables/useKioskScreen";
+import { isOperatorRoute } from "@/utils/operatorRoute";
 
 const router = useRouter();
 const store = usePhotoboothStore();
@@ -1163,7 +1164,7 @@ function resetInactivityTimer() {
 }
 
 function returnToHome() {
-  if (isUnmounted) return;
+  if (isUnmounted || isOperatorRoute(router.currentRoute.value.name)) return;
   if (
     sequenceActive ||
     isCountingDown.value ||

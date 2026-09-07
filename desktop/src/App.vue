@@ -53,11 +53,15 @@ const screenHasOwnBackground = computed(() => {
   );
 });
 
+const isAdmin = computed(() => route.name === "admin");
+
 const showFrame = computed(
-  () => route.name !== "admin" && !screenHasOwnBackground.value,
+  () => !isAdmin.value && !screenHasOwnBackground.value,
 );
 
-const hideWoodenFrame = computed(() => screenHasOwnBackground.value);
+const hideWoodenFrame = computed(
+  () => isAdmin.value || screenHasOwnBackground.value,
+);
 
 const showVintageBg = computed(() => !screenHasOwnBackground.value);
 
@@ -116,9 +120,7 @@ onMounted(async () => {
     :film-roll-variant="filmRollVariant"
   >
     <RouterView v-slot="{ Component }">
-      <transition name="page" mode="out-in">
-        <component :is="Component" />
-      </transition>
+      <component :is="Component" />
     </RouterView>
   </VintageTheme>
 </template>

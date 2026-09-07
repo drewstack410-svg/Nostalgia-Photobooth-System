@@ -1635,17 +1635,24 @@
 
   function bindR2SrcFallback(el) {
     if (!el) return;
-    el.addEventListener(
-      "error",
-      () => {
-        if (el.dataset.r2Tried) return;
-        const alt = swapR2Proxy(el.currentSrc || el.src);
-        if (!alt) return;
-        el.dataset.r2Tried = "1";
-        el.src = alt;
-      },
-      { once: true },
-    );
+    el.addEventListener("error", () => {
+      const tried = Number(el.dataset.r2Tried || "0");
+      const current = el.currentSrc || el.src || "";
+      let next = "";
+      if (tried === 0) {
+        next = swapR2Proxy(current);
+      } else if (tried === 1 && r2Base) {
+        const key = String(current)
+          .replace(/^https?:\/\/[^/]+/i, "")
+          .replace(/^\/r2-2\//, "")
+          .replace(/^\/r2\//, "")
+          .replace(/^\/+/, "");
+        next = `${r2Base}/${key}`;
+      }
+      if (!next || next === current) return;
+      el.dataset.r2Tried = String(tried + 1);
+      el.src = next;
+    });
   }
 
   // Same-origin `/r2` or `/r2-2` so phones never have to resolve r2.dev

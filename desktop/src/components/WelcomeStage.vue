@@ -64,7 +64,7 @@ const logoSrc = computed(
   () => store.customLogoUrl || `${import.meta.env.BASE_URL}Logo.svg`,
 );
 const startBtnLabel = `${import.meta.env.BASE_URL}start-button-text.svg`;
-const hasCustomTitleBg = computed(() => !!store.hasLoadedTitleBackground);
+const hasCustomTitleBg = computed(() => !!store.titleBackgroundUrl);
 const showMediaBg = computed(
   () => store.welcomeBackgroundFill === "media" && hasCustomTitleBg.value,
 );

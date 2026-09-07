@@ -5,6 +5,7 @@ import { usePhotoboothStore } from "@/stores/photobooth";
 import QRCode from "qrcode";
 import KioskDecor from "@/components/KioskDecor.vue";
 import { useKioskScreen } from "@/composables/useKioskScreen";
+import { isOperatorRoute } from "@/utils/operatorRoute";
 
 const router = useRouter();
 const store = usePhotoboothStore();
@@ -78,7 +79,7 @@ function returnToStart() {
     countdownInterval = null;
   }
   // A queued tick after unmount must not wipe the NEXT guest's shoot.
-  if (isUnmounted) return;
+  if (isUnmounted || isOperatorRoute(router.currentRoute.value.name)) return;
   store.resetSession();
   router.push("/");
 }
