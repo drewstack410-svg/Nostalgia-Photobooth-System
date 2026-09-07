@@ -6,7 +6,8 @@
 
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { highlightedViewRect } from "./viewfinderCrop";
-import { objectUrlFromBlob } from "./mediaBytes";
+import { isPlayableMp4, remuxToGuestMp4 } from "./guestMp4";
+import { objectUrlFromBlob, revokeMediaUrl } from "./mediaBytes";
 
 export type StripSlot = {
   x: number;
@@ -430,9 +431,9 @@ async function encodeWithVideoEncoder(
     return null;
   }
 
-  const bytes = target.buffer;
-  if (!bytes || bytes.byteLength < 1000) {
-    console.warn("[StripVideo] Empty mux output");
+  const bytes = target.buffer ? new Uint8Array(target.buffer) : null;
+  if (!bytes || !isPlayableMp4(bytes)) {
+    console.warn("[StripVideo] Empty or unplayable mux output");
     return null;
   }
   const blob = new Blob([bytes], { type: "video/mp4" });
@@ -496,9 +497,20 @@ async function encodeWithMediaRecorder(
     return null;
   }
   const blob = new Blob(chunks, { type: mime });
-  const url = objectUrlFromBlob(blob);
+  const rawUrl = objectUrlFromBlob(blob);
+  const remuxed = await remuxToGuestMp4(rawUrl);
+  if (remuxed && remuxed !== rawUrl) {
+    revokeMediaUrl(rawUrl);
+    console.log("[StripVideo] Remuxed MediaRecorder strip to guest MP4");
+    return remuxed;
+  }
+  if (!remuxed) {
+    revokeMediaUrl(rawUrl);
+    console.warn("[StripVideo] MediaRecorder strip was not a playable MP4");
+    return null;
+  }
   console.log(
     `[StripVideo] Ready ${Math.round(blob.size / 1024)}KB ${mime}`,
   );
-  return url;
+  return rawUrl;
 }

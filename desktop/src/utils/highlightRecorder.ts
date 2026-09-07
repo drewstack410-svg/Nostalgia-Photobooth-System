@@ -11,7 +11,8 @@
  */
 
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
-import { objectUrlFromBlob } from "./mediaBytes";
+import { isPlayableMp4, remuxToGuestMp4 } from "./guestMp4";
+import { mediaUrlToBytes, objectUrlFromBlob, revokeMediaUrl } from "./mediaBytes";
 
 export const HIGHLIGHT_LEAD_MS = 10000;
 export const HIGHLIGHT_PREVIEW_MS = 5000;
@@ -65,10 +66,10 @@ export function isHighlightRecording(): boolean {
 
 export function pickRecorderMime(): string {
   if (typeof MediaRecorder === "undefined") return "";
+  // Chromium's MediaRecorder "video/mp4" is fragmented — iPhone and
+  // Safari call those files corrupted. Record WebM here, then remux
+  // to a real H.264 MP4 before disk / R2 / the guest site.
   const types = [
-    "video/mp4;codecs=avc1.42E01E",
-    "video/mp4;codecs=avc1.4D401E",
-    "video/mp4",
     "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
     "video/webm",
@@ -530,6 +531,7 @@ export async function stopHighlightCapture(): Promise<string | null> {
     } catch (e) {
       console.warn("[Highlight] Encoder flush failed:", e);
     }
+    await sleep(40);
     try {
       muxer?.finalize();
     } catch (e) {
@@ -539,8 +541,9 @@ export async function stopHighlightCapture(): Promise<string | null> {
     const frames = frameIndex;
     const err = encodeError;
     resetState();
-    if (buffer && buffer.byteLength >= 100 && frames > 0) {
-      const blob = new Blob([buffer], { type: "video/mp4" });
+    const bytes = buffer ? new Uint8Array(buffer) : null;
+    if (bytes && frames >= 8 && isPlayableMp4(bytes)) {
+      const blob = new Blob([bytes], { type: "video/mp4" });
       const url = blobToObjectUrl(blob);
       console.log(
         `[Highlight] Clip ready ${Math.round(blob.size / 1024)}KB video/mp4 (${frames} frames)`,
@@ -574,7 +577,20 @@ export async function stopHighlightCapture(): Promise<string | null> {
     console.warn("[Highlight] Clip empty");
     return null;
   }
-  const url = blobToObjectUrl(blob);
+  const rawUrl = blobToObjectUrl(blob);
   console.log(`[Highlight] Clip ready ${Math.round(blob.size / 1024)}KB ${type}`);
-  return url;
+  const parsed = await mediaUrlToBytes(rawUrl);
+  if (parsed && isPlayableMp4(parsed.bytes)) return rawUrl;
+  const remuxed = await remuxToGuestMp4(rawUrl);
+  if (remuxed && remuxed !== rawUrl) {
+    revokeMediaUrl(rawUrl);
+    console.log("[Highlight] Remuxed MediaRecorder clip to guest MP4");
+    return remuxed;
+  }
+  if (!remuxed) {
+    revokeMediaUrl(rawUrl);
+    console.warn("[Highlight] Could not remux clip to a playable MP4");
+    return null;
+  }
+  return rawUrl;
 }

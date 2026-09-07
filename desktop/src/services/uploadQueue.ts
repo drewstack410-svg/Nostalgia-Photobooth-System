@@ -14,6 +14,8 @@ import {
   publishGallerySession,
   type GalleryLayoutMeta,
 } from "@/utils/gallerySession";
+import { isPlayableMp4, remuxToGuestMp4 } from "@/utils/guestMp4";
+import { mediaUrlToBytes, objectUrlFromBlob, revokeMediaUrl } from "@/utils/mediaBytes";
 
 const STORAGE_KEY = "nostalgia-pending-uploads";
 const PING_TIMEOUT_MS = 4_000;
@@ -232,10 +234,30 @@ async function uploadAsset(
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     }
     if (!bytes) return null;
+    if (payload.mime.startsWith("video/") && !isPlayableMp4(bytes)) {
+      const rawUrl = objectUrlFromBlob(new Blob([bytes], { type: payload.mime }));
+      const remuxed = await remuxToGuestMp4(rawUrl);
+      const parsed = remuxed ? await mediaUrlToBytes(remuxed) : null;
+      revokeMediaUrl(rawUrl);
+      if (remuxed && remuxed !== rawUrl) revokeMediaUrl(remuxed);
+      if (parsed && isPlayableMp4(parsed.bytes)) {
+        bytes = parsed.bytes;
+      } else {
+        throw new Error(`Clip is not a playable MP4: ${publicId}`);
+      }
+    }
+    const videoId = payload.mime.startsWith("video/")
+      ? publicId.replace(/\.[a-z0-9]+$/i, "") + ".mp4"
+      : publicId;
     const cr = await withTimeout(
-      uploadBytesToR2(bytes, payload.mime, "nostalgia-photobooth", publicId),
+      uploadBytesToR2(
+        bytes,
+        payload.mime.startsWith("video/") ? "video/mp4" : payload.mime,
+        "nostalgia-photobooth",
+        videoId,
+      ),
       FILE_UPLOAD_TIMEOUT_MS,
-      publicId,
+      videoId,
     );
     if (cr.success && cr.publicId) return { url: cr.url, publicId: cr.publicId };
     throw new Error(cr.error || `Upload failed: ${publicId}`);
@@ -494,16 +516,16 @@ async function reconstructJobFromDisk(
       assets.push({
         kind: "highlight-strip",
         filename: name,
-        publicId: `nostalgia_${sessionTs}_highlight-strip`,
-        mime: mimeFromName(name),
+        publicId: `nostalgia_${sessionTs}_highlight-strip.mp4`,
+        mime: "video/mp4",
       });
     } else if (/^highlight-\d+\./i.test(name)) {
       const n = name.match(/highlight-(\d+)/i)?.[1] || "1";
       assets.push({
         kind: "highlight-full",
         filename: name,
-        publicId: `nostalgia_${sessionTs}_highlight-${n}`,
-        mime: mimeFromName(name),
+        publicId: `nostalgia_${sessionTs}_highlight-${n}.mp4`,
+        mime: "video/mp4",
       });
     }
   }

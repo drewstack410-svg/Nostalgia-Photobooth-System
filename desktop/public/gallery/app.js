@@ -552,7 +552,7 @@
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error("video fetch " + res.status);
       const buf = await res.arrayBuffer();
-      const type = guessVideoMime(url, res.headers.get("content-type"));
+      const type = sniffVideoMeta(buf).type || guessVideoMime(url, res.headers.get("content-type"));
       const obj = URL.createObjectURL(new Blob([buf], { type }));
       videoSrcCleanup = () => URL.revokeObjectURL(obj);
       video.src = obj;
@@ -564,7 +564,7 @@
           const res = await fetch(alt, { cache: "no-store" });
           if (!res.ok) throw new Error("video fetch " + res.status);
           const buf = await res.arrayBuffer();
-          const type = guessVideoMime(alt, res.headers.get("content-type"));
+          const type = sniffVideoMeta(buf).type || guessVideoMime(alt, res.headers.get("content-type"));
           const obj = URL.createObjectURL(new Blob([buf], { type }));
           videoSrcCleanup = () => URL.revokeObjectURL(obj);
           video.src = obj;
@@ -1246,11 +1246,10 @@
           : highlightDownloadName(url, urls.length === 1 ? undefined : i + 1);
       try {
         const file = await fetchAsFile(url, name, "video/mp4");
-        files.push(
-          new File([file], name, {
-            type: name.endsWith(".mp4") ? "video/mp4" : file.type || "video/mp4",
-          }),
-        );
+        const buf = await file.arrayBuffer();
+        const meta = sniffVideoMeta(buf);
+        const fileName = withVideoName(name, meta.ext);
+        files.push(new File([buf], fileName, { type: meta.type }));
       } catch (_) {
         await saveByUrl(url, name);
       }
@@ -1394,7 +1393,19 @@
     try {
       const res = await fetch(url);
       if (res.ok) {
-        const blob = await res.blob();
+        const buf = await res.arrayBuffer();
+        const looksVideo = /\.(mp4|webm|mov|m4v)(?:\?|$)/i.test(
+          `${filename || ""} ${url}`,
+        );
+        if (looksVideo) {
+          const meta = sniffVideoMeta(buf);
+          const name = withVideoName(filename || "nostalgia_highlight.mp4", meta.ext);
+          await saveBlob(new Blob([buf], { type: meta.type }), name, meta.type);
+          return;
+        }
+        const blob = new Blob([buf], {
+          type: res.headers.get("content-type") || "image/jpeg",
+        });
         await saveBlob(blob, filename, blob.type || "image/jpeg");
         return;
       }
@@ -1562,6 +1573,37 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
+  }
+
+  function sniffVideoMeta(buf) {
+    const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    if (
+      b.length >= 8 &&
+      b[4] === 0x66 &&
+      b[5] === 0x74 &&
+      b[6] === 0x79 &&
+      b[7] === 0x70
+    ) {
+      return { ext: "mp4", type: "video/mp4" };
+    }
+    if (
+      b.length >= 4 &&
+      b[0] === 0x1a &&
+      b[1] === 0x45 &&
+      b[2] === 0xdf &&
+      b[3] === 0xa3
+    ) {
+      return { ext: "webm", type: "video/webm" };
+    }
+    return { ext: "mp4", type: "video/mp4" };
+  }
+
+  function withVideoName(name, ext) {
+    const base = String(name || "nostalgia_highlight").replace(
+      /\.(mp4|webm|mov|m4v)$/i,
+      "",
+    );
+    return `${base}.${ext}`;
   }
 
   function highlightDownloadName(idOrUrl, index) {

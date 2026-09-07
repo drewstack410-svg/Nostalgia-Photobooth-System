@@ -16,7 +16,8 @@ import type { WindowRect } from "@/utils/frameWindows";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { buildSessionGif } from "@/utils/sessionGif";
 import { composeStripVideo } from "@/utils/composeStripVideo";
-import { mediaUrlToBytes } from "@/utils/mediaBytes";
+import { mediaUrlToBytes, revokeMediaUrl } from "@/utils/mediaBytes";
+import { isPlayableMp4, remuxToGuestMp4 } from "@/utils/guestMp4";
 import {
   prepareFrameCanvas,
   prepareFrameDataUrl,
@@ -1092,17 +1093,19 @@ async function saveComposite() {
         const toSave = stripItem ? [stripItem, ...fullItems] : fullItems;
         const prepared: PreparedClip[] = [];
         for (const item of toSave) {
-          const parsed = await mediaUrlToBytes(item.dataUrl);
-          if (!parsed) {
-            console.warn(`[Save] ${item.name} had no bytes to store`);
+          const safeUrl = (await remuxToGuestMp4(item.dataUrl)) || item.dataUrl;
+          const parsed = await mediaUrlToBytes(safeUrl);
+          if (safeUrl !== item.dataUrl) revokeMediaUrl(safeUrl);
+          if (!parsed || !isPlayableMp4(parsed.bytes)) {
+            console.warn(`[Save] ${item.name} is not a playable MP4 — skipped`);
             continue;
           }
           prepared.push({
             name: item.name,
             kind: item.name === "highlight-strip" ? "strip" : "full",
             bytes: parsed.bytes,
-            mime: parsed.mime,
-            ext: parsed.ext,
+            mime: "video/mp4",
+            ext: "mp4",
           });
         }
         if (!prepared.length) {
@@ -1290,8 +1293,8 @@ async function saveComposite() {
         assets.push({
           kind: item.kind === "strip" ? "highlight-strip" : "highlight-full",
           filename: `${item.name}.${item.ext}`,
-          publicId: `nostalgia_${sessionTs}_${item.name}`,
-          mime: item.mime || `video/${item.ext}`,
+          publicId: `nostalgia_${sessionTs}_${item.name}.mp4`,
+          mime: "video/mp4",
           bytes: item.bytes,
         });
       }
