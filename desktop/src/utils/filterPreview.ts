@@ -310,7 +310,7 @@ export function applyVignetteToImageData(
 }
 
 /** Blur working size — bloom does not need full-res pixels. */
-const GLOW_MAX_EDGE = 640;
+const GLOW_MAX_EDGE = 720;
 
 let glowFullCanvas: HTMLCanvasElement | null = null;
 let glowSmallCanvas: HTMLCanvasElement | null = null;
@@ -328,12 +328,32 @@ function glowContext(
 }
 
 /**
- * Photographic bloom via stackblur-canvas: pull highlights, Gaussian-ish
- * blur, then screen-composite. Strength 100 is dreamy, not a white-out.
+ * Same extract / blur / screen numbers as the live SVG glow, so the
+ * baked still matches the viewfinder.
+ */
+function glowCurve(glow: number) {
+  const amount = Math.max(0, Math.min(100, glow));
+  if (amount <= 0) return null;
+  const t = amount / 100;
+  return {
+    gain: 1.5 + t * 0.7,
+    knee: -(0.4 + t * 0.16),
+    blur: 4 + t * 16,
+    slopeR: 0.55 + t * 0.8,
+    slopeG: 0.52 + t * 0.72,
+    slopeB: 0.42 + t * 0.55,
+  };
+}
+
+/**
+ * Photographic bloom: same pipeline as the live SVG filter
+ * (extract highlights with gain+knee → blur → tint slopes → screen).
+ * The old luma-floor version only touched very bright pixels, so prints
+ * looked unglowed next to the preview.
  */
 export function applyGlowToImageData(imageData: ImageData, glow: number): void {
-  const amount = Math.max(0, Math.min(100, glow)) / 100;
-  if (amount <= 0) return;
+  const curve = glowCurve(glow);
+  if (!curve) return;
   const w = imageData.width;
   const h = imageData.height;
   if (w < 2 || h < 2 || typeof document === "undefined") return;
@@ -354,30 +374,34 @@ export function applyGlowToImageData(imageData: ImageData, glow: number): void {
 
   const bloom = smallCtx.getImageData(0, 0, sw, sh);
   const px = bloom.data;
-  const floor = 0.48;
-  const span = 1 - floor;
+  const { gain, knee, slopeR, slopeG, slopeB } = curve;
   for (let i = 0; i < px.length; i += 4) {
-    const r = px[i]!;
-    const g = px[i + 1]!;
-    const b = px[i + 2]!;
-    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    const t = lum <= floor ? 0 : Math.min(1, (lum - floor) / span);
-    const m = t * t;
-    px[i] = r * m;
-    px[i + 1] = g * m * 0.98;
-    px[i + 2] = b * m * 0.86;
+    px[i] = Math.max(0, Math.min(255, (gain * (px[i]! / 255) + knee) * 255));
+    px[i + 1] = Math.max(
+      0,
+      Math.min(255, (gain * (px[i + 1]! / 255) + knee) * 255),
+    );
+    px[i + 2] = Math.max(
+      0,
+      Math.min(255, (gain * (px[i + 2]! / 255) + knee) * 255),
+    );
   }
 
   const radius = Math.max(
-    2,
-    Math.min(180, Math.round(Math.min(sw, sh) * (0.018 + amount * 0.055))),
+    3,
+    Math.min(180, Math.round(curve.blur * (Math.min(sw, sh) / 540))),
   );
   imageDataRGBA(bloom, 0, 0, sw, sh, radius);
+  for (let i = 0; i < px.length; i += 4) {
+    px[i] = Math.max(0, Math.min(255, px[i]! * slopeR));
+    px[i + 1] = Math.max(0, Math.min(255, px[i + 1]! * slopeG));
+    px[i + 2] = Math.max(0, Math.min(255, px[i + 2]! * slopeB));
+  }
   smallCtx.putImageData(bloom, 0, 0);
 
   fullCtx.save();
   fullCtx.globalCompositeOperation = "screen";
-  fullCtx.globalAlpha = 0.38 + amount * 0.52;
+  fullCtx.globalAlpha = 1;
   fullCtx.drawImage(glowSmallCanvas, 0, 0, w, h);
   fullCtx.restore();
 
@@ -424,20 +448,17 @@ export interface GlowPreviewSvg {
 }
 
 export function glowPreviewSvg(glow: number): GlowPreviewSvg | null {
-  const amount = Math.max(0, Math.min(100, glow));
-  if (amount <= 0) return null;
-  const t = amount / 100;
-  const gain = 1.5 + t * 0.7;
-  const knee = -(0.4 + t * 0.16);
+  const curve = glowCurve(glow);
+  if (!curve) return null;
   return {
-    blur: (4 + t * 16).toFixed(2),
-    slopeR: (0.55 + t * 0.8).toFixed(3),
-    slopeG: (0.52 + t * 0.72).toFixed(3),
-    slopeB: (0.42 + t * 0.55).toFixed(3),
+    blur: curve.blur.toFixed(2),
+    slopeR: curve.slopeR.toFixed(3),
+    slopeG: curve.slopeG.toFixed(3),
+    slopeB: curve.slopeB.toFixed(3),
     extract: [
-      gain.toFixed(3), 0, 0, 0, knee.toFixed(3),
-      0, gain.toFixed(3), 0, 0, knee.toFixed(3),
-      0, 0, gain.toFixed(3), 0, knee.toFixed(3),
+      curve.gain.toFixed(3), 0, 0, 0, curve.knee.toFixed(3),
+      0, curve.gain.toFixed(3), 0, 0, curve.knee.toFixed(3),
+      0, 0, curve.gain.toFixed(3), 0, curve.knee.toFixed(3),
       0, 0, 0, 1, 0,
     ].join(" "),
   };

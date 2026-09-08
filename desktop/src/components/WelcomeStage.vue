@@ -640,6 +640,29 @@ const HANDLES: Handle[] = ["nw", "ne", "sw", "se"];
   inset: 0;
   margin: 0;
   display: block;
+}
+
+.welcome-stage--laid-out:not(.welcome-stage--interactive):not(
+    .welcome-stage--canvas
+  )
+  .welcome-content {
+  opacity: 0;
+  transform: translateY(20px);
+  transition:
+    opacity 0.8s ease,
+    transform 0.8s ease;
+}
+
+.welcome-stage--laid-out:not(.welcome-stage--interactive):not(
+    .welcome-stage--canvas
+  )
+  .welcome-content.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.welcome-stage--laid-out.welcome-stage--interactive .welcome-content,
+.welcome-stage--laid-out.welcome-stage--canvas .welcome-content {
   opacity: 1;
   transform: none;
   transition: none;

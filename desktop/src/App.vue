@@ -73,13 +73,12 @@ const showVintageBg = computed(() => !screenHasOwnBackground.value);
 // The client's animated background now ships as the default for both
 // screens, so the CSS film strips are effectively retired — they only
 // return if a background is somehow unavailable.
-const showFilmRoll = computed(
-  () =>
-    (route.name === "title" &&
-      store.welcomeBackgroundFill !== "color" &&
-      !store.effectiveTitleBackgroundUrl) ||
-    (route.name === "bill-acceptor" && !store.effectivePaymentBackgroundUrl),
-);
+const showFilmRoll = computed(() => {
+  if (route.name !== "title") return false;
+  if (store.welcomeBackgroundFill === "color") return false;
+  if (store.welcomeBackgroundFill === "theme") return true;
+  return !store.effectiveTitleBackgroundUrl;
+});
 
 const filmRollVariant = computed<"home" | "payment">(() =>
   route.name === "bill-acceptor" ? "payment" : "home",
@@ -120,7 +119,12 @@ onMounted(async () => {
     :film-roll-variant="filmRollVariant"
   >
     <RouterView v-slot="{ Component }">
-      <component :is="Component" />
+      <transition
+        :name="isAdmin ? '' : 'page'"
+        :mode="isAdmin ? undefined : 'out-in'"
+      >
+        <component :is="Component" />
+      </transition>
     </RouterView>
   </VintageTheme>
 </template>

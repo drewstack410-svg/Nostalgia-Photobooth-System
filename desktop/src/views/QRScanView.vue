@@ -73,15 +73,21 @@ function resolveShareUrl(): string | null {
   return gallery?.shareableUrl || null;
 }
 
-function returnToStart() {
+function leaveQrScreen() {
   if (countdownInterval) {
     clearInterval(countdownInterval);
     countdownInterval = null;
   }
-  // A queued tick after unmount must not wipe the NEXT guest's shoot.
-  if (isUnmounted || isOperatorRoute(router.currentRoute.value.name)) return;
+  if (isUnmounted) return;
   store.resetSession();
   router.push("/");
+}
+
+function returnToStart() {
+  // Auto-return only. A leftover timer must not steal the operator
+  // off Admin; a guest tap on Done always goes through leaveQrScreen.
+  if (isOperatorRoute(router.currentRoute.value.name)) return;
+  leaveQrScreen();
 }
 
 // NOTE: the "Print more copies" button was removed — the client's
@@ -195,8 +201,8 @@ onUnmounted(() => {
     <button
       type="button"
       class="wood-btn done-btn"
-      :style="buttonLook('doneBtn')"
-      @click="returnToStart"
+      :style="{ ...buttonLook('doneBtn'), zIndex: 60, pointerEvents: 'auto' }"
+      @click.stop="leaveQrScreen"
     >
       <img
         v-if="buttonArt('doneBtn')"
@@ -296,6 +302,7 @@ onUnmounted(() => {
   white-space: pre-wrap;
   position: absolute;
   margin: 0;
+  pointer-events: none;
 }
 
 .kiosk-laid-out .qr-placeholder,
@@ -476,7 +483,8 @@ onUnmounted(() => {
   right: 7rem;
   font-size: var(--btn-font-size, 1.5rem);
   padding: 0.65rem 2.4rem;
-  z-index: 10;
+  z-index: 60;
+  pointer-events: auto;
 }
 
 /* No short-viewport breakpoint any more — the fractions above already

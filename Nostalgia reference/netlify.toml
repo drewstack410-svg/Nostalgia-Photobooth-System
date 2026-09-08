@@ -1,0 +1,40 @@
+# Netlify config for the public gallery site.
+# Static-only deploy — Netlify just publishes `public/gallery/`
+# as the site root. No build step.
+#
+# Why public/gallery and not a top-level gallery/ folder? Vite
+# auto-serves anything under public/ at the dev URL, so during
+# local development the QR's gallery URL `/gallery/?…` works
+# straight from the dev server with no extra middleware.
+#
+# How to deploy:
+#   1. In the Netlify dashboard, "Add new site" → "Import from Git"
+#      and pick this repo. The publish dir below points Netlify at
+#      `public/gallery`. Build command stays empty.
+#   OR
+#   2. Drag-and-drop the `public/gallery/` folder onto Netlify Drop:
+#      https://app.netlify.com/drop
+#
+# After the first deploy, copy the generated *.netlify.app URL into
+# the photobooth app's `.env` as VITE_GALLERY_BASE_URL — the QR code
+# generator will point at that URL with each session's params.
+
+[build]
+  publish = "public/gallery"
+  command = ""
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # Cache the page shell for a short time; the Cloudinary images
+    # it references have their own cache headers from the CDN.
+    Cache-Control = "public, max-age=300"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Single-page-app fallback isn't needed (we have no client routes),
+# but redirect any subpath to the index so deep-links still work.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
