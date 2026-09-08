@@ -16,7 +16,7 @@ import type {
 } from "@/stores/photobooth";
 import { BLEND_MODES } from "@/stores/photobooth";
 import { applyBoothConfig, saveBoothConfig } from "@/lib/boothConfig";
-import { getPaperSizePx } from "@/utils/printLayout";
+import { getPaperSizePx, isPaperSize } from "@/utils/printLayout";
 import type { PaperSize } from "@/utils/printLayout";
 import { prepareFrameCanvas } from "@/utils/pngAlpha";
 import TemplatePreview from "@/components/TemplatePreview.vue";
@@ -26,9 +26,21 @@ import AdminFormModal from "@/components/AdminFormModal.vue";
 import FilterLivePreview from "@/components/FilterLivePreview.vue";
 import { parseCubeText } from "@/utils/lut";
 import {
+  FONT_FILE_ACCEPT,
+  isFontFile,
+  cssFontFamilyForImported,
+} from "@/utils/customFonts";
+import {
+  downloadPhotoLayoutFile,
+  draftTemplateFromLayoutPng,
+  embedImageAsDataUrl,
+  layoutFileSlug,
+  parsePhotoLayoutDocumentJson,
+  serializePhotoLayout,
+} from "@/utils/photoLayoutFile";
+import {
   decodeXmpFile,
-  lightroomXmpToCube,
-  xmpPresetName,
+  importLightroomXmp,
 } from "@/utils/lightroomXmp";
 
 const store = usePhotoboothStore();
@@ -465,7 +477,9 @@ watch(showTitleBgModal, (open) => {
 // Custom fonts
 const displayFontInputRef = ref<HTMLInputElement | null>(null);
 const bodyFontInputRef = ref<HTMLInputElement | null>(null);
-const FONT_ACCEPT = ".woff2,.woff,.ttf,.otf";
+const libraryFontInputRef = ref<HTMLInputElement | null>(null);
+const fontLibraryError = ref("");
+const FONT_ACCEPT = FONT_FILE_ACCEPT;
 
 function triggerDisplayFontInput() {
   displayFontInputRef.value?.click();
@@ -477,9 +491,7 @@ function onDisplayFontChange(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
-  const isFont =
-    file.type.startsWith("font/") || /\.(woff2?|ttf|otf)$/i.test(file.name);
-  if (!isFont) return;
+  if (!isFontFile(file)) return;
   const reader = new FileReader();
   reader.onload = () => {
     store.setCustomDisplayFont(reader.result as string);
@@ -491,15 +503,33 @@ function onBodyFontChange(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
-  const isFont =
-    file.type.startsWith("font/") || /\.(woff2?|ttf|otf)$/i.test(file.name);
-  if (!isFont) return;
+  if (!isFontFile(file)) return;
   const reader = new FileReader();
   reader.onload = () => {
     store.setCustomBodyFont(reader.result as string);
   };
   reader.readAsDataURL(file);
   input.value = "";
+}
+
+function triggerLibraryFontInput() {
+  fontLibraryError.value = "";
+  libraryFontInputRef.value?.click();
+}
+
+function onLibraryFontChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file || !isFontFile(file)) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const font = store.addImportedFont(file.name, reader.result as string);
+    fontLibraryError.value = font
+      ? ""
+      : "Could not save this font. It may be too large for local storage.";
+  };
+  reader.readAsDataURL(file);
 }
 
 // Filters (camera): add via .cube LUT or Lightroom .xmp; toggle On/Off per filter
@@ -726,12 +756,28 @@ function triggerLutUpload() {
   filterLutInputRef.value?.click();
 }
 
-async function commitImportedFilter(name: string, cubeData: string) {
+async function commitImportedFilter(
+  name: string,
+  cubeData: string,
+  extras?: {
+    adjustments?: FilterAdjustments;
+    lrSpatial?: Parameters<typeof store.setFilterLrSpatial>[1];
+    fromXmp?: boolean;
+  },
+) {
   parseCubeText(cubeData);
   const added = await store.addFilter(name, cubeData, newFilterActive.value);
-  if (added) store.setFilterGrain(added.id, newFilterGrain.value);
+  if (!added) return;
+  if (extras?.fromXmp) {
+    if (extras.adjustments) store.setFilterAdjustments(added.id, extras.adjustments);
+    if (extras.lrSpatial) store.setFilterLrSpatial(added.id, extras.lrSpatial);
+  } else {
+    store.setFilterGrain(added.id, newFilterGrain.value);
+  }
   filterFormStatus.value = "success";
-  filterFormMessage.value = `Added filter "${name}".`;
+  filterFormMessage.value = extras?.fromXmp
+    ? `Added Lightroom look "${name}".`
+    : `Added filter "${name}".`;
   newFilterName.value = "";
   newFilterActive.value = true;
   newFilterGrain.value = false;
@@ -756,9 +802,13 @@ function onFilterLutFileChange(event: Event) {
       const text = decodeXmpFile(reader.result as ArrayBuffer);
       if (isXmp) {
         const fallback = file.name.replace(/\.xmp$/i, "") || "Lightroom preset";
-        const cubeData = lightroomXmpToCube(text, fallback);
-        const name = newFilterName.value.trim() || xmpPresetName(text, fallback);
-        commitImportedFilter(name, cubeData);
+        const imported = importLightroomXmp(text, fallback);
+        const name = newFilterName.value.trim() || imported.name || fallback;
+        commitImportedFilter(name, imported.cubeData, {
+          adjustments: imported.adjustments,
+          lrSpatial: imported.spatial,
+          fromXmp: true,
+        });
         return;
       }
       const name =
@@ -778,30 +828,6 @@ function onFilterLutFileChange(event: Event) {
   };
   reader.readAsArrayBuffer(file);
 }
-
-// Template card dropdown menu (vertical 3-dots)
-const openMenuTemplateId = ref<string | null>(null);
-let clickOutsideCleanup: (() => void) | null = null;
-function toggleTemplateMenu(templateId: string) {
-  openMenuTemplateId.value =
-    openMenuTemplateId.value === templateId ? null : templateId;
-}
-function closeTemplateMenu() {
-  clickOutsideCleanup?.();
-  clickOutsideCleanup = null;
-  openMenuTemplateId.value = null;
-}
-watch(openMenuTemplateId, (id) => {
-  if (!id) return;
-  const close = () => {
-    closeTemplateMenu();
-  };
-  clickOutsideCleanup = () => {
-    document.removeEventListener("click", close);
-    clickOutsideCleanup = null;
-  };
-  nextTick(() => document.addEventListener("click", close));
-});
 
 // ── Template uploads ────────────────────────────────────────────────
 // Custom templates are user-defined: any rows × cols grid, on any of
@@ -824,32 +850,278 @@ const showAddTemplateModal = ref(false);
 // prints.
 const layoutEditorTemplate = ref<Template | null>(null);
 const layoutEditorCells = ref<TemplateCell[]>([]);
+const layoutEditorIsNew = ref(false);
+const layoutEditorPrice = ref(0);
+const templateImportError = ref("");
+
+function cloneTemplate(t: Template): Template {
+  return JSON.parse(JSON.stringify(t)) as Template;
+}
+
+function fillAddTemplateForm(partial: {
+  name?: string;
+  paperSize?: PaperSize;
+  price?: number;
+  frameImageUrl?: string;
+  frameRows?: number;
+  frameCols?: number;
+  photoCount?: number;
+  cellMargin?: number;
+  cellGap?: number;
+  cellZoom?: number;
+  fitMode?: "cover" | "contain";
+  cellOffsetX?: number;
+  cellOffsetY?: number;
+  thumbnailDefaultUrl?: string;
+  thumbnailActiveUrl?: string;
+  cells?: TemplateCell[];
+}) {
+  if (partial.name !== undefined) newTemplateName.value = partial.name;
+  if (partial.paperSize) newTemplatePaperSize.value = partial.paperSize;
+  if (partial.price !== undefined) newTemplatePrice.value = partial.price;
+  if (partial.frameImageUrl !== undefined) {
+    newTemplateFrameImageUrl.value = partial.frameImageUrl;
+  }
+  if (partial.frameRows) newTemplateFrameRows.value = partial.frameRows;
+  if (partial.frameCols) newTemplateFrameCols.value = partial.frameCols;
+  if (partial.photoCount) newTemplateShots.value = partial.photoCount;
+  if (partial.cellMargin !== undefined) newTemplateCellMargin.value = partial.cellMargin;
+  if (partial.cellGap !== undefined) newTemplateCellGap.value = partial.cellGap;
+  if (partial.cellZoom !== undefined) newTemplateCellZoom.value = partial.cellZoom;
+  if (partial.fitMode) newTemplateFitMode.value = partial.fitMode;
+  if (partial.cellOffsetX !== undefined) newTemplateOffsetX.value = partial.cellOffsetX;
+  if (partial.cellOffsetY !== undefined) newTemplateOffsetY.value = partial.cellOffsetY;
+  if (partial.thumbnailDefaultUrl !== undefined) {
+    newTemplateThumbnailDefaultUrl.value = partial.thumbnailDefaultUrl;
+  }
+  if (partial.thumbnailActiveUrl !== undefined) {
+    newTemplateThumbnailActiveUrl.value = partial.thumbnailActiveUrl;
+  }
+  if (partial.cells) newTemplateCells.value = JSON.parse(JSON.stringify(partial.cells));
+}
 
 function openLayoutEditor(t: Template) {
-  layoutEditorTemplate.value = t;
-  layoutEditorCells.value = t.cells ? JSON.parse(JSON.stringify(t.cells)) : [];
+  openAddTemplateModal();
+  addTemplateEditId.value = t.id;
+  fillAddTemplateForm({
+    name: t.name,
+    paperSize: t.paperSize || "4x6-portrait",
+    price: dashboardStore.priceByTemplateId[t.id] ?? 0,
+    frameImageUrl: t.frameImageUrl || "",
+    frameRows: t.frameRows || 2,
+    frameCols: t.frameCols || 2,
+    photoCount: t.photoCount,
+    cellMargin: t.cellMargin ?? 24,
+    cellGap: t.cellGap ?? 24,
+    cellZoom: t.cellZoom ?? 1,
+    fitMode: t.fitMode || "contain",
+    cellOffsetX: t.cellOffsetX ?? 0,
+    cellOffsetY: t.cellOffsetY ?? 0,
+    thumbnailDefaultUrl: t.thumbnailDefaultUrl || "",
+    thumbnailActiveUrl: t.thumbnailActiveUrl || "",
+    cells: t.cells || [],
+  });
 }
 
 function closeLayoutEditor() {
   layoutEditorTemplate.value = null;
   layoutEditorCells.value = [];
+  layoutEditorIsNew.value = false;
+  layoutEditorPrice.value = 0;
 }
 
-function onLayoutImportMeta(meta: { photoCount: number }) {
-  const t = layoutEditorTemplate.value;
-  if (!t || !meta.photoCount) return;
-  store.updateTemplateDetails(t.id, { photoCount: meta.photoCount });
-  const fresh = store.templates.find((x) => x.id === t.id);
-  layoutEditorTemplate.value = {
-    ...(fresh ?? t),
-    photoCount: meta.photoCount,
+const templatePackageInputRef = ref<HTMLInputElement | null>(null);
+const layoutPngInputRef = ref<HTMLInputElement | null>(null);
+
+function triggerTemplatePackageImport() {
+  templateImportError.value = "";
+  templatePackageInputRef.value?.click();
+}
+
+function triggerLayoutPngImport() {
+  templateImportError.value = "";
+  layoutPngInputRef.value?.click();
+}
+
+async function exportTemplatePackage(t: Template) {
+  templateImportError.value = "";
+  let frameImage: string | undefined;
+  try {
+    frameImage = await embedImageAsDataUrl(t.frameImageUrl);
+  } catch {
+    frameImage = undefined;
+  }
+  const cells = t.cells ?? [];
+  if (!cells.length && !frameImage) {
+    templateImportError.value =
+      "Nothing to export yet — add a layout PNG or edit the photo layout first.";
+    return;
+  }
+  const payload = serializePhotoLayout({
+    name: t.name,
+    photoCount: t.photoCount,
+    paperSize: t.paperSize,
+    cells,
+    frameImage,
+    layout: t.layout,
+    frameRows: t.frameRows,
+    frameCols: t.frameCols,
+    cellMargin: t.cellMargin,
+    cellGap: t.cellGap,
+    cellZoom: t.cellZoom,
+    fitMode: t.fitMode,
+    cellOffsetX: t.cellOffsetX,
+    cellOffsetY: t.cellOffsetY,
+    thumbnailDefault: await embedImageAsDataUrl(t.thumbnailDefaultUrl).catch(
+      () => undefined,
+    ),
+    thumbnailActive: await embedImageAsDataUrl(t.thumbnailActiveUrl).catch(
+      () => undefined,
+    ),
+  });
+  downloadPhotoLayoutFile(
+    payload,
+    `${layoutFileSlug(t.name || "photo-layout")}.photo-layout.json`,
+  );
+}
+
+async function onTemplatePackageImport(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  templateImportError.value = "";
+  try {
+    const imported = parsePhotoLayoutDocumentJson(await file.text());
+    const name =
+      imported.name ||
+      file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim() ||
+      "Imported template";
+    const photoCount = Math.max(
+      1,
+      imported.photoCount || imported.cells.length || 4,
+    );
+    const frameRows = Math.max(1, Math.min(8, imported.frameRows || 2));
+    const frameCols = Math.max(1, Math.min(8, imported.frameCols || 2));
+    const paperSize: PaperSize = isPaperSize(imported.paperSize)
+      ? imported.paperSize
+      : "4x6-portrait";
+    openAddTemplateModal();
+    fillAddTemplateForm({
+      name,
+      paperSize,
+      frameImageUrl: imported.frameImage || "",
+      frameRows,
+      frameCols,
+      photoCount,
+      cellMargin: imported.cellMargin,
+      cellGap: imported.cellGap,
+      cellZoom: imported.cellZoom,
+      fitMode: imported.fitMode,
+      cellOffsetX: imported.cellOffsetX,
+      cellOffsetY: imported.cellOffsetY,
+      thumbnailDefaultUrl: imported.thumbnailDefault || "",
+      thumbnailActiveUrl: imported.thumbnailActive || "",
+      cells: imported.cells,
+    });
+  } catch (err) {
+    templateImportError.value =
+      err instanceof Error ? err.message : "Could not import that template.";
+  }
+}
+
+async function onLayoutPngImport(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  if (!file.type.startsWith("image/") && !/\.(png|jpe?g|webp)$/i.test(file.name)) {
+    templateImportError.value = "Choose a PNG or JPEG layout image.";
+    return;
+  }
+  templateImportError.value = "";
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const dataUrl = String(reader.result || "");
+      if (!dataUrl.startsWith("data:image/")) {
+        templateImportError.value = "Could not read that layout image.";
+        return;
+      }
+      const name =
+        file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim() ||
+        "New template";
+      const draft = await draftTemplateFromLayoutPng(dataUrl, name);
+      openAddTemplateModal();
+      fillAddTemplateForm({
+        name: draft.name,
+        paperSize: draft.paperSize,
+        frameImageUrl: draft.frameImageUrl,
+        frameRows: draft.frameRows,
+        frameCols: draft.frameCols,
+        photoCount: draft.photoCount,
+        cellMargin: draft.cellMargin,
+        cellGap: draft.cellGap,
+        fitMode: draft.fitMode,
+        cells: draft.cells || [],
+      });
+    } catch (err) {
+      templateImportError.value =
+        err instanceof Error ? err.message : "Could not add that layout PNG.";
+    }
   };
+  reader.onerror = () => {
+    templateImportError.value = "Could not read that layout image.";
+  };
+  reader.readAsDataURL(file);
 }
 
 async function saveLayoutEditor() {
   const t = layoutEditorTemplate.value;
   if (!t) return;
-  await store.setTemplateCells(t.id, layoutEditorCells.value);
+  const name = t.name.trim() || "New layout";
+  const cells = layoutEditorCells.value;
+  const photoCount = Math.max(
+    1,
+    t.photoCount || 1,
+    ...cells.map((c) => c.shot || 0),
+  );
+  const paperSize = t.paperSize || "4x6-portrait";
+  const layout: "vertical" | "horizontal" = paperSize.includes("landscape")
+    ? "horizontal"
+    : "vertical";
+  if (layoutEditorIsNew.value || !t.id) {
+    const added = store.addTemplate({
+      name,
+      layout,
+      photoCount,
+      paperSize,
+      frameImageUrl: t.frameImageUrl,
+      cells: cells.length ? cells : undefined,
+      fitMode: t.fitMode || "contain",
+      cellMargin: t.cellMargin ?? 0,
+      cellGap: t.cellGap ?? 0,
+      cellZoom: t.cellZoom,
+      cellOffsetX: t.cellOffsetX,
+      cellOffsetY: t.cellOffsetY,
+      thumbnailDefaultUrl: t.thumbnailDefaultUrl,
+      thumbnailActiveUrl: t.thumbnailActiveUrl,
+      isActive: true,
+    });
+    const price = Number(layoutEditorPrice.value);
+    if (added && !Number.isNaN(price) && price >= 0) {
+      dashboardStore.setPricePerTemplate(added.id, price);
+    }
+  } else {
+    await store.updateTemplate(t.id, {
+      name,
+      photoCount,
+      paperSize,
+      frameImageUrl: t.frameImageUrl,
+      cells: cells.length ? cells : undefined,
+      layout,
+    });
+  }
   closeLayoutEditor();
 }
 
@@ -862,6 +1134,8 @@ async function clearLayoutEditor() {
 }
 const newTemplateName = ref("");
 const newTemplateFrameImageUrl = ref("");
+const newTemplateCells = ref<TemplateCell[]>([]);
+const addTemplateEditId = ref<string | null>(null);
 const frameImageInputRef = ref<HTMLInputElement | null>(null);
 
 // Keyboard state for template name input
@@ -1089,6 +1363,21 @@ watch(
   },
 );
 
+watch(
+  [newTemplateFrameRows, newTemplateFrameCols],
+  ([rows, cols], [prevRows, prevCols]) => {
+    const n = Math.max(1, rows || 1) * Math.max(1, cols || 1);
+    const prevN = Math.max(1, prevRows || 1) * Math.max(1, prevCols || 1);
+    if (
+      newTemplateShots.value == null ||
+      newTemplateShots.value === prevN ||
+      newTemplateShots.value > n
+    ) {
+      newTemplateShots.value = null;
+    }
+  },
+);
+
 function onPreviewPhotoChange(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -1170,9 +1459,43 @@ const cellSizeWarning = computed(() => {
   return "";
 });
 
+function openPhotoLayoutFromAddForm() {
+  const name = newTemplateName.value.trim() || "New layout";
+  const frameRows = Math.max(1, Math.min(GRID_AXIS_MAX, newTemplateFrameRows.value || 1));
+  const frameCols = Math.max(1, Math.min(GRID_AXIS_MAX, newTemplateFrameCols.value || 1));
+  const photoCount = shotPlan.value.shots;
+  const layout: "vertical" | "horizontal" =
+    frameCols > frameRows ? "horizontal" : "vertical";
+  showAddTemplateModal.value = false;
+  layoutEditorIsNew.value = true;
+  layoutEditorPrice.value = Number(newTemplatePrice.value) || 0;
+  layoutEditorTemplate.value = {
+    id: "",
+    name,
+    photoCount,
+    layout,
+    paperSize: newTemplatePaperSize.value,
+    frameImageUrl: newTemplateFrameImageUrl.value.trim() || undefined,
+    frameRows,
+    frameCols,
+    cellMargin: Math.max(0, newTemplateCellMargin.value || 0),
+    cellGap: Math.max(0, newTemplateCellGap.value || 0),
+    cellZoom: Math.max(0.1, newTemplateCellZoom.value || 1),
+    fitMode: newTemplateFitMode.value,
+    cellOffsetX: clampOffset(newTemplateOffsetX.value),
+    cellOffsetY: clampOffset(newTemplateOffsetY.value),
+    thumbnailDefaultUrl: newTemplateThumbnailDefaultUrl.value.trim() || undefined,
+    thumbnailActiveUrl: newTemplateThumbnailActiveUrl.value.trim() || undefined,
+    isActive: true,
+  };
+  layoutEditorCells.value = [];
+}
+
 function openAddTemplateModal() {
+  addTemplateEditId.value = null;
   newTemplateName.value = "";
   newTemplateFrameImageUrl.value = "";
+  newTemplateCells.value = [];
   newTemplateShots.value = null;
   newTemplateFitMode.value = "contain";
   newTemplateOffsetX.value = 0;
@@ -1266,6 +1589,7 @@ function triggerThumbnailActiveInput() {
 
 function closeAddTemplateModal() {
   showAddTemplateModal.value = false;
+  addTemplateEditId.value = null;
   // Close keyboard when modal closes
   showTemplateNameKeyboard.value = false;
   keyboardInputDetected.value = false;
@@ -1305,39 +1629,11 @@ function handleTemplateNameFocus() {
   showTemplateNameKeyboard.value = true;
 }
 
-function handleTemplateNameBlur() {
-  if (templateNameBlurTimeout) {
-    clearTimeout(templateNameBlurTimeout);
-    templateNameBlurTimeout = null;
-  }
-
-  templateNameBlurTimeout = setTimeout(() => {
-    if (document.activeElement?.tagName !== "BUTTON") {
-      showTemplateNameKeyboard.value = false;
-    }
-    templateNameBlurTimeout = null;
-  }, 200);
-}
-
 function handleTemplateNameKeyDown(_event: KeyboardEvent) {
   keyboardInputDetected.value = true;
-
-  if (showTemplateNameKeyboard.value) {
-    nextTick(() => {
-      showTemplateNameKeyboard.value = false;
-    });
-  }
 }
 
-function updateTemplateName(value: string) {
-  newTemplateName.value = value;
-}
-
-function handleTemplateNameKeyboardEnter() {
-  showTemplateNameKeyboard.value = false;
-}
-
-function submitAddTemplate() {
+async function submitAddTemplate() {
   const name = newTemplateName.value.trim();
   if (!name) return;
 
@@ -1361,7 +1657,10 @@ function submitAddTemplate() {
     newTemplateThumbnailDefaultUrl.value.trim() || undefined;
   const thumbnailActiveUrl =
     newTemplateThumbnailActiveUrl.value.trim() || undefined;
-  const template = store.addTemplate({
+  const cells = newTemplateCells.value.length
+    ? JSON.parse(JSON.stringify(newTemplateCells.value)) as TemplateCell[]
+    : undefined;
+  const payload = {
     name,
     layout,
     photoCount,
@@ -1377,16 +1676,25 @@ function submitAddTemplate() {
     cellOffsetY: clampOffset(newTemplateOffsetY.value),
     thumbnailDefaultUrl,
     thumbnailActiveUrl,
-  });
+    cells,
+  };
   const price = Number(newTemplatePrice.value);
-  if (!Number.isNaN(price) && price >= 0) {
-    dashboardStore.setPricePerTemplate(template.id, price);
+  if (addTemplateEditId.value) {
+    await store.updateTemplate(addTemplateEditId.value, payload);
+    if (!Number.isNaN(price) && price >= 0) {
+      dashboardStore.setPricePerTemplate(addTemplateEditId.value, price);
+    }
+  } else {
+    const template = store.addTemplate({ ...payload, isActive: true });
+    if (!Number.isNaN(price) && price >= 0) {
+      dashboardStore.setPricePerTemplate(template.id, price);
+    }
   }
   closeAddTemplateModal();
 }
 
-function toggleActive(template: Template, event: Event) {
-  event.stopPropagation();
+function toggleActive(template: Template, event?: Event) {
+  event?.stopPropagation();
 
   const currentStatus = isTemplateActive(template);
   const newStatus = !currentStatus;
@@ -1406,13 +1714,16 @@ function isTemplateActive(template: Template): boolean {
   return foundTemplate ? foundTemplate.isActive !== false : true;
 }
 
-function handleDeleteTemplate(template: Template, event: Event) {
-  event.stopPropagation();
+function handleDeleteTemplate(template: Template, event?: Event) {
+  event?.stopPropagation();
   const confirmed = confirm(
     `Delete template "${template.name}"?\n\nThis cannot be undone.`,
   );
   if (confirmed) {
     store.removeTemplate(template.id);
+    if (editingTemplate.value?.id === template.id) {
+      closeEditTemplateDetails();
+    }
   }
 }
 
@@ -1423,7 +1734,30 @@ const editTemplateName = ref("");
 const editTemplatePrice = ref(0);
 const editTemplateShots = ref(1);
 const showEditNameKeyboard = ref(false);
-let editNameBlurTimeout: ReturnType<typeof setTimeout> | null = null;
+
+const showNameKeyboardDialog = computed({
+  get: () => showTemplateNameKeyboard.value || showEditNameKeyboard.value,
+  set: (open: boolean) => {
+    if (!open) {
+      showTemplateNameKeyboard.value = false;
+      showEditNameKeyboard.value = false;
+    }
+  },
+});
+
+const keyboardDialogValue = computed(() =>
+  showEditNameKeyboard.value ? editTemplateName.value : newTemplateName.value,
+);
+
+function updateKeyboardDialogValue(value: string) {
+  if (showEditNameKeyboard.value) editTemplateName.value = value;
+  else newTemplateName.value = value;
+}
+
+function closeNameKeyboardDialog() {
+  showTemplateNameKeyboard.value = false;
+  showEditNameKeyboard.value = false;
+}
 
 /** Sheet cells for a saved template (grid, or hand-placed slots). */
 function templateSheetCells(t: Template): number {
@@ -1463,10 +1797,33 @@ function closeEditTemplateDetails() {
   showEditTemplateModal.value = false;
   editingTemplate.value = null;
   showEditNameKeyboard.value = false;
-  if (editNameBlurTimeout) {
-    clearTimeout(editNameBlurTimeout);
-    editNameBlurTimeout = null;
-  }
+}
+
+const editingTemplateIsActive = computed(() => {
+  const t = editingTemplate.value;
+  if (!t) return true;
+  const live = store.templates.find((x) => x.id === t.id);
+  return (live ?? t).isActive !== false;
+});
+
+function toggleEditingTemplateActive() {
+  const t = editingTemplate.value;
+  if (!t) return;
+  toggleActive(t);
+}
+
+function deleteEditingTemplate() {
+  const t = editingTemplate.value;
+  if (!t) return;
+  handleDeleteTemplate(t);
+}
+
+function openEditLayoutFromDetails() {
+  const t = editingTemplate.value;
+  if (!t) return;
+  const live = store.templates.find((x) => x.id === t.id) ?? t;
+  closeEditTemplateDetails();
+  openLayoutEditor(live);
 }
 
 watch(showEditTemplateModal, (open) => {
@@ -1477,37 +1834,11 @@ watch(showEditTemplateModal, (open) => {
 });
 
 function handleEditNameClick() {
-  if (editNameBlurTimeout) {
-    clearTimeout(editNameBlurTimeout);
-    editNameBlurTimeout = null;
-  }
   showEditNameKeyboard.value = true;
-}
-
-function handleEditNameBlur() {
-  if (editNameBlurTimeout) {
-    clearTimeout(editNameBlurTimeout);
-    editNameBlurTimeout = null;
-  }
-  editNameBlurTimeout = setTimeout(() => {
-    if (document.activeElement?.tagName !== "BUTTON") {
-      showEditNameKeyboard.value = false;
-    }
-    editNameBlurTimeout = null;
-  }, 200);
 }
 
 function handleEditNameKeyDown() {
   keyboardInputDetected.value = true;
-  if (showEditNameKeyboard.value) {
-    nextTick(() => {
-      showEditNameKeyboard.value = false;
-    });
-  }
-}
-
-function updateEditTemplateName(value: string) {
-  editTemplateName.value = value;
 }
 
 function submitEditTemplateDetails() {
@@ -2180,7 +2511,7 @@ function submitEditTemplateDetails() {
     <AdminFormModal
       v-model:open="showFontsModal"
       title="Fonts"
-      description="Display font is used for headings and titles; body font for paragraphs and UI text. WOFF2, WOFF, TTF or OTF."
+      description="Display and body fonts apply across the booth. Imported fonts can be chosen on individual text layers in the Screen Editor. WOFF2, WOFF, TTF or OTF."
     >
       <div class="fonts-uploads">
         <div class="font-upload-block">
@@ -2251,6 +2582,49 @@ function submitEditTemplateDetails() {
             </template>
           </div>
         </div>
+      </div>
+      <div class="font-library">
+        <label class="form-label">Imported fonts</label>
+        <p class="font-library__hint">
+          These appear in the Screen Editor font list for text and buttons.
+        </p>
+        <ul v-if="store.importedFonts.length" class="font-library__list">
+          <li
+            v-for="font in store.importedFonts"
+            :key="font.id"
+            class="font-library__item"
+          >
+            <span
+              class="font-library__name"
+              :style="{ fontFamily: cssFontFamilyForImported(font.family) }"
+            >
+              {{ font.family }}
+            </span>
+            <button
+              type="button"
+              class="upload-card-remove"
+              :aria-label="`Remove ${font.family}`"
+              @click="store.removeImportedFont(font.id)"
+            >
+              ×
+            </button>
+          </li>
+        </ul>
+        <button
+          type="button"
+          class="font-library__add"
+          @click="triggerLibraryFontInput"
+        >
+          Import font
+        </button>
+        <input
+          ref="libraryFontInputRef"
+          type="file"
+          :accept="FONT_ACCEPT"
+          class="upload-card-input"
+          @change="onLibraryFontChange"
+        />
+        <p v-if="fontLibraryError" class="form-error">{{ fontLibraryError }}</p>
       </div>
     </AdminFormModal>
 
@@ -2373,7 +2747,7 @@ function submitEditTemplateDetails() {
     <AdminFormModal
       v-model:open="showFiltersModal"
       title="Filters"
-      description="LUT, Lightroom preset, or live adjustments on the camera preview."
+      description="LUT or Lightroom .xmp. Captures apply the develop look (tone, HSL, grain, sharpen, and more)."
       size="wide"
     >
       <div
@@ -3137,7 +3511,7 @@ function submitEditTemplateDetails() {
     <AdminFormModal
       v-model:open="showTemplatesModal"
       title="Templates"
-      description="Add templates, then use Edit details to change name, price, and shots. Toggle which ones appear in the picker."
+      description="Click a template to edit its details, set it active, or delete it. Add new template to create a layout."
       size="large"
     >
       <div class="templates-grid">
@@ -3148,69 +3522,6 @@ function submitEditTemplateDetails() {
           :class="{ 'template-card--inactive': t.isActive === false }"
           @click="openEditTemplateDetails(t)"
         >
-          <div class="template-menu-wrap template-menu-wrap--top-right">
-            <button
-              type="button"
-              class="template-control-btn template-menu-btn"
-              aria-label="Template options"
-              aria-haspopup="true"
-              :aria-expanded="openMenuTemplateId === t.id"
-              @click.stop="toggleTemplateMenu(t.id)"
-            >
-              <span class="template-menu-dots" aria-hidden="true">⋮</span>
-            </button>
-            <div
-              v-if="openMenuTemplateId === t.id"
-              class="template-menu-dropdown"
-              role="menu"
-            >
-              <button
-                type="button"
-                role="menuitem"
-                class="template-menu-item"
-                @click.stop="
-                  openEditTemplateDetails(t);
-                  closeTemplateMenu();
-                "
-              >
-                Edit details…
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                class="template-menu-item"
-                @click.stop="
-                  toggleActive(t, $event);
-                  closeTemplateMenu();
-                "
-              >
-                {{ t.isActive !== false ? "Set inactive" : "Set active" }}
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                class="template-menu-item"
-                @click.stop="
-                  openLayoutEditor(t);
-                  closeTemplateMenu();
-                "
-              >
-                Edit layout…
-              </button>
-              <button
-                v-if="!store.isBuiltinTemplate(t.id)"
-                type="button"
-                role="menuitem"
-                class="template-menu-item template-menu-item--danger"
-                @click.stop="
-                  handleDeleteTemplate(t, $event);
-                  closeTemplateMenu();
-                "
-              >
-                Delete
-              </button>
-            </div>
-          </div>
           <TemplatePreview :template="t" size="mini" prefer-active-thumbnail />
           <p class="template-label">{{ t.name }}</p>
           <p class="template-meta">
@@ -3233,19 +3544,21 @@ function submitEditTemplateDetails() {
           </div>
         </div>
 
-        <!-- Opens the add-template modal (rows×cols grid, any paper
-             size, optional frame image). -->
-        <div
-          v-if="TEMPLATE_UPLOAD_ENABLED"
-          class="template-card add-template-card"
-          @click="openAddTemplateModal"
-        >
-          <div class="add-template-placeholder">
-            <span class="add-icon">+</span>
-            <span class="add-text">Add new template</span>
+        <!-- LumaBooth Print Layout: add a PNG overlay, place photo boxes,
+             Import / Export on that same screen. -->
+        <div v-if="TEMPLATE_UPLOAD_ENABLED" class="add-template-cluster">
+          <div
+            class="template-card add-template-card"
+            @click="openAddTemplateModal"
+          >
+            <div class="add-template-placeholder">
+              <span class="add-icon">+</span>
+              <span class="add-text">Add new template</span>
+            </div>
           </div>
         </div>
       </div>
+      <p v-if="templateImportError" class="form-error">{{ templateImportError }}</p>
 
       <!-- Add-template modal — lets an admin define a custom rows×cols
            grid on any paper size, with an optional frame image. -->
@@ -3255,22 +3568,18 @@ function submitEditTemplateDetails() {
         @click.self="closeAddTemplateModal"
       >
         <div class="modal add-template-modal">
-          <h3 class="modal-title add-template-modal__header">Add new template</h3>
+          <h3 class="modal-title add-template-modal__header">
+            {{ addTemplateEditId ? "Edit template" : "Add new template" }}
+          </h3>
           <form
             id="add-template-form"
             class="add-template-form"
             @submit.prevent="submitAddTemplate"
           >
-            <!-- Landscape two-column layout: left = name/paper/price/grid
-                 fields (compact, text-driven); right = frame image +
-                 live preview (visual, needs more vertical room). Putting
-                 these side by side instead of all-stacked is what keeps
-                 the modal short enough to fit on screen without the top
-                 or bottom clipping off. -->
             <div class="add-template-columns">
               <div class="add-template-col add-template-col--left">
-                <div class="form-row">
-                  <div class="form-row-field form-row-field--full">
+                <div class="form-row form-row--layout-and-number">
+                  <div class="form-row-field form-row-field--grow">
                     <label class="form-label">Name</label>
                     <input
                       id="template-name-input"
@@ -3283,21 +3592,9 @@ function submitEditTemplateDetails() {
                       @click="handleTemplateNameClick"
                       @touchstart="handleTemplateNameClick"
                       @focus="handleTemplateNameFocus"
-                      @blur="handleTemplateNameBlur"
                       @keydown="handleTemplateNameKeyDown"
                     />
-
-                    <div v-if="showTemplateNameKeyboard" class="keyboard-wrapper">
-                      <OnScreenKeyboard
-                        :model-value="newTemplateName"
-                        input-type="text"
-                        @update:model-value="updateTemplateName"
-                        @enter="handleTemplateNameKeyboardEnter"
-                      />
-                    </div>
                   </div>
-                </div>
-                <div class="form-row form-row--layout-and-number">
                   <div class="form-row-field">
                     <label class="form-label">Paper size</label>
                     <select v-model="newTemplatePaperSize" class="form-select">
@@ -3310,7 +3607,7 @@ function submitEditTemplateDetails() {
                       </option>
                     </select>
                   </div>
-                  <div class="form-row-field">
+                  <div class="form-row-field form-row-field--price">
                     <label class="form-label">Price (₱)</label>
                     <input
                       v-model.number="newTemplatePrice"
@@ -3323,23 +3620,22 @@ function submitEditTemplateDetails() {
                   </div>
                 </div>
 
-                <label class="form-label">Grid — rows × columns</label>
-                <p class="form-hint form-hint-block">
-                  This is what makes the template dynamic: any grid shape
-                  works, with or without a frame image. Leave "Shots" empty to
-                  take one photo per cell, or set it lower to repeat the same
-                  shots as copies on the sheet.
-                </p>
-                <p class="form-hint form-hint-block">
-                  <strong>
-                    {{ shotPlan.cells }} cells → {{ shotPlan.shots }} shot{{ shotPlan.shots === 1 ? "" : "s" }}
-                    <template v-if="shotPlan.copies > 1"> × {{ shotPlan.copies }} copies</template>
-                  </strong>
-                  <span v-if="!shotPlan.even" class="form-error">
-                    — {{ shotPlan.shots }} doesn't divide evenly into
-                    {{ shotPlan.cells }} cells, so the last copy will be partial.
-                  </span>
-                </p>
+                <div class="grid-heading">
+                  <label class="form-label">Grid</label>
+                  <p class="form-hint grid-heading__status">
+                    <strong>
+                      {{ shotPlan.cells }} cells → {{ shotPlan.shots }} shot{{
+                        shotPlan.shots === 1 ? "" : "s"
+                      }}
+                      <template v-if="shotPlan.copies > 1">
+                        × {{ shotPlan.copies }} copies
+                      </template>
+                    </strong>
+                    <span v-if="!shotPlan.even" class="form-error">
+                      — shots must divide evenly into cells
+                    </span>
+                  </p>
+                </div>
                 <div class="frame-layout-fields">
                   <div class="frame-layout-field">
                     <label class="form-sublabel">Rows</label>
@@ -3409,11 +3705,8 @@ function submitEditTemplateDetails() {
                       :style="{ '--range-pct': `${((newTemplateCellZoom - 0.5) / 1.5) * 100}%` }"
                     />
                   </div>
-                  <div class="frame-layout-field frame-layout-field--wide">
-                    <label class="form-sublabel">
-                      Move photo — across {{ newTemplateOffsetX }}% / down
-                      {{ newTemplateOffsetY }}%
-                    </label>
+                  <div class="frame-layout-field">
+                    <label class="form-sublabel">Across {{ newTemplateOffsetX }}%</label>
                     <input
                       v-model.number="newTemplateOffsetX"
                       type="range"
@@ -3423,6 +3716,9 @@ function submitEditTemplateDetails() {
                       step="1"
                       :style="{ '--range-pct': `${newTemplateOffsetX + 50}%` }"
                     />
+                  </div>
+                  <div class="frame-layout-field">
+                    <label class="form-sublabel">Down {{ newTemplateOffsetY }}%</label>
                     <input
                       v-model.number="newTemplateOffsetY"
                       type="range"
@@ -3434,34 +3730,24 @@ function submitEditTemplateDetails() {
                     />
                   </div>
                 </div>
-                <p class="form-hint form-hint-block">
-                  Zoom past 1.00× to fill the window (the overflow is cropped),
-                  then use the sliders to choose which part stays visible — e.g.
-                  move the photo down so heads aren't cut off. The preview below
-                  updates as you go and is exactly what prints.
-                </p>
-                <!-- Live, math-accurate preview of what actually prints —
-                     same cell-size formula PrintingView.vue uses, so this
-                     isn't a guess. Turns into a visible warning (not a
-                     block) once cells get too small to be a good keepsake,
-                     or a hard note if the grid genuinely doesn't fit. -->
                 <p
-                  class="form-hint form-hint-block cell-preview"
+                  class="form-hint cell-preview"
                   :class="{ 'cell-preview--warn': cellSizeWarning }"
                 >
-                  Each photo cell prints at ~{{ cellPreview.cellWIn.toFixed(1) }}"
-                  × {{ cellPreview.cellHIn.toFixed(1) }}" ({{ cellPreview.totalCells }}
-                  photo{{ cellPreview.totalCells === 1 ? "" : "s" }} total).
-                  <template v-if="cellSizeWarning">
-                    <br />⚠️ {{ cellSizeWarning }}
-                  </template>
+                  Cells print ~{{ cellPreview.cellWIn.toFixed(1) }}" ×
+                  {{ cellPreview.cellHIn.toFixed(1) }}"
+                  ({{ cellPreview.totalCells }} photo{{
+                    cellPreview.totalCells === 1 ? "" : "s"
+                  }}).
+                  <template v-if="cellSizeWarning"> ⚠️ {{ cellSizeWarning }}</template>
                 </p>
               </div>
 
-              <div class="add-template-col add-template-col--right">
+              <div class="add-template-visual">
+              <div class="add-template-col add-template-col--media">
                 <label class="form-label">Frame image (optional)</label>
                 <div
-                  class="upload-card"
+                  class="upload-card upload-card--frame"
                   :class="{
                     'upload-card--filled': newTemplateFrameImageUrl,
                   }"
@@ -3492,123 +3778,106 @@ function submitEditTemplateDetails() {
                   <template v-else>
                     <span class="upload-card-icon">+</span>
                     <span class="upload-card-text">Add frame image</span>
-                    <span class="upload-card-hint">
-                      Leave empty for a plain photo grid. If provided, it
-                      must be pre-made to match the grid — its transparent
-                      windows won't move to fit whatever rows/cols you pick.
-                    </span>
+                    <span class="upload-card-hint">PNG with transparent windows</span>
                   </template>
                 </div>
-                <div class="preview-photo-actions">
-                  <button
-                    type="button"
-                    class="preview-photo-btn"
-                    @click="triggerPreviewPhotoInput()"
+
+                <label class="form-label">Thumbnail (selection preview)</label>
+                <div class="upload-cards-row">
+                  <div
+                    class="upload-card upload-card--thumb"
+                    :class="{
+                      'upload-card--filled': newTemplateThumbnailDefaultUrl,
+                    }"
+                    @click="triggerThumbnailDefaultInput()"
                   >
-                    {{ newTemplatePreviewPhotoUrl ? "Change" : "Upload a" }} sample
-                    photo to preview with
-                  </button>
-                  <button
-                    v-if="newTemplatePreviewPhotoUrl"
-                    type="button"
-                    class="preview-photo-btn preview-photo-btn--clear"
-                    @click="clearPreviewPhoto()"
+                    <input
+                      ref="thumbnailDefaultInputRef"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                      class="upload-card-input"
+                      @change="onThumbnailDefaultChange"
+                    />
+                    <template v-if="newTemplateThumbnailDefaultUrl">
+                      <img
+                        :src="newTemplateThumbnailDefaultUrl"
+                        alt="Default"
+                        class="upload-card-preview"
+                      />
+                      <button
+                        type="button"
+                        class="upload-card-remove"
+                        aria-label="Remove"
+                        @click.stop="clearThumbnailDefault"
+                      >
+                        ×
+                      </button>
+                    </template>
+                    <template v-else>
+                      <span class="upload-card-icon">+</span>
+                      <span class="upload-card-text">Default</span>
+                    </template>
+                  </div>
+                  <div
+                    class="upload-card upload-card--thumb"
+                    :class="{
+                      'upload-card--filled': newTemplateThumbnailActiveUrl,
+                    }"
+                    @click="triggerThumbnailActiveInput()"
                   >
-                    Use placeholder instead
-                  </button>
+                    <input
+                      ref="thumbnailActiveInputRef"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                      class="upload-card-input"
+                      @change="onThumbnailActiveChange"
+                    />
+                    <template v-if="newTemplateThumbnailActiveUrl">
+                      <img
+                        :src="newTemplateThumbnailActiveUrl"
+                        alt="Active"
+                        class="upload-card-preview"
+                      />
+                      <button
+                        type="button"
+                        class="upload-card-remove"
+                        aria-label="Remove"
+                        @click.stop="clearThumbnailActive"
+                      >
+                        ×
+                      </button>
+                    </template>
+                    <template v-else>
+                      <span class="upload-card-icon">+</span>
+                      <span class="upload-card-text">Active</span>
+                    </template>
+                  </div>
                 </div>
-                <input
-                  ref="previewPhotoInputRef"
-                  type="file"
-                  accept="image/*"
-                  class="upload-card-input"
-                  @change="onPreviewPhotoChange"
-                />
-
-                <label class="form-label">Live preview</label>
-                <p class="form-hint form-hint-block">
-                  Exactly what will print — same sheet size, grid, and
-                  cover-fit math as a real capture.
-                </p>
-                <canvas
-                  ref="templatePreviewCanvasRef"
-                  class="template-live-preview"
-                ></canvas>
               </div>
-            </div>
 
-            <label class="form-label">Thumbnail (selection preview)</label>
-            <p class="form-hint form-hint-block">
-              Shown in template picker. Default = unselected, Active = selected.
-            </p>
-            <div class="upload-cards-row">
-              <div
-                class="upload-card upload-card--thumb"
-                :class="{
-                  'upload-card--filled': newTemplateThumbnailDefaultUrl,
-                }"
-                @click="triggerThumbnailDefaultInput()"
-              >
-                <input
-                  ref="thumbnailDefaultInputRef"
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                  class="upload-card-input"
-                  @change="onThumbnailDefaultChange"
+              <div class="add-template-col add-template-col--preview">
+                <TemplateLayoutEditor
+                  :key="addTemplateEditId || 'new-template'"
+                  v-model="newTemplateCells"
+                  :photo-count="shotPlan.shots"
+                  :frame-image-url="newTemplateFrameImageUrl || undefined"
+                  :paper-size="newTemplatePaperSize"
+                  :frame-rows="newTemplateFrameRows"
+                  :frame-cols="newTemplateFrameCols"
+                  :layout-name="newTemplateName"
+                  :cell-margin="newTemplateCellMargin"
+                  :cell-gap="newTemplateCellGap"
+                  :cell-zoom="newTemplateCellZoom"
+                  :cell-offset-x="newTemplateOffsetX"
+                  :cell-offset-y="newTemplateOffsetY"
+                  :fit-mode="newTemplateFitMode"
+                  embedded
+                  @update:frame-image-url="(url) => { newTemplateFrameImageUrl = url; }"
+                  @update:paper-size="(size) => { newTemplatePaperSize = size; }"
+                  @update:photo-count="(n) => { newTemplateShots = n; }"
+                  @update:layout-name="(n) => { if (n) newTemplateName = n; }"
                 />
-                <template v-if="newTemplateThumbnailDefaultUrl">
-                  <img
-                    :src="newTemplateThumbnailDefaultUrl"
-                    alt="Default"
-                    class="upload-card-preview"
-                  />
-                  <button
-                    type="button"
-                    class="upload-card-remove"
-                    aria-label="Remove"
-                    @click.stop="clearThumbnailDefault"
-                  >
-                    ×
-                  </button>
-                </template>
-                <template v-else>
-                  <span class="upload-card-icon">+</span>
-                  <span class="upload-card-text">Default</span>
-                </template>
               </div>
-              <div
-                class="upload-card upload-card--thumb"
-                :class="{
-                  'upload-card--filled': newTemplateThumbnailActiveUrl,
-                }"
-                @click="triggerThumbnailActiveInput()"
-              >
-                <input
-                  ref="thumbnailActiveInputRef"
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                  class="upload-card-input"
-                  @change="onThumbnailActiveChange"
-                />
-                <template v-if="newTemplateThumbnailActiveUrl">
-                  <img
-                    :src="newTemplateThumbnailActiveUrl"
-                    alt="Active"
-                    class="upload-card-preview"
-                  />
-                  <button
-                    type="button"
-                    class="upload-card-remove"
-                    aria-label="Remove"
-                    @click.stop="clearThumbnailActive"
-                  >
-                    ×
-                  </button>
-                </template>
-                <template v-else>
-                  <span class="upload-card-icon">+</span>
-                  <span class="upload-card-text">Active</span>
-                </template>
               </div>
             </div>
           </form>
@@ -3626,7 +3895,7 @@ function submitEditTemplateDetails() {
               Cancel
             </button>
             <button type="submit" form="add-template-form" class="btn btn-primary">
-              Add template
+              {{ addTemplateEditId ? "Save template" : "Add template" }}
             </button>
           </div>
         </div>
@@ -3657,17 +3926,8 @@ function submitEditTemplateDetails() {
               @click="handleEditNameClick"
               @touchstart="handleEditNameClick"
               @focus="handleEditNameClick"
-              @blur="handleEditNameBlur"
               @keydown="handleEditNameKeyDown"
             />
-            <div v-if="showEditNameKeyboard" class="keyboard-wrapper">
-              <OnScreenKeyboard
-                :model-value="editTemplateName"
-                input-type="text"
-                @update:model-value="updateEditTemplateName"
-                @enter="submitEditTemplateDetails"
-              />
-            </div>
           </div>
         </div>
 
@@ -3715,6 +3975,31 @@ function submitEditTemplateDetails() {
           shots on a 12-cell sheet prints 3 copies).
         </p>
 
+        <div class="edit-template-manage">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            @click="toggleEditingTemplateActive"
+          >
+            {{ editingTemplateIsActive ? "Set inactive" : "Set active" }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary"
+            @click="openEditLayoutFromDetails"
+          >
+            Edit layout…
+          </button>
+          <button
+            v-if="editingTemplate && !store.isBuiltinTemplate(editingTemplate.id)"
+            type="button"
+            class="btn btn-danger"
+            @click="deleteEditingTemplate"
+          >
+            Delete template
+          </button>
+        </div>
+
         <div class="modal-actions">
           <button
             type="button"
@@ -3728,50 +4013,31 @@ function submitEditTemplateDetails() {
       </form>
     </AdminFormModal>
 
-    <!-- Photo-slot layout editor. Positions where each capture lands on
-         the sheet by direct manipulation, replacing the zoom/offset
-         sliders for templates whose artwork needs exact placement. -->
     <AdminFormModal
-      :open="!!layoutEditorTemplate"
-      :title="`Photo layout — ${layoutEditorTemplate?.name ?? ''}`"
+      v-model:open="showNameKeyboardDialog"
+      title="Template name"
+      description="Type with the on-screen keys, then Done."
       size="large"
       nested
-      @update:open="(open) => { if (!open) closeLayoutEditor(); }"
-      @close="closeLayoutEditor"
     >
-      <div v-if="layoutEditorTemplate" class="layout-editor-modal">
-        <TemplateLayoutEditor
-          v-model="layoutEditorCells"
-          :photo-count="layoutEditorTemplate.photoCount"
-          :frame-image-url="layoutEditorTemplate.frameImageUrl"
-          :paper-size="layoutEditorTemplate.paperSize"
-          :frame-rows="layoutEditorTemplate.frameRows"
-          :frame-cols="layoutEditorTemplate.frameCols"
-          :layout-name="layoutEditorTemplate.name"
-          @import-meta="onLayoutImportMeta"
+      <form class="name-keyboard-dialog" @submit.prevent="closeNameKeyboardDialog">
+        <input
+          :value="keyboardDialogValue"
+          type="text"
+          class="form-input"
+          placeholder="e.g. My Strip 5"
+          @input="updateKeyboardDialogValue(($event.target as HTMLInputElement).value)"
         />
-
+        <OnScreenKeyboard
+          :model-value="keyboardDialogValue"
+          input-type="text"
+          @update:model-value="updateKeyboardDialogValue"
+          @enter="closeNameKeyboardDialog"
+        />
         <div class="modal-actions">
-          <button
-            v-if="layoutEditorTemplate.cells?.length"
-            type="button"
-            class="btn btn-secondary"
-            @click="clearLayoutEditor"
-          >
-            Use automatic placement
-          </button>
-          <button
-            type="button"
-            class="btn btn-secondary"
-            @click="closeLayoutEditor"
-          >
-            Cancel
-          </button>
-          <button type="button" class="btn btn-primary" @click="saveLayoutEditor">
-            Save layout
-          </button>
+          <button type="submit" class="btn btn-primary">Done</button>
         </div>
-      </div>
+      </form>
     </AdminFormModal>
   </div>
 </template>
@@ -3828,6 +4094,66 @@ function submitEditTemplateDetails() {
   .fonts-uploads {
     grid-template-columns: 1fr;
   }
+}
+
+.font-library {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 1rem;
+}
+
+.font-library__hint {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  color: var(--color-brown);
+}
+
+.font-library__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.font-library__item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  background: var(--color-cream);
+  border: 1px solid var(--color-brown-light);
+  border-radius: 8px;
+}
+
+.font-library__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-brown-dark);
+}
+
+.font-library__add {
+  align-self: flex-start;
+  padding: 0.4rem 0.75rem;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-brown-dark);
+  background: var(--color-cream);
+  border: 2px solid var(--color-brown-light);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.font-library__add:hover {
+  border-color: var(--color-brown);
 }
 
 @media (max-width: 1100px) {
@@ -4870,6 +5196,35 @@ function submitEditTemplateDetails() {
   color: var(--color-brown);
 }
 
+.add-template-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.template-import-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.template-import-btn {
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-brown-dark);
+  background: var(--color-cream);
+  border: 2px solid var(--color-brown-light);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.template-import-btn:hover {
+  border-color: var(--color-brown);
+}
+
 .add-icon {
   font-size: 2.5rem;
   font-weight: 300;
@@ -4891,7 +5246,7 @@ function submitEditTemplateDetails() {
   align-items: center;
   justify-content: center;
   z-index: 100;
-  padding: 2rem;
+  padding: 0.6rem;
 }
 
 .modal {
@@ -4915,9 +5270,10 @@ function submitEditTemplateDetails() {
  * moves from the shared `.modal` rule (padding: 1.5rem) onto the
  * header/form/footer individually so each can control its own edges. */
 .add-template-modal {
-  width: 96vw;
-  max-width: 96vw;
-  max-height: 92vh;
+  width: 98vw;
+  max-width: 98vw;
+  height: 96vh;
+  max-height: 96vh;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -4935,26 +5291,27 @@ function submitEditTemplateDetails() {
 .add-template-modal__header {
   flex-shrink: 0;
   margin: 0;
-  padding: 1.5rem 1.5rem 1rem;
+  padding: 0.85rem 1.25rem 0.7rem;
   border-bottom: 2px solid var(--color-brown-light);
   background: var(--color-cream);
+  font-size: 1.35rem;
 }
 
 .add-template-form {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 0.65rem;
   width: 100%;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 1.25rem 1.5rem;
+  padding: 0.85rem 1.25rem;
 }
 
 .add-template-modal__footer {
   flex-shrink: 0;
   margin: 0;
-  padding: 1rem 1.5rem;
+  padding: 0.7rem 1.25rem;
   border-top: 2px solid var(--color-brown-light);
   background: var(--color-cream);
 }
@@ -4979,6 +5336,26 @@ function submitEditTemplateDetails() {
 .form-row--layout-and-number .form-row-field {
   flex: 1 1 0;
   min-width: 100px;
+}
+
+.form-row-field--grow {
+  flex: 1.4 1 160px;
+}
+
+.form-row-field--price {
+  flex: 0.55 1 88px;
+}
+
+.grid-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.grid-heading__status {
+  margin: 0;
 }
 
 .form-label {
@@ -5048,6 +5425,16 @@ function submitEditTemplateDetails() {
   display: block;
 }
 
+.name-keyboard-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.name-keyboard-dialog .form-input {
+  font-size: 1.15rem;
+}
+
 .form-hint {
   font-family: var(--font-body);
   font-size: 0.85rem;
@@ -5073,29 +5460,48 @@ function submitEditTemplateDetails() {
  * grows WIDE rather than TALL and fits on screen without clipping. */
 .add-template-columns {
   display: flex;
-  gap: 2rem;
-  align-items: flex-start;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.add-template-visual {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.4fr);
+  gap: 1.25rem;
+  align-items: stretch;
+  min-height: 52vh;
 }
 
 .add-template-col {
-  flex: 1 1 380px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
-.add-template-col--left {
-  /* Text/number fields don't need to stretch just because the modal
-   * is now full-width — cap it and let the right column (frame +
-   * live preview) absorb the extra space instead. */
-  flex: 0 1 480px;
-  max-width: 480px;
+.add-template-col--media .upload-card--frame {
+  min-height: 180px;
+  flex: 1 1 auto;
 }
 
-.add-template-col--right {
-  flex: 1 1 420px;
+.add-template-col--media .upload-card-preview {
+  max-height: 220px;
+}
+
+.add-template-col--preview {
+  min-height: 0;
+}
+
+.add-template-col--preview .layout-editor {
+  min-height: 52vh;
+}
+
+.preview-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .frame-layout-field--wide {
@@ -5114,16 +5520,52 @@ function submitEditTemplateDetails() {
 
 .template-live-preview {
   width: 100%;
-  /* Bumped up from 320px now that the modal is nearly full-width — the
-   * right column has real room to give, and a bigger preview makes
-   * alignment easier to judge. */
-  max-width: 520px;
-  height: auto;
+  max-width: none;
+  max-height: none;
+  height: min(64vh, 780px);
+  object-fit: contain;
+  margin: 0;
   border: 2px solid var(--color-brown-light);
   border-radius: 8px;
   background:
     repeating-conic-gradient(#e9e2d2 0% 25%, #f7f2e6 0% 50%) 50% / 16px 16px;
   display: block;
+}
+
+.add-template-form .form-input,
+.add-template-form .form-select {
+  padding: 0.38rem 0.6rem;
+  font-size: 0.95rem;
+}
+
+.add-template-form .form-label {
+  font-size: 0.88rem;
+}
+
+.add-template-form .upload-card--thumb {
+  min-height: 88px;
+  padding: 0.5rem;
+}
+
+.add-template-form .upload-card-text {
+  font-size: 0.9rem;
+}
+
+.add-template-form .upload-card-hint {
+  font-size: 0.72rem;
+  text-align: center;
+  max-width: 28ch;
+}
+
+.add-template-form .upload-cards-row {
+  gap: 0.5rem;
+}
+
+@media (max-width: 900px) {
+  .add-template-visual {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
 }
 
 .preview-photo-btn {
@@ -5161,23 +5603,24 @@ function submitEditTemplateDetails() {
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-bottom: 0.5rem;
+  gap: 0.5rem 0.65rem;
+  margin-bottom: 0;
 }
 
 .frame-layout-field {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  flex: 1 1 100px;
-  min-width: 90px;
+  gap: 0.2rem;
+  flex: 1 1 88px;
+  min-width: 84px;
 }
 
 .cell-preview {
   color: var(--color-brown);
   background: var(--color-cream-dark);
   border-radius: 8px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.35rem 0.65rem;
+  margin: 0;
 }
 
 .cell-preview--warn {
@@ -5187,13 +5630,13 @@ function submitEditTemplateDetails() {
 
 .upload-card {
   position: relative;
-  min-height: 120px;
+  min-height: 72px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.35rem;
-  padding: 1rem;
+  gap: 0.2rem;
+  padding: 0.55rem 0.75rem;
   background: var(--color-cream);
   border: 2px dashed var(--color-brown-light);
   border-radius: 10px;
@@ -5211,7 +5654,7 @@ function submitEditTemplateDetails() {
   border-style: solid;
   border-color: var(--color-brown-light);
   color: var(--color-brown-dark);
-  min-height: 100px;
+  min-height: 72px;
 }
 
 .upload-card--filled:hover {
@@ -5234,15 +5677,15 @@ function submitEditTemplateDetails() {
 .upload-card-preview {
   width: 100%;
   height: 100%;
-  min-height: 80px;
-  max-height: 140px;
+  min-height: 56px;
+  max-height: 88px;
   object-fit: contain;
   display: block;
   border-radius: 6px;
 }
 
 .upload-card--thumb .upload-card-preview {
-  max-height: 90px;
+  max-height: 64px;
 }
 
 .upload-card-remove {
@@ -5344,6 +5787,35 @@ function submitEditTemplateDetails() {
 .modal-actions .btn-secondary:hover {
   background: var(--color-brown-light);
   color: var(--color-cream);
+}
+
+.edit-template-manage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin: 0.25rem 0 0.25rem;
+}
+
+.edit-template-manage .btn {
+  padding: 0.45rem 0.9rem;
+  font-size: 0.9rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 2px solid var(--color-brown-light);
+}
+
+.edit-template-manage .btn-danger {
+  background: transparent;
+  color: #8a3a2a;
+  border-color: #c9897a;
+}
+
+.edit-template-manage .btn-danger:hover {
+  background: #8a3a2a;
+  color: var(--color-cream);
+  border-color: #8a3a2a;
 }
 
 /* Printer settings */

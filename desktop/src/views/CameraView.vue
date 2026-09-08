@@ -11,10 +11,10 @@ import {
   BW_MATRIX,
   FUJIFILM_MATRIX,
   SEPIA_MATRIX,
+  applyFilmGrainToImageData,
   buildAdjustmentTable,
   buildCubePreview,
   glowPreviewSvg,
-  grainCaptureIntensity,
   grainPreviewOpacity,
   saturationPreviewAmount,
   vignettePreviewStyle,
@@ -658,6 +658,7 @@ function applyHighlightLook(ctx: CanvasRenderingContext2D) {
           }
         : null,
     adjustments: f ? store.resolvedAdjustments(f) : null,
+    lrSpatial: f?.lrSpatial,
   });
 }
 
@@ -1000,15 +1001,9 @@ async function capturePhotoInner(hadLiveView: boolean) {
           );
         }
 
-        function applyGrain(intensity = 34) {
+        function applyGrain(amount: number, size = 25, freq = 50) {
           const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
-          const data = imageData.data;
-          for (let i = 0; i < data.length; i += 4) {
-            const noise = (Math.random() - 0.5) * intensity;
-            data[i] = Math.min(255, Math.max(0, data[i] + noise));
-            data[i + 1] = Math.min(255, Math.max(0, data[i + 1] + noise));
-            data[i + 2] = Math.min(255, Math.max(0, data[i + 2] + noise));
-          }
+          applyFilmGrainToImageData(imageData, amount, size, freq);
           ctx!.putImageData(imageData, 0, 0);
         }
 
@@ -1035,13 +1030,18 @@ async function capturePhotoInner(hadLiveView: boolean) {
                 }
               : null,
           adjustments: filter ? store.resolvedAdjustments(filter) : null,
+          lrSpatial: filter?.lrSpatial,
         });
 
         if (filter) {
           const adj = store.resolvedAdjustments(filter);
           if (adj.grain > 0) {
             console.log("[Camera] Applying film grain", adj.grain);
-            applyGrain(grainCaptureIntensity(adj.grain));
+            applyGrain(
+              adj.grain,
+              filter.lrSpatial?.grainSize ?? 25,
+              filter.lrSpatial?.grainFreq ?? 50,
+            );
           }
         }
 

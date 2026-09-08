@@ -10,6 +10,11 @@ import {
   applyAdjustmentsToImageData,
   type FilterAdjustments,
 } from "./filterPreview";
+import {
+  applyLightroomDetailToImageData,
+  applyLightroomLensToImageData,
+  type LrSpatialLook,
+} from "./lightroomSpatial";
 
 export type LookOverlay = {
   color: string;
@@ -30,6 +35,7 @@ export type CaptureLook = {
   overlay: LookOverlay | null;
   media?: LookMedia | null;
   adjustments: FilterAdjustments | null;
+  lrSpatial?: LrSpatialLook | null;
 };
 
 function applyPixelFilter(imageData: ImageData, type: string): void {
@@ -130,8 +136,10 @@ export function applyCaptureLook(
   const tone =
     effect === "sepia" || effect === "bw" || effect === "fujifilm";
   const cube = effect === "cube" && look.lut;
-  if (tone || cube) {
+  const spatial = look.lrSpatial;
+  if (tone || cube || spatial) {
     const imageData = ctx.getImageData(0, 0, w, h);
+    applyLightroomLensToImageData(imageData, spatial);
     if (tone) {
       applyPixelFilter(imageData, effect);
     } else if (look.lut) {
@@ -140,6 +148,7 @@ export function applyCaptureLook(
       }
       applyLutToImageData(imageData, look.lut);
     }
+    applyLightroomDetailToImageData(imageData, spatial);
     ctx.putImageData(imageData, 0, 0);
   }
 
@@ -165,7 +174,17 @@ export function applyCaptureLook(
 
   if (look.adjustments) {
     const adjusted = ctx.getImageData(0, 0, w, h);
-    applyAdjustmentsToImageData(adjusted, look.adjustments);
+    applyAdjustmentsToImageData(
+      adjusted,
+      look.adjustments,
+      spatial
+        ? {
+            midpoint: spatial.vignetteMidpoint,
+            feather: spatial.vignetteFeather,
+            roundness: spatial.vignetteRoundness,
+          }
+        : null,
+    );
     ctx.putImageData(adjusted, 0, 0);
   }
 }

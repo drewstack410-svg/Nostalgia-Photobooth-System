@@ -393,6 +393,12 @@ onUnmounted(() => {
 
 .kiosk-laid-out .template-content {
   flex: none;
+  display: flex;
+  min-height: 0;
+}
+
+.kiosk-laid-out .template-carousel {
+  flex: 1;
 }
 
 .template-screen--empty {
@@ -498,10 +504,12 @@ onUnmounted(() => {
 
 .template-carousel {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
-  gap: 2rem;
+  gap: 1.5rem;
   width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 
 .template-carousel.single-template {
@@ -512,13 +520,22 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
+  min-width: 0;
+  min-height: 0;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: opacity 0.3s ease;
+}
+
+.template-preview :deep(.template-preview-root) {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .template-side {
+  width: 18%;
+  height: 72%;
+  align-self: center;
   opacity: 0.5;
-  transform: scale(0.8);
 }
 
 .template-side:hover {
@@ -526,7 +543,16 @@ onUnmounted(() => {
 }
 
 .template-center {
-  transform: scale(1);
+  flex: 1 1 44%;
+  width: 42%;
+  max-width: 48%;
+  height: 100%;
+}
+
+.template-carousel.single-template .template-center {
+  width: min(48%, 520px);
+  max-width: 520px;
+  flex: 0 1 auto;
 }
 
 .template-name {
@@ -534,8 +560,9 @@ onUnmounted(() => {
   font-size: 1rem;
   font-style: italic;
   color: var(--color-brown-light);
-  margin-top: 1rem;
+  margin-top: 0.75rem;
   text-align: center;
+  flex-shrink: 0;
 }
 
 .template-name-center {
@@ -543,13 +570,15 @@ onUnmounted(() => {
   font-size: 1.5rem;
   font-weight: 700;
   color: var(--color-brown-dark);
-  margin-top: 1.5rem;
+  margin-top: 0.85rem;
   text-align: center;
+  flex-shrink: 0;
 }
 
 /* Navigation Arrows */
 .nav-arrow {
   flex-shrink: 0;
+  align-self: center;
   min-width: 50px;
   min-height: 50px;
   width: 50px;

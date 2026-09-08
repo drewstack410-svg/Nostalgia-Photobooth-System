@@ -227,9 +227,16 @@ export function buildAdjustmentLut(adj: FilterAdjustments): Uint8Array | null {
   return lut;
 }
 
+export type VignetteShape = {
+  midpoint?: number;
+  feather?: number;
+  roundness?: number;
+};
+
 export function applyAdjustmentsToImageData(
   imageData: ImageData,
   adj: FilterAdjustments,
+  vignetteShape?: VignetteShape | null,
 ): void {
   const lut = buildAdjustmentLut(adj);
   if (lut) {
@@ -242,7 +249,7 @@ export function applyAdjustmentsToImageData(
   }
   applySaturationToImageData(imageData, adj.saturation);
   applyGlowToImageData(imageData, adj.glow);
-  applyVignetteToImageData(imageData, adj.vignette);
+  applyVignetteToImageData(imageData, adj.vignette, vignetteShape);
 }
 
 /** feColorMatrix saturate value, or null when unchanged. */
@@ -267,12 +274,13 @@ function applySaturationToImageData(imageData: ImageData, saturation: number): v
 }
 
 /**
- * Darkens (+) or lightens (−) toward the corners. Inner ~35% of the
- * frame stays untouched; falloff is quadratic so faces stay clean.
+ * Darkens (+) or lightens (−) toward the corners.
+ * Optional midpoint / feather / roundness match Lightroom Post-Crop Vignette.
  */
 export function applyVignetteToImageData(
   imageData: ImageData,
   vignette: number,
+  shape?: VignetteShape | null,
 ): void {
   const signed = Math.max(-100, Math.min(100, vignette)) / 100;
   if (!signed) return;
@@ -282,14 +290,37 @@ export function applyVignetteToImageData(
   const cx = (w - 1) / 2;
   const cy = (h - 1) / 2;
   const maxDist = Math.hypot(cx, cy) || 1;
-  const inner = 0.35;
-  const span = 1 - inner;
-  const strength = Math.abs(signed) * 0.72;
+  const hasShape = !!(
+    shape &&
+    (shape.midpoint != null ||
+      shape.feather != null ||
+      shape.roundness != null)
+  );
+  const mid = shape?.midpoint ?? 50;
+  const feather = shape?.feather ?? 50;
+  const roundness = shape?.roundness ?? 0;
+  const inner = hasShape
+    ? Math.max(0.04, Math.min(0.9, (mid / 100) * 0.82))
+    : 0.35;
+  const featherT = Math.max(0.08, Math.min(1, 0.2 + (feather / 100) * 0.95));
+  const span = hasShape
+    ? Math.max(0.08, (1 - inner) * featherT)
+    : 1 - inner;
+  const roundT = hasShape ? Math.max(-1, Math.min(1, roundness / 100)) : 0;
+  const strength = Math.abs(signed) * (hasShape ? 0.78 : 0.72);
   const darken = signed > 0;
   for (let y = 0; y < h; y++) {
-    const dy = (y - cy) / maxDist;
+    const ny = (y - cy) / maxDist;
     for (let x = 0; x < w; x++) {
-      const d = Math.hypot((x - cx) / maxDist, dy);
+      const nx = (x - cx) / maxDist;
+      const circ = Math.hypot(nx, ny);
+      const box = Math.max(Math.abs(nx), Math.abs(ny));
+      const d =
+        roundT === 0
+          ? circ
+          : roundT >= 0
+            ? circ * (1 - roundT) + box * roundT
+            : circ * (1 + roundT) + box * -roundT;
       let t = (d - inner) / span;
       if (t <= 0) continue;
       if (t > 1) t = 1;
@@ -408,8 +439,43 @@ export function applyGlowToImageData(imageData: ImageData, glow: number): void {
   imageData.data.set(fullCtx.getImageData(0, 0, w, h).data);
 }
 
-export function grainCaptureIntensity(grain: number): number {
-  return Math.max(0, Math.min(34, (grain / 100) * 34));
+export function grainCaptureIntensity(grain: number, size = 25): number {
+  return Math.max(0, Math.min(42, (grain / 100) * (20 + size * 0.4)));
+}
+
+export function applyFilmGrainToImageData(
+  imageData: ImageData,
+  grain: number,
+  size = 25,
+  freq = 50,
+): void {
+  if (grain <= 0) return;
+  const intensity = grainCaptureIntensity(grain, size);
+  const data = imageData.data;
+  const w = imageData.width;
+  const h = imageData.height;
+  const cell = Math.max(
+    1,
+    Math.round(1 + ((100 - Math.max(0, Math.min(100, freq))) / 100) * 4),
+  );
+  const cache: number[] = [];
+  const cols = Math.ceil(w / cell) + 1;
+  for (let y = 0; y < h; y++) {
+    const gy = Math.floor(y / cell);
+    for (let x = 0; x < w; x++) {
+      const gx = Math.floor(x / cell);
+      const key = gy * cols + gx;
+      let noise = cache[key];
+      if (noise === undefined) {
+        noise = (Math.random() - 0.5) * intensity;
+        cache[key] = noise;
+      }
+      const i = (y * w + x) * 4;
+      data[i] = Math.min(255, Math.max(0, data[i]! + noise));
+      data[i + 1] = Math.min(255, Math.max(0, data[i + 1]! + noise));
+      data[i + 2] = Math.min(255, Math.max(0, data[i + 2]! + noise));
+    }
+  }
 }
 
 /** Live-preview overlay opacity from a 0–100 slider. */

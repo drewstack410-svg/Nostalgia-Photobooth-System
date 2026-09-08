@@ -35,8 +35,14 @@ import {
   type KioskButtonStyle,
   type KioskScreenId,
 } from "@/utils/kioskLayout";
+import FontFamilyPicker from "@/components/FontFamilyPicker.vue";
+import {
+  FONT_FILE_ACCEPT,
+  isFontFile,
+  cssFontFamilyForImported,
+} from "@/utils/customFonts";
 
-const TEXT_FONTS = [
+const BUILTIN_TEXT_FONTS = [
   { label: "Display", value: "var(--font-display)" },
   { label: "Body", value: "var(--font-body)" },
   { label: "Playfair Display", value: '"Playfair Display", Georgia, serif' },
@@ -291,6 +297,70 @@ function resetLayout() {
 
 const assetInputRef = ref<HTMLInputElement | null>(null);
 const videoAssetInputRef = ref<HTMLInputElement | null>(null);
+const fontInputRef = ref<HTMLInputElement | null>(null);
+const fontImportError = ref("");
+
+const fontGroups = computed(() => {
+  const groups: { label: string; fonts: { label: string; value: string }[] }[] =
+    [
+      { label: "Theme", fonts: BUILTIN_TEXT_FONTS.slice(0, 2) },
+    ];
+  if (store.importedFonts.length) {
+    groups.push({
+      label: "Imported",
+      fonts: store.importedFonts.map((font) => ({
+        label: font.family,
+        value: cssFontFamilyForImported(font.family),
+      })),
+    });
+  }
+  groups.push({ label: "Built-in", fonts: BUILTIN_TEXT_FONTS.slice(2) });
+  return groups;
+});
+
+function applyFontFamily(value: string) {
+  if (selectedText.value) {
+    patchSelectedText({ fontFamily: value });
+    return;
+  }
+  if (selectedKioskButton.value && !selectedKioskButton.value.imageSrc) {
+    patchKioskButton({ fontFamily: value });
+    return;
+  }
+  if (
+    isWelcome.value &&
+    selectedLayer.value === "start" &&
+    !store.customStartButtonUrl
+  ) {
+    patchStartButton({ fontFamily: value });
+  }
+}
+
+function triggerFontImport() {
+  fontImportError.value = "";
+  fontInputRef.value?.click();
+}
+
+async function onFontInput(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file || !isFontFile(file)) return;
+  checkpoint();
+  const dataUrl = await readFileDataUrl(file);
+  const font = store.addImportedFont(file.name, dataUrl);
+  if (!font) {
+    fontImportError.value =
+      "Could not save this font. It may be too large for local storage.";
+    return;
+  }
+  applyFontFamily(cssFontFamilyForImported(font.family));
+}
+
+function removeImportedFont(id: string) {
+  checkpoint();
+  store.removeImportedFont(id);
+}
 
 function boxFromNatural(natW: number, natH: number): WelcomeBox {
   const w = 0.3;
@@ -1416,6 +1486,13 @@ const screenDirty = computed(() => layoutDirty());
             class="upload-card-input"
             @change="onAssetInput"
           />
+          <input
+            ref="fontInputRef"
+            type="file"
+            :accept="FONT_FILE_ACCEPT"
+            class="upload-card-input"
+            @change="onFontInput"
+          />
           <button
             type="button"
             class="screen-icon-btn"
@@ -1482,6 +1559,29 @@ const screenDirty = computed(() => layoutDirty());
                 stroke-width="2"
                 stroke-linecap="round"
                 stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="screen-icon-btn"
+            title="Import font"
+            aria-label="Import font"
+            @click="triggerFontImport"
+          >
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M5 19h14M8 8l4-4 4 4M12 4v11"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M6 14.5V16h12v-1.5"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
               />
             </svg>
           </button>
@@ -1630,6 +1730,9 @@ const screenDirty = computed(() => layoutDirty());
 
         <aside class="inspector">
           <h3 class="inspector__title">{{ inspectorTitle }}</h3>
+          <p v-if="fontImportError" class="inspector__error">
+            {{ fontImportError }}
+          </p>
 
           <template v-if="selectedLayer === 'background'">
             <div
@@ -1924,24 +2027,15 @@ const screenDirty = computed(() => layoutDirty());
                 replace it with editable text.
               </p>
               <label class="form-label">Font</label>
-              <select
-                class="text-select"
-                :value="store.startButtonStyle.fontFamily"
-                @pointerdown="checkpoint"
-                @change="
-                  patchStartButton({
-                    fontFamily: ($event.target as HTMLSelectElement).value,
-                  })
-                "
-              >
-                <option
-                  v-for="font in TEXT_FONTS"
-                  :key="font.value"
-                  :value="font.value"
-                >
-                  {{ font.label }}
-                </option>
-              </select>
+              <FontFamilyPicker
+                :model-value="store.startButtonStyle.fontFamily"
+                :groups="fontGroups"
+                :imported="store.importedFonts"
+                @checkpoint="checkpoint"
+                @update:model-value="patchStartButton({ fontFamily: $event })"
+                @import="triggerFontImport"
+                @remove="removeImportedFont"
+              />
               <div class="text-row">
                 <label class="text-field">
                   <span class="form-label">Type size</span>
@@ -2218,24 +2312,15 @@ const screenDirty = computed(() => layoutDirty());
                 "
               />
               <label class="form-label">Font</label>
-              <select
-                class="text-select"
-                :value="selectedKioskButton.fontFamily"
-                @pointerdown="checkpoint"
-                @change="
-                  patchKioskButton({
-                    fontFamily: ($event.target as HTMLSelectElement).value,
-                  })
-                "
-              >
-                <option
-                  v-for="font in TEXT_FONTS"
-                  :key="font.value"
-                  :value="font.value"
-                >
-                  {{ font.label }}
-                </option>
-              </select>
+              <FontFamilyPicker
+                :model-value="selectedKioskButton.fontFamily"
+                :groups="fontGroups"
+                :imported="store.importedFonts"
+                @checkpoint="checkpoint"
+                @update:model-value="patchKioskButton({ fontFamily: $event })"
+                @import="triggerFontImport"
+                @remove="removeImportedFont"
+              />
               <div class="text-row">
                 <label class="text-field">
                   <span class="form-label">Type size</span>
@@ -2466,8 +2551,9 @@ const screenDirty = computed(() => layoutDirty());
           <template v-else-if="selectedKioskItem()?.kind === 'widget'">
             <p class="inspector__hint">
               This is a working part of the screen (carousel, camera, QR frame,
-              and so on). You can move and resize it. Extra images and text
-              can be added on top from the toolbar.
+              and so on). Drag a corner to resize — the preview inside grows
+              with the box. Extra images and text can be added on top from
+              the toolbar.
             </p>
           </template>
 
@@ -2486,25 +2572,15 @@ const screenDirty = computed(() => layoutDirty());
               "
             />
             <label class="form-label">Font</label>
-            <select
-              class="text-select"
-              :value="selectedText.fontFamily"
-              @pointerdown="checkpoint"
-              @change="
-                patchSelectedText({
-                  fontFamily: ($event.target as HTMLSelectElement).value,
-                })
-              "
-            >
-              <option
-                v-for="font in TEXT_FONTS"
-                :key="font.value"
-                :value="font.value"
-                :style="{ fontFamily: font.value }"
-              >
-                {{ font.label }}
-              </option>
-            </select>
+            <FontFamilyPicker
+              :model-value="selectedText.fontFamily"
+              :groups="fontGroups"
+              :imported="store.importedFonts"
+              @checkpoint="checkpoint"
+              @update:model-value="patchSelectedText({ fontFamily: $event })"
+              @import="triggerFontImport"
+              @remove="removeImportedFont"
+            />
             <div class="text-row">
               <label class="text-field">
                 <span class="form-label">Size</span>
@@ -3335,6 +3411,13 @@ const screenDirty = computed(() => layoutDirty());
   font-family: var(--font-body);
   font-size: 0.8rem;
   color: var(--color-brown);
+  margin: 0;
+}
+
+.inspector__error {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  color: #b23b3b;
   margin: 0;
 }
 

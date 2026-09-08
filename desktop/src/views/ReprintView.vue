@@ -173,9 +173,16 @@ onMounted(() => {
 
 .reprint-preview {
   flex-shrink: 0;
+  width: min(36vw, 420px);
+  height: min(68vh, 640px);
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.reprint-preview :deep(.template-preview-root) {
+  width: 100%;
+  height: 100%;
 }
 
 /* Gold Reprint button — appearance from shared .wood-btn; layout here. */

@@ -124,6 +124,10 @@ export function getPaperSizePx(paperSize?: PaperSize): PaperSizeSpec {
   return PAPER_SIZES[paperSize ?? "4x6-landscape"] ?? PAPER_SIZES["4x6-landscape"];
 }
 
+export function isPaperSize(value: unknown): value is PaperSize {
+  return typeof value === "string" && value in PAPER_SIZES;
+}
+
 /**
  * Deprecated — kept so any old call sites still compile. New code
  * should consult the template's `paperSize` and call
@@ -168,16 +172,11 @@ export function occupancyFill(
   template: Pick<TemplateLayoutSpec, "cellZoom" | "fitMode" | "cells">,
   hasSlotRects: boolean,
 ): { zoom: number; fitMode: "cover" | "contain" } {
-  const hasEditorCells = (template.cells?.length ?? 0) > 0;
-  if (hasSlotRects || hasEditorCells) {
-    return {
-      zoom: Math.max(template.cellZoom ?? 1, 1),
-      fitMode: "cover",
-    };
-  }
+  const hasOccupancy =
+    hasSlotRects || (template.cells?.length ?? 0) > 0;
   return {
-    zoom: template.cellZoom ?? 1,
-    fitMode: template.fitMode ?? "contain",
+    zoom: Math.max(0.1, template.cellZoom ?? 1),
+    fitMode: template.fitMode ?? (hasOccupancy ? "cover" : "contain"),
   };
 }
 

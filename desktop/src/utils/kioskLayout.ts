@@ -319,7 +319,7 @@ export const KIOSK_SCREENS: KioskScreenDef[] = [
         id: "carousel",
         label: "Template carousel",
         kind: "widget",
-        box: { x: 0.06, y: 0.22, w: 0.88, h: 0.54 },
+        box: { x: 0.04, y: 0.16, w: 0.92, h: 0.64 },
       },
       {
         id: "backBtn",

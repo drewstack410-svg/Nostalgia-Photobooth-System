@@ -7,8 +7,8 @@
  * - Session: Selected template, captured photos, required/remaining count.
  * - Camera options: mirrorMode (preview/capture flip).
  * - Recent strips: Saved strips for title-screen film roll and reprint.
- * - Customize: Logo, title background (image/video), display/body fonts, camera filters.
- *   All persisted to localStorage.
+ * - Customize: Logo, title background (image/video), display/body fonts,
+ *   imported Screen Editor fonts, camera filters. All persisted to localStorage.
  *
  * Used by: TitleScreen, TemplateSelect, CameraView, PrintingView, AdminPanel,
  * SettingsView, useCustomFonts, App.vue, reprint/gallery flows.
@@ -66,9 +66,19 @@ import {
   type FilterAdjustments,
 } from "@/utils/filterPreview";
 import {
+  parseLrSpatial,
+  type LrSpatialLook,
+} from "@/utils/lightroomSpatial";
+import {
   normalizeQuicktimeToMp4,
   playbackMimeForOverlayVideo,
 } from "@/utils/quicktimeMp4";
+import {
+  cssFontFamilyForImported,
+  familyNameFromFileName,
+  parseImportedFonts,
+  type ImportedFont,
+} from "@/utils/customFonts";
 
 export { DEFAULT_ADJUSTMENTS };
 export type { FilterAdjustments };
@@ -421,6 +431,8 @@ export interface CameraFilter {
   grainEnabled?: boolean;
   /** Fine-tune sliders: grain, exposure, levels, contrast, shadows, vignette, saturation, glow. */
   adjustments?: FilterAdjustments;
+  /** Lightroom neighbourhood tools (texture, clarity, sharpen, NR, lens). */
+  lrSpatial?: LrSpatialLook;
 }
 
 // -----------------------------------------------------------------------------
@@ -445,6 +457,7 @@ const STORAGE_KEY_BG_URL = "nostalgia-title-bg-url";
 const STORAGE_KEY_FILTERS = "nostalgia-camera-filters";
 const STORAGE_KEY_DISPLAY_FONT = "nostalgia-custom-display-font";
 const STORAGE_KEY_BODY_FONT = "nostalgia-custom-body-font";
+const STORAGE_KEY_IMPORTED_FONTS = "nostalgia-imported-fonts";
 const STORAGE_KEY_CAMERA_FRAME_STYLE = "nostalgia-camera-frame-style";
 const STORAGE_KEY_CAMERA_FRAME_COLOR = "nostalgia-camera-frame-color";
 const STORAGE_KEY_CAMERA_FRAME_SVG = "nostalgia-camera-frame-svg";
@@ -1804,6 +1817,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   );
   const customDisplayFontUrl = ref<string | null>(null);
   const customBodyFontUrl = ref<string | null>(null);
+  const importedFonts = ref<ImportedFont[]>([]);
   const filters = ref<CameraFilter[]>([]);
   const cameraFrameStyle = ref<CameraFrameStyle>("wooden");
   const cameraFrameColor = ref<string>("#8B7355");
@@ -1861,7 +1875,12 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
             if (saved.adjustments) merged.adjustments = clampAdjustments(saved.adjustments);
             return merged;
           });
-          const custom = stored.filter((f) => !isDefaultFilter(f.id));
+          const custom = stored
+            .filter((f) => !isDefaultFilter(f.id))
+            .map((f) => {
+              const spatial = parseLrSpatial(f.lrSpatial);
+              return spatial ? { ...f, lrSpatial: spatial } : { ...f, lrSpatial: undefined };
+            });
           filters.value = [...mergedDefaults, ...custom];
         } catch {
           filters.value = [...DEFAULT_FILTERS];
@@ -1875,6 +1894,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       if (displayFont) customDisplayFontUrl.value = displayFont;
       const bodyFont = localStorage.getItem(STORAGE_KEY_BODY_FONT);
       if (bodyFont) customBodyFontUrl.value = bodyFont;
+      loadImportedFonts();
       const frameStyle = localStorage.getItem(STORAGE_KEY_CAMERA_FRAME_STYLE);
       if (
         frameStyle === "wooden" ||
@@ -2321,6 +2341,64 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     localStorage.removeItem(STORAGE_KEY_BODY_FONT);
   }
 
+  function loadImportedFonts() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_IMPORTED_FONTS);
+      if (!raw) return;
+      importedFonts.value = parseImportedFonts(JSON.parse(raw));
+    } catch {
+      importedFonts.value = [];
+    }
+  }
+
+  function saveImportedFonts(): boolean {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY_IMPORTED_FONTS,
+        JSON.stringify(importedFonts.value),
+      );
+      return true;
+    } catch (e) {
+      console.error("Failed to save imported fonts:", e);
+      return false;
+    }
+  }
+
+  function uniqueImportedFamily(base: string): string {
+    const taken = new Set(
+      importedFonts.value.map((f) => f.family.toLowerCase()),
+    );
+    if (!taken.has(base.toLowerCase())) return base;
+    let n = 2;
+    while (taken.has(`${base} ${n}`.toLowerCase())) n += 1;
+    return `${base} ${n}`;
+  }
+
+  function addImportedFont(fileName: string, dataUrl: string): ImportedFont | null {
+    const family = uniqueImportedFamily(familyNameFromFileName(fileName));
+    const font: ImportedFont = {
+      id: `font-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      family,
+      dataUrl,
+    };
+    const previous = importedFonts.value;
+    importedFonts.value = [...previous, font];
+    if (!saveImportedFonts()) {
+      importedFonts.value = previous;
+      return null;
+    }
+    return font;
+  }
+
+  function removeImportedFont(id: string) {
+    importedFonts.value = importedFonts.value.filter((f) => f.id !== id);
+    saveImportedFonts();
+  }
+
+  function importedFontCssValue(family: string): string {
+    return cssFontFamilyForImported(family);
+  }
+
   // ---- Filters ----
   function filterForStorage(f: CameraFilter): CameraFilter {
     if (!f.cubeData || isPackagedCubeRef(f.cubeData) || !f.cubeFile) {
@@ -2715,6 +2793,15 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     saveFilters();
   }
 
+  function setFilterLrSpatial(id: string, look: LrSpatialLook | null) {
+    const f = filters.value.find((x) => x.id === id);
+    if (!f) return;
+    const parsed = parseLrSpatial(look);
+    if (parsed) f.lrSpatial = parsed;
+    else delete f.lrSpatial;
+    saveFilters();
+  }
+
   // ---- Template actions ----
   /** Next ascending template number (template_1, template_2, ...). */
   function nextTemplateId(): string {
@@ -2812,6 +2899,59 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // The live session may already hold a stale copy of this template.
     if (selectedTemplate.value?.id === id) {
       const fresh = templates.value.find((t) => t.id === id);
+      if (fresh) selectedTemplate.value = fresh;
+    }
+  }
+
+  type TemplateLayoutPatch = Partial<
+    Pick<
+      Template,
+      | "name"
+      | "photoCount"
+      | "paperSize"
+      | "frameImageUrl"
+      | "cells"
+      | "layout"
+      | "frameRows"
+      | "frameCols"
+      | "fitMode"
+      | "cellMargin"
+      | "cellGap"
+      | "cellZoom"
+      | "cellOffsetX"
+      | "cellOffsetY"
+      | "thumbnailDefaultUrl"
+      | "thumbnailActiveUrl"
+    >
+  >;
+
+  /** Persist photo-layout edits (PNG overlay, paper, slots) in one write. */
+  async function updateTemplate(id: string, patch: TemplateLayoutPatch) {
+    if (isBuiltinTemplate(id)) {
+      const current = templates.value.find((t) => t.id === id);
+      if (!current) return;
+      const next = { ...builtinTemplateOverrides.value };
+      const existing = next[id] ?? {};
+      next[id] = {
+        ...existing,
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.photoCount !== undefined
+          ? { photoCount: patch.photoCount }
+          : {}),
+        ...(patch.cells !== undefined ? { cells: patch.cells } : {}),
+      };
+      builtinTemplateOverrides.value = next;
+      await saveBuiltinTemplateOverrides();
+    } else {
+      const idx = customTemplates.value.findIndex((t) => t.id === id);
+      if (idx === -1) return;
+      const t: Template = { ...customTemplates.value[idx], ...patch };
+      if (patch.name !== undefined) t.name = patch.name.trim() || t.name;
+      customTemplates.value[idx] = t;
+      await saveCustomTemplates();
+    }
+    if (selectedTemplate.value?.id === id) {
+      const fresh = templates.value.find((x) => x.id === id);
       if (fresh) selectedTemplate.value = fresh;
     }
   }
@@ -3172,6 +3312,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     hasLoadedPaymentBackground,
     customDisplayFontUrl,
     customBodyFontUrl,
+    importedFonts,
     filters,
     activeFilters,
     cameraFrameStyle,
@@ -3186,6 +3327,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // -----------------------------
     addTemplate,
     updateTemplateDetails,
+    updateTemplate,
     removeTemplate,
     setTemplateCells,
     toggleTemplateActive,
@@ -3304,6 +3446,9 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     clearCustomDisplayFont,
     setCustomBodyFont,
     clearCustomBodyFont,
+    addImportedFont,
+    removeImportedFont,
+    importedFontCssValue,
     addFilter,
     ensureFilterCubeData,
     loadFilterLuts,
@@ -3321,6 +3466,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     overlayMediaRuntime,
     DEFAULT_MEDIA_OVERLAY,
     setFilterAdjustments,
+    setFilterLrSpatial,
     resolvedAdjustments,
     filterGrainAmount,
     DEFAULT_OVERLAY,

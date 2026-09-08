@@ -182,6 +182,12 @@ function isTextLayer(id: string): boolean {
   );
 }
 
+function shouldLockAspect(id: string): boolean {
+  if (isTextLayer(id)) return false;
+  const kind = kioskItemDef(props.screenId, id)?.kind;
+  return kind !== "widget" && kind !== "button";
+}
+
 function applyDragBox(raw: WelcomeBox, skipSnap: boolean) {
   if (!drag) return;
   const others = allKioskItemBoxes(layout.value, props.screenId)
@@ -214,7 +220,13 @@ function onDragMove(e: PointerEvent) {
     return;
   }
   applyDragBox(
-    resizeBox(drag.startBox, drag.mode, dx, dy, !isTextLayer(drag.id)),
+    resizeBox(
+      drag.startBox,
+      drag.mode,
+      dx,
+      dy,
+      shouldLockAspect(drag.id),
+    ),
     e.altKey,
   );
 }
@@ -914,19 +926,29 @@ function dotsCount() {
   justify-content: center;
   gap: 1.5%;
   pointer-events: none;
+  min-height: 0;
 }
 
 .mock-card {
-  height: 78%;
-  flex: 0 1 28%;
+  height: 70%;
+  flex: 1 1 22%;
+  min-width: 0;
+  min-height: 0;
   opacity: 0.7;
-  transform: scale(0.86);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
 }
 
 .mock-card--center {
-  flex-basis: 34%;
+  height: 100%;
+  flex: 1 1 42%;
   opacity: 1;
-  transform: none;
+}
+
+.mock-card :deep(.template-preview-root) {
+  width: 100%;
+  height: 100%;
 }
 
 .mock-card-empty {

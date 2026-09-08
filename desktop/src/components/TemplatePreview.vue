@@ -123,6 +123,19 @@ watch(
   align-items: center;
 }
 
+.template-preview-root--full {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.template-preview-root--full > * {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+}
+
 /* ---- Thumbnail mode (custom default/active images) ---- */
 .preview-thumbnail {
   position: relative;
@@ -135,32 +148,14 @@ watch(
 .preview-thumbnail img {
   width: 100%;
   height: 100%;
+  object-fit: contain;
   display: block;
 }
 
-.preview-thumbnail--full.preview-thumbnail--vertical {
-  transition: all 0.3s ease;
-  height: 500px;
+.preview-thumbnail--full {
   width: 100%;
-  max-width: 200px;
-  aspect-ratio: 2/3;
-}
-
-.preview-thumbnail--full.preview-thumbnail--vertical.preview-thumbnail--active {
-  max-width: 280px;
-  aspect-ratio: 2/3;
-}
-
-.preview-thumbnail--full.preview-thumbnail--horizontal {
-  transition: all 0.3s ease;
-  width: 100%;
-  max-width: 360px;
-  aspect-ratio: 16/9;
-}
-
-.preview-thumbnail--full.preview-thumbnail--horizontal.preview-thumbnail--active {
-  max-width: 440px;
-  aspect-ratio: 16/9;
+  height: 100%;
+  max-width: none;
 }
 
 .preview-thumbnail--mini.preview-thumbnail--vertical {
@@ -191,28 +186,14 @@ watch(
   display: block;
 }
 
-.preview-frame-overlay--full.preview-frame-overlay--vertical {
+.preview-frame-overlay--full {
   width: 100%;
-  max-width: 180px;
-  aspect-ratio: 2/3;
-  transition: all 0.3s ease;
+  height: 100%;
+  max-width: none;
 }
 
-.preview-frame-overlay--full.preview-frame-overlay--vertical.preview-frame-overlay--active {
-  max-width: 280px;
-  aspect-ratio: 2/3;
-}
-
-.preview-frame-overlay--full.preview-frame-overlay--horizontal {
-  width: 100%;
-  max-width: 240px;
-  aspect-ratio: 16/9;
-  transition: all 0.3s ease;
-}
-
-.preview-frame-overlay--full.preview-frame-overlay--horizontal.preview-frame-overlay--active {
-  max-width: 440px;
-  aspect-ratio: 16/9;
+.preview-frame-overlay--full.preview-frame-overlay--active img {
+  filter: drop-shadow(0 8px 18px rgba(61, 43, 31, 0.28));
 }
 
 .preview-frame-overlay--mini.preview-frame-overlay--vertical {
@@ -240,67 +221,40 @@ watch(
   border-radius: 4px;
 }
 
-/* ---- Strip layout (full: TemplateSelect carousel; compact, viewport-scaled) ---- */
+/* ---- Strip layout (full: fills the carousel slot) ---- */
 .preview-strip--full {
-  --full-frame-w: clamp(118px, 14vmin, 260px);
-  --full-frame-h: clamp(151px, 18vmin, 340px);
-  --full-gap: clamp(24px, 4vmin, 56px);
-  --full-pad-vert: clamp(16px, 2.5vmin, 36px);
-  --full-pad-horz: clamp(10px, 1.5vmin, 24px);
-  padding-left: var(--full-pad-horz);
-  padding-right: var(--full-pad-horz);
-  padding-top: var(--full-pad-vert);
-  padding-bottom: var(--full-pad-vert);
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 5%;
   background: var(--color-cream-dark);
-  border: 2px solid var(--color-brown-light);
+  border: 3px solid var(--color-brown-light);
   display: flex;
   flex-direction: column;
-  gap: var(--full-gap);
-  transition: all 0.3s ease;
+  gap: 4%;
 }
 
 .preview-strip--horizontal.preview-strip--full {
   flex-direction: row;
-  width: max-content;
-  min-width: min-content;
-  --full-frame-w: clamp(92px, 13vmin, 230px);
-  --full-frame-h: clamp(72px, 10vmin, 180px);
-  width: clamp(140px, 20vmin, 340px) !important;
-  padding-left: var(--full-pad-vert);
-  padding-right: var(--full-pad-vert);
-  padding-top: var(--full-pad-horz);
-  padding-bottom: var(--full-pad-horz);
-}
-
-.preview-strip--horizontal.preview-strip--full.preview-strip--active {
-  --full-frame-w: clamp(160px, 22vmin, 380px);
-  --full-frame-h: clamp(120px, 16vmin, 280px);
-  width: clamp(220px, 32vmin, 480px) !important;
-  padding-left: clamp(16px, 2.5vmin, 36px);
-  padding-right: clamp(16px, 2.5vmin, 36px);
-  padding-top: clamp(12px, 2vmin, 28px);
-  padding-bottom: clamp(12px, 2vmin, 28px);
 }
 
 .preview-strip--full.preview-strip--active {
-  --full-frame-w: clamp(140px, 18vmin, 280px);
-  --full-frame-h: clamp(178px, 24vmin, 360px);
-  --full-gap: clamp(20px, 3vmin, 44px);
-  --full-pad-vert: clamp(16px, 2.5vmin, 36px);
-  --full-pad-horz: clamp(12px, 1.5vmin, 24px);
-  padding-left: var(--full-pad-horz);
-  padding-right: var(--full-pad-horz);
-  padding-top: var(--full-pad-vert);
-  padding-bottom: var(--full-pad-vert);
   border-color: var(--color-brown-dark);
   box-shadow: var(--shadow-medium);
 }
 
 .preview-strip--full .preview-frame {
-  width: var(--full-frame-w);
-  height: var(--full-frame-h);
+  flex: 1 1 0;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
   background: var(--color-cream);
   border: 1px solid var(--color-brown-light);
+}
+
+.preview-strip--horizontal.preview-strip--full .preview-frame {
+  height: 100%;
+  width: auto;
 }
 
 /* ---- Strip layout (mini: admin panel list, compact) ---- */
