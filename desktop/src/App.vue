@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, computed } from "vue";
-import { useRoute } from "vue-router";
+import { onMounted, computed, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import { applyBoothConfig } from "@/lib/boothConfig";
 import { checkPocketBaseConnection } from "@/lib/pocketbase";
@@ -10,6 +10,7 @@ import { useCustomFonts } from "@/composables/useCustomFonts";
 import VintageTheme from "@/components/VintageTheme.vue";
 
 const route = useRoute();
+const router = useRouter();
 const store = usePhotoboothStore();
 
 /**
@@ -55,34 +56,68 @@ const screenHasOwnBackground = computed(() => {
 
 const isAdmin = computed(() => route.name === "admin");
 
-const showFrame = computed(
+const liveShowFrame = computed(
   () => !isAdmin.value && !screenHasOwnBackground.value,
 );
 
-const hideWoodenFrame = computed(
+const liveHideWoodenFrame = computed(
   () => isAdmin.value || screenHasOwnBackground.value,
 );
 
-const showVintageBg = computed(() => !screenHasOwnBackground.value);
+const liveShowVintageBg = computed(() => !screenHasOwnBackground.value);
 
-// Decorative film strips appear on the Home (title) screen and the
-// Payment screen — matching the v2 designs. Home uses the parallel
-// diagonal arrangement; Payment uses the symmetric "V".
-// A screen's own background media (if the operator uploaded one)
-// replaces the CSS film strips on that screen.
-// The client's animated background now ships as the default for both
-// screens, so the CSS film strips are effectively retired — they only
-// return if a background is somehow unavailable.
-const showFilmRoll = computed(() => {
+// Decorative CSS film strips only return when a title background isn't available.
+const liveShowFilmRoll = computed(() => {
   if (route.name !== "title") return false;
   if (store.welcomeBackgroundFill === "color") return false;
   if (store.welcomeBackgroundFill === "theme") return true;
   return !store.effectiveTitleBackgroundUrl;
 });
 
-const filmRollVariant = computed<"home" | "payment">(() =>
+const liveFilmRollVariant = computed<"home" | "payment">(() =>
   route.name === "bill-acceptor" ? "payment" : "home",
 );
+
+const frozenChrome = ref<{
+  showFrame: boolean;
+  hideWoodenFrame: boolean;
+  showVintageBg: boolean;
+  showFilmRoll: boolean;
+  filmRollVariant: "home" | "payment";
+} | null>(null);
+
+const showFrame = computed(
+  () => frozenChrome.value?.showFrame ?? liveShowFrame.value,
+);
+const hideWoodenFrame = computed(
+  () => frozenChrome.value?.hideWoodenFrame ?? liveHideWoodenFrame.value,
+);
+const showVintageBg = computed(
+  () => frozenChrome.value?.showVintageBg ?? liveShowVintageBg.value,
+);
+const showFilmRoll = computed(
+  () => frozenChrome.value?.showFilmRoll ?? liveShowFilmRoll.value,
+);
+const filmRollVariant = computed<"home" | "payment">(
+  () => frozenChrome.value?.filmRollVariant ?? liveFilmRollVariant.value,
+);
+
+function releaseOutgoingChrome() {
+  frozenChrome.value = null;
+}
+
+router.beforeEach((to, from) => {
+  if (to.name === "admin" || from.name === "admin") return true;
+  if (!from.name || to.name === from.name) return true;
+  frozenChrome.value = {
+    showFrame: liveShowFrame.value,
+    hideWoodenFrame: liveHideWoodenFrame.value,
+    showVintageBg: liveShowVintageBg.value,
+    showFilmRoll: liveShowFilmRoll.value,
+    filmRollVariant: liveFilmRollVariant.value,
+  };
+  return true;
+});
 
 useCustomFonts();
 
@@ -122,6 +157,8 @@ onMounted(async () => {
       <transition
         :name="isAdmin ? '' : 'page'"
         :mode="isAdmin ? undefined : 'out-in'"
+        @after-leave="releaseOutgoingChrome"
+        @after-enter="releaseOutgoingChrome"
       >
         <component :is="Component" />
       </transition>
@@ -130,21 +167,18 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-/* Page transition (applies to router view content) */
-.page-enter-active,
-.page-leave-active {
-  transition:
-    opacity 0.4s ease,
-    transform 0.4s ease;
+/* Fade only — scaling the page left a gap around the static inner
+   border, so the cream line sat on the film strip / wood. Keep the
+   leaving screen above the frame ornaments while it fades out. */
+:deep(.page-enter-active),
+:deep(.page-leave-active) {
+  position: relative;
+  z-index: 30;
+  transition: opacity 0.4s ease;
 }
 
-.page-enter-from {
+:deep(.page-enter-from),
+:deep(.page-leave-to) {
   opacity: 0;
-  transform: scale(0.98);
-}
-
-.page-leave-to {
-  opacity: 0;
-  transform: scale(1.02);
 }
 </style>

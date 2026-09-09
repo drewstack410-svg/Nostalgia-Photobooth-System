@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import type { MediaUploadStatus } from "@/stores/photobooth";
@@ -107,7 +107,46 @@ function sortSessionPhotos(a: GalleryPhoto, b: GalleryPhoto): number {
   return 0;
 }
 
-const displayPhotos = computed(() => {
+function localDateKey(date: Date | string | undefined): string {
+  const d = date instanceof Date ? date : date ? new Date(date) : new Date(NaN);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function formatDateKey(key: string): string {
+  const [y, m, d] = key.split("-").map(Number);
+  if (!y || !m || !d) return key;
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(
+    new Date(y, m - 1, d),
+  );
+}
+
+function sessionNumberFromPath(filePath?: string): number | null {
+  const m = sessionFolderOf(filePath).match(/\/session (\d+)$/i);
+  return m ? Number(m[1]) : null;
+}
+
+function photoSessionKey(photo: GalleryPhoto): string {
+  const folder = sessionFolderOf(photo.path);
+  const folderMatch = folder.match(/(\d{2}-\d{2}-\d{2}\/session \d+)$/i);
+  if (folderMatch) return `folder:${folderMatch[1].toLowerCase()}`;
+  if (photo.sessionId) return `id:${photo.sessionId}`;
+  return `item:${photo.id}`;
+}
+
+function photoSessionLabel(photo: GalleryPhoto, includeDate: boolean): string {
+  const n = sessionNumberFromPath(photo.path);
+  const sessionPart = n != null ? `Session ${n}` : photo.sessionId ? "Session" : "Other";
+  if (!includeDate) return sessionPart;
+  const date = formatDateKey(localDateKey(photo.timestamp));
+  return `${date} · ${sessionPart}`;
+}
+
+const filterDate = ref("");
+const filterSession = ref("");
+
+const allPhotos = computed(() => {
   if (viewMode.value === "session") {
     const used = new Set<string>();
     const fromStrips: GalleryPhoto[] = store.recentStrips.map((p) => {
@@ -144,6 +183,73 @@ const displayPhotos = computed(() => {
     ...p,
     isOriginal: p.isOriginal || looksLikeOriginalFile(p.name) || looksLikeOriginalFile(p.path),
   }));
+});
+
+const dateOptions = computed(() => {
+  const keys = new Set<string>();
+  for (const photo of allPhotos.value) {
+    const key = localDateKey(photo.timestamp);
+    if (key) keys.add(key);
+  }
+  return [...keys].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+});
+
+const photosForDate = computed(() => {
+  if (!filterDate.value) return allPhotos.value;
+  return allPhotos.value.filter((p) => localDateKey(p.timestamp) === filterDate.value);
+});
+
+const sessionOptions = computed(() => {
+  const includeDate = !filterDate.value;
+  const seen = new Map<string, { key: string; label: string; sort: number }>();
+  for (const photo of photosForDate.value) {
+    const key = photoSessionKey(photo);
+    if (seen.has(key)) continue;
+    const n = sessionNumberFromPath(photo.path);
+    seen.set(key, {
+      key,
+      label: photoSessionLabel(photo, includeDate),
+      sort: n ?? Number.MAX_SAFE_INTEGER,
+    });
+  }
+  return [...seen.values()].sort((a, b) => {
+    if (a.sort !== b.sort) return a.sort - b.sort;
+    return a.label.localeCompare(b.label);
+  });
+});
+
+const displayPhotos = computed(() => {
+  let photos = photosForDate.value;
+  if (filterSession.value) {
+    photos = photos.filter((p) => photoSessionKey(p) === filterSession.value);
+  }
+  return photos;
+});
+
+const filtersActive = computed(() => !!filterDate.value || !!filterSession.value);
+
+function clearGalleryFilters() {
+  filterDate.value = "";
+  filterSession.value = "";
+}
+
+watch([filterDate, viewMode, dateOptions, sessionOptions], () => {
+  if (filterDate.value && !dateOptions.value.includes(filterDate.value)) {
+    filterDate.value = "";
+  }
+  if (
+    filterSession.value &&
+    !sessionOptions.value.some((s) => s.key === filterSession.value)
+  ) {
+    filterSession.value = "";
+  }
+});
+
+watch(displayPhotos, (photos) => {
+  if (!selectedIds.value.size) return;
+  const ids = new Set(photos.map((p) => p.id));
+  const next = new Set([...selectedIds.value].filter((id) => ids.has(id)));
+  if (next.size !== selectedIds.value.size) selectedIds.value = next;
 });
 
 const sessionPhotoCount = computed(() => {
@@ -249,9 +355,7 @@ async function hydrateSessionFromDisk() {
 
       const folder = sessionFolderOf(photo.path);
       const sib = store.recentStrips.find(
-        (s) =>
-          !!s.shareableUrl &&
-          (normalizePath(s.path) === key || sessionFolderOf(s.path) === folder),
+        (s) => normalizePath(s.path) === key || sessionFolderOf(s.path) === folder,
       );
       extras.push({
         id: photo.path,
@@ -266,6 +370,8 @@ async function hydrateSessionFromDisk() {
         isLocal: true,
         isComposite: /^strip\.png$/i.test(name),
         isOriginal: looksLikeOriginalFile(name),
+        sessionId: sib?.sessionId,
+        templateId: sib?.templateId,
         sessionIndex: sessionIndexFromName(name),
         shareUrl: sib?.shareableUrl || "",
       });
@@ -644,6 +750,46 @@ onUnmounted(() => {
             Saved ({{ savedPhotos.length }})
           </button>
         </div>
+        <div v-if="allPhotos.length > 0" class="gallery-filters">
+          <label class="gallery-filter-label">
+            <span class="gallery-filter-text">Date</span>
+            <select
+              v-model="filterDate"
+              class="gallery-select"
+              aria-label="Filter by date"
+            >
+              <option value="">All dates</option>
+              <option v-for="day in dateOptions" :key="day" :value="day">
+                {{ formatDateKey(day) }}
+              </option>
+            </select>
+          </label>
+          <label class="gallery-filter-label">
+            <span class="gallery-filter-text">Session</span>
+            <select
+              v-model="filterSession"
+              class="gallery-select"
+              aria-label="Filter by session"
+            >
+              <option value="">All sessions</option>
+              <option
+                v-for="session in sessionOptions"
+                :key="session.key"
+                :value="session.key"
+              >
+                {{ session.label }}
+              </option>
+            </select>
+          </label>
+          <button
+            v-if="filtersActive"
+            type="button"
+            class="btn btn-secondary gallery-filter-clear"
+            @click="clearGalleryFilters"
+          >
+            Clear filters
+          </button>
+        </div>
       </div>
       <div class="gallery-header-right" v-if="displayPhotos.length > 0 || canRetryUploads">
         <template v-if="!selectionMode">
@@ -723,13 +869,20 @@ onUnmounted(() => {
     </div>
 
     <!-- Empty State -->
-    <div v-else-if="displayPhotos.length === 0" class="empty-state">
+    <div v-else-if="allPhotos.length === 0" class="empty-state">
       <h2>No Photos Yet</h2>
       <p v-if="viewMode === 'session'">Take some photos to see them here!</p>
       <p v-else>Photos you save will appear here.</p>
       <RouterLink to="/camera" class="btn btn-primary">
         Start Camera
       </RouterLink>
+    </div>
+    <div v-else-if="displayPhotos.length === 0" class="empty-state">
+      <h2>No photos match</h2>
+      <p>Try another date or session, or clear the filters.</p>
+      <button type="button" class="btn btn-secondary" @click="clearGalleryFilters">
+        Clear filters
+      </button>
     </div>
 
     <!-- Photo Grid -->
@@ -977,6 +1130,51 @@ onUnmounted(() => {
 .gallery-header-left {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.gallery-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.gallery-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.gallery-filter-text {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  color: var(--color-brown);
+  font-weight: 600;
+}
+
+.gallery-select {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--color-brown-light);
+  border-radius: 8px;
+  background: var(--color-cream);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  color: var(--color-brown-dark);
+  min-width: 9rem;
+  cursor: pointer;
+}
+
+.gallery-select:focus {
+  outline: none;
+  border-color: var(--color-brown);
+  box-shadow: 0 0 0 2px rgba(92, 64, 51, 0.15);
+}
+
+.gallery-filter-clear {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.9rem;
 }
 
 .gallery-header-right {
