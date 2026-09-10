@@ -1721,140 +1721,54 @@ function handleDeleteTemplate(template: Template, event?: Event) {
   );
   if (confirmed) {
     store.removeTemplate(template.id);
-    if (editingTemplate.value?.id === template.id) {
-      closeEditTemplateDetails();
+    if (addTemplateEditId.value === template.id) {
+      closeAddTemplateModal();
     }
   }
 }
 
-// ── Edit template details (name, price, shots) ──────────────────────
-const showEditTemplateModal = ref(false);
-const editingTemplate = ref<Template | null>(null);
-const editTemplateName = ref("");
-const editTemplatePrice = ref(0);
-const editTemplateShots = ref(1);
-const showEditNameKeyboard = ref(false);
+const addTemplateEditing = computed(() => {
+  const id = addTemplateEditId.value;
+  if (!id) return null;
+  return store.templates.find((t) => t.id === id) ?? null;
+});
+
+const addTemplateEditingIsActive = computed(() => {
+  const t = addTemplateEditing.value;
+  return t ? t.isActive !== false : true;
+});
+
+function toggleAddTemplateActive() {
+  const t = addTemplateEditing.value;
+  if (t) toggleActive(t);
+}
+
+function deleteAddTemplate() {
+  const t = addTemplateEditing.value;
+  if (t) handleDeleteTemplate(t);
+}
 
 const showNameKeyboardDialog = computed({
-  get: () => showTemplateNameKeyboard.value || showEditNameKeyboard.value,
+  get: () => showTemplateNameKeyboard.value,
   set: (open: boolean) => {
-    if (!open) {
-      showTemplateNameKeyboard.value = false;
-      showEditNameKeyboard.value = false;
-    }
+    if (!open) showTemplateNameKeyboard.value = false;
   },
 });
 
-const keyboardDialogValue = computed(() =>
-  showEditNameKeyboard.value ? editTemplateName.value : newTemplateName.value,
-);
+const keyboardDialogValue = computed(() => newTemplateName.value);
 
 function updateKeyboardDialogValue(value: string) {
-  if (showEditNameKeyboard.value) editTemplateName.value = value;
-  else newTemplateName.value = value;
+  newTemplateName.value = value;
 }
 
 function closeNameKeyboardDialog() {
   showTemplateNameKeyboard.value = false;
-  showEditNameKeyboard.value = false;
 }
-
-/** Sheet cells for a saved template (grid, or hand-placed slots). */
-function templateSheetCells(t: Template): number {
-  if (t.cells?.length) return t.cells.length;
-  const rows = t.frameRows;
-  const cols = t.frameCols;
-  if (rows != null && cols != null && rows > 0 && cols > 0) return rows * cols;
-  return Math.max(1, t.photoCount ?? 1);
-}
-
-const editShotPlan = computed(() => {
-  const t = editingTemplate.value;
-  const cells = t ? templateSheetCells(t) : 1;
-  const raw = Number(editTemplateShots.value);
-  const shots =
-    Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), cells) : cells;
-  const copies = cells / shots;
-  return { cells, shots, copies, even: Number.isInteger(copies) };
-});
 
 function templatePriceLabel(id: string): string {
   const n = dashboardStore.priceByTemplateId[id] ?? 0;
   if (!n) return "Free";
   return `₱${Number.isInteger(n) ? String(n) : n.toFixed(2)}`;
-}
-
-function openEditTemplateDetails(t: Template) {
-  editingTemplate.value = t;
-  editTemplateName.value = t.name;
-  editTemplatePrice.value = dashboardStore.priceByTemplateId[t.id] ?? 0;
-  editTemplateShots.value = t.photoCount;
-  showEditNameKeyboard.value = false;
-  showEditTemplateModal.value = true;
-}
-
-function closeEditTemplateDetails() {
-  showEditTemplateModal.value = false;
-  editingTemplate.value = null;
-  showEditNameKeyboard.value = false;
-}
-
-const editingTemplateIsActive = computed(() => {
-  const t = editingTemplate.value;
-  if (!t) return true;
-  const live = store.templates.find((x) => x.id === t.id);
-  return (live ?? t).isActive !== false;
-});
-
-function toggleEditingTemplateActive() {
-  const t = editingTemplate.value;
-  if (!t) return;
-  toggleActive(t);
-}
-
-function deleteEditingTemplate() {
-  const t = editingTemplate.value;
-  if (!t) return;
-  handleDeleteTemplate(t);
-}
-
-function openEditLayoutFromDetails() {
-  const t = editingTemplate.value;
-  if (!t) return;
-  const live = store.templates.find((x) => x.id === t.id) ?? t;
-  closeEditTemplateDetails();
-  openLayoutEditor(live);
-}
-
-watch(showEditTemplateModal, (open) => {
-  if (!open) {
-    editingTemplate.value = null;
-    showEditNameKeyboard.value = false;
-  }
-});
-
-function handleEditNameClick() {
-  showEditNameKeyboard.value = true;
-}
-
-function handleEditNameKeyDown() {
-  keyboardInputDetected.value = true;
-}
-
-function submitEditTemplateDetails() {
-  const t = editingTemplate.value;
-  if (!t) return;
-  const name = editTemplateName.value.trim();
-  if (!name) return;
-  store.updateTemplateDetails(t.id, {
-    name,
-    photoCount: editShotPlan.value.shots,
-  });
-  const price = Number(editTemplatePrice.value);
-  if (!Number.isNaN(price) && price >= 0) {
-    dashboardStore.setPricePerTemplate(t.id, price);
-  }
-  closeEditTemplateDetails();
 }
 </script>
 
@@ -2189,9 +2103,8 @@ function submitEditTemplateDetails() {
         >
           <h3 class="subsection-title">Templates</h3>
           <p class="section-desc">
-            Manage photo strip templates. Add new templates, then edit each
-            one's name, price, and number of shots. Set which are active for
-            the template picker.
+            Manage photo strip templates. Add or edit a template using the
+            same layout editor, then set which are active for the picker.
           </p>
         </button>
       </div>
@@ -3511,7 +3424,7 @@ function submitEditTemplateDetails() {
     <AdminFormModal
       v-model:open="showTemplatesModal"
       title="Templates"
-      description="Click a template to edit its details, set it active, or delete it. Add new template to create a layout."
+      description="Click a template to edit it in the same layout as adding a new one. Add new template to create a layout."
       size="large"
     >
       <div class="templates-grid">
@@ -3520,7 +3433,7 @@ function submitEditTemplateDetails() {
           :key="t.id"
           class="template-card template-card--custom"
           :class="{ 'template-card--inactive': t.isActive === false }"
-          @click="openEditTemplateDetails(t)"
+          @click="openLayoutEditor(t)"
         >
           <TemplatePreview :template="t" size="mini" prefer-active-thumbnail />
           <p class="template-label">{{ t.name }}</p>
@@ -3888,6 +3801,22 @@ function submitEditTemplateDetails() {
                longer a DOM descendant of it. -->
           <div class="modal-actions add-template-modal__footer">
             <button
+              v-if="addTemplateEditing"
+              type="button"
+              class="btn btn-secondary"
+              @click="toggleAddTemplateActive"
+            >
+              {{ addTemplateEditingIsActive ? "Set inactive" : "Set active" }}
+            </button>
+            <button
+              v-if="addTemplateEditing && !store.isBuiltinTemplate(addTemplateEditing.id)"
+              type="button"
+              class="btn btn-danger"
+              @click="deleteAddTemplate"
+            >
+              Delete
+            </button>
+            <button
               type="button"
               class="btn btn-secondary"
               @click="closeAddTemplateModal"
@@ -3900,117 +3829,6 @@ function submitEditTemplateDetails() {
           </div>
         </div>
       </div>
-    </AdminFormModal>
-
-    <AdminFormModal
-      v-model:open="showEditTemplateModal"
-      :title="editingTemplate ? `Edit — ${editingTemplate.name}` : 'Edit template'"
-      description="Change this template's name, price, and how many photos the guest shoots."
-      nested
-    >
-      <form
-        v-if="editingTemplate"
-        class="edit-template-form"
-        @submit.prevent="submitEditTemplateDetails"
-      >
-        <div class="form-row">
-          <div class="form-row-field form-row-field--full">
-            <label class="form-label">Template name</label>
-            <input
-              v-model="editTemplateName"
-              type="text"
-              class="form-input"
-              :class="{ 'keyboard-active': showEditNameKeyboard }"
-              placeholder="e.g. My Strip 5"
-              required
-              @click="handleEditNameClick"
-              @touchstart="handleEditNameClick"
-              @focus="handleEditNameClick"
-              @keydown="handleEditNameKeyDown"
-            />
-          </div>
-        </div>
-
-        <div class="form-row form-row--layout-and-number">
-          <div class="form-row-field">
-            <label class="form-label">Price / cost (₱)</label>
-            <input
-              v-model.number="editTemplatePrice"
-              type="number"
-              class="form-input"
-              min="0"
-              step="0.01"
-              placeholder="0"
-            />
-          </div>
-          <div class="form-row-field">
-            <label class="form-label">Number of shots</label>
-            <input
-              v-model.number="editTemplateShots"
-              type="number"
-              class="form-input"
-              min="1"
-              :max="editShotPlan.cells"
-            />
-          </div>
-        </div>
-
-        <p class="form-hint form-hint-block">
-          <strong>
-            {{ editShotPlan.cells }} cells → {{ editShotPlan.shots }} shot{{
-              editShotPlan.shots === 1 ? "" : "s"
-            }}
-            <template v-if="editShotPlan.copies > 1">
-              × {{ editShotPlan.copies }} copies
-            </template>
-          </strong>
-          <span v-if="!editShotPlan.even" class="form-error">
-            — {{ editShotPlan.shots }} doesn't divide evenly into
-            {{ editShotPlan.cells }} cells, so the last copy will be partial.
-          </span>
-        </p>
-        <p class="form-hint form-hint-block">
-          Shots is how many photos the guest takes. Set it lower than the
-          sheet's cells to repeat the same shots as copies (for example 4
-          shots on a 12-cell sheet prints 3 copies).
-        </p>
-
-        <div class="edit-template-manage">
-          <button
-            type="button"
-            class="btn btn-secondary"
-            @click="toggleEditingTemplateActive"
-          >
-            {{ editingTemplateIsActive ? "Set inactive" : "Set active" }}
-          </button>
-          <button
-            type="button"
-            class="btn btn-secondary"
-            @click="openEditLayoutFromDetails"
-          >
-            Edit layout…
-          </button>
-          <button
-            v-if="editingTemplate && !store.isBuiltinTemplate(editingTemplate.id)"
-            type="button"
-            class="btn btn-danger"
-            @click="deleteEditingTemplate"
-          >
-            Delete template
-          </button>
-        </div>
-
-        <div class="modal-actions">
-          <button
-            type="button"
-            class="btn btn-secondary"
-            @click="closeEditTemplateDetails"
-          >
-            Cancel
-          </button>
-          <button type="submit" class="btn btn-primary">Save details</button>
-        </div>
-      </form>
     </AdminFormModal>
 
     <AdminFormModal
@@ -5164,12 +4982,6 @@ function submitEditTemplateDetails() {
   text-align: center;
 }
 
-.edit-template-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-}
-
 .add-template-card {
   min-height: 180px;
   cursor: pointer;
@@ -5314,6 +5126,8 @@ function submitEditTemplateDetails() {
   padding: 0.7rem 1.25rem;
   border-top: 2px solid var(--color-brown-light);
   background: var(--color-cream);
+  flex-wrap: wrap;
+  gap: 0.65rem;
 }
 
 .form-row {
@@ -5787,35 +5601,6 @@ function submitEditTemplateDetails() {
 .modal-actions .btn-secondary:hover {
   background: var(--color-brown-light);
   color: var(--color-cream);
-}
-
-.edit-template-manage {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.65rem;
-  margin: 0.25rem 0 0.25rem;
-}
-
-.edit-template-manage .btn {
-  padding: 0.45rem 0.9rem;
-  font-size: 0.9rem;
-  font-family: var(--font-display);
-  font-weight: 600;
-  border-radius: 8px;
-  cursor: pointer;
-  border: 2px solid var(--color-brown-light);
-}
-
-.edit-template-manage .btn-danger {
-  background: transparent;
-  color: #8a3a2a;
-  border-color: #c9897a;
-}
-
-.edit-template-manage .btn-danger:hover {
-  background: #8a3a2a;
-  color: var(--color-cream);
-  border-color: #8a3a2a;
 }
 
 /* Printer settings */
