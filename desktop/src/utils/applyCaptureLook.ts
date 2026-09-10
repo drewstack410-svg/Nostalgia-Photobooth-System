@@ -36,6 +36,8 @@ export type CaptureLook = {
   media?: LookMedia | null;
   adjustments: FilterAdjustments | null;
   lrSpatial?: LrSpatialLook | null;
+  /** Skip neighbourhood tools (texture/sharpen/NR/lens) — live preview. */
+  skipSpatial?: boolean;
 };
 
 function applyPixelFilter(imageData: ImageData, type: string): void {
@@ -139,7 +141,9 @@ export function applyCaptureLook(
   const spatial = look.lrSpatial;
   if (tone || cube || spatial) {
     const imageData = ctx.getImageData(0, 0, w, h);
-    applyLightroomLensToImageData(imageData, spatial);
+    if (!look.skipSpatial) {
+      applyLightroomLensToImageData(imageData, spatial);
+    }
     if (tone) {
       applyPixelFilter(imageData, effect);
     } else if (look.lut) {
@@ -148,7 +152,9 @@ export function applyCaptureLook(
       }
       applyLutToImageData(imageData, look.lut);
     }
-    applyLightroomDetailToImageData(imageData, spatial);
+    if (!look.skipSpatial) {
+      applyLightroomDetailToImageData(imageData, spatial);
+    }
     ctx.putImageData(imageData, 0, 0);
   }
 

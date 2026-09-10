@@ -13,19 +13,19 @@ import {
   webcamErrorMessage,
 } from "@/utils/openCamera";
 import { loadLut } from "@/utils/lut";
+import type { ParsedLut } from "@/utils/lut";
 import {
   BW_MATRIX,
   FUJIFILM_MATRIX,
   SEPIA_MATRIX,
   buildAdjustmentTable,
-  buildCubePreview,
   glowPreviewSvg,
   grainPreviewOpacity,
   saturationPreviewAmount,
   vignettePreviewStyle,
 } from "@/utils/filterPreview";
-import type { CubePreview } from "@/utils/filterPreview";
 import FilterOverlayLayers from "@/components/FilterOverlayLayers.vue";
+import LiveLutCanvas from "@/components/LiveLutCanvas.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -50,7 +50,10 @@ const adj = computed(() =>
   props.filter ? store.resolvedAdjustments(props.filter) : store.DEFAULT_ADJUSTMENTS,
 );
 
-const cubeCurves = ref<CubePreview | null>(null);
+const parsedLut = ref<ParsedLut | null>(null);
+const lutPreviewActive = computed(
+  () => props.filter?.effectType === "cube" && !!parsedLut.value,
+);
 
 const matrixFor = (kind?: string) => {
   if (kind === "sepia") return SEPIA_MATRIX;
@@ -63,7 +66,7 @@ const previewMatrix = computed(() => {
   const f = props.filter;
   if (!f || f.effectType === "original") return null;
   if (f.effectType === "cube") {
-    if (cubeCurves.value) return BW_MATRIX;
+    if (lutPreviewActive.value) return null;
     return matrixFor(f.baseFilter);
   }
   return matrixFor(f.effectType);
@@ -79,7 +82,6 @@ const saturationAmount = computed(() =>
 const hasPreviewFilter = computed(
   () =>
     !!previewMatrix.value ||
-    !!cubeCurves.value ||
     !!adjustmentTable.value ||
     !!saturationAmount.value ||
     !!glowSvg.value,
@@ -115,30 +117,32 @@ const mediaStyle = computed(() => {
 });
 
 const grainStyle = computed(() => {
+  if (lutPreviewActive.value) return null;
   const opacity = grainPreviewOpacity(adj.value.grain);
   if (opacity <= 0) return null;
   return { opacity: String(opacity) };
 });
 
-const vignetteStyle = computed(() => vignettePreviewStyle(adj.value.vignette));
+const vignetteStyle = computed(() =>
+  lutPreviewActive.value ? null : vignettePreviewStyle(adj.value.vignette),
+);
 
 watch(
   () => props.filter,
   async (f) => {
     if (!f || f.effectType !== "cube") {
-      cubeCurves.value = null;
+      parsedLut.value = null;
       return;
     }
     const cubeData = await store.ensureFilterCubeData(f);
     if (!cubeData) {
-      cubeCurves.value = null;
+      parsedLut.value = null;
       return;
     }
     try {
-      const lut = await loadLut(cubeData);
-      cubeCurves.value = buildCubePreview(lut, f.baseFilter);
+      parsedLut.value = await loadLut(cubeData);
     } catch {
-      cubeCurves.value = null;
+      parsedLut.value = null;
     }
   },
   { immediate: true, deep: true },
@@ -235,11 +239,6 @@ onUnmounted(() => {
             type="matrix"
             :values="previewMatrix"
           />
-          <feComponentTransfer v-if="cubeCurves">
-            <feFuncR type="table" :tableValues="cubeCurves.r" />
-            <feFuncG type="table" :tableValues="cubeCurves.g" />
-            <feFuncB type="table" :tableValues="cubeCurves.b" />
-          </feComponentTransfer>
           <feComponentTransfer v-if="adjustmentTable">
             <feFuncR type="table" :tableValues="adjustmentTable" />
             <feFuncG type="table" :tableValues="adjustmentTable" />
@@ -275,19 +274,31 @@ onUnmounted(() => {
       <img
         v-if="liveViewFrame"
         class="flp-video"
+        :class="{ 'flp-video--hidden': lutPreviewActive }"
         :src="liveViewFrame"
-        :style="{ filter: liveFilter }"
+        :style="{ filter: lutPreviewActive ? 'none' : liveFilter }"
         alt=""
       />
       <video
         v-else-if="stream"
         ref="videoRef"
         class="flp-video"
+        :class="{ 'flp-video--hidden': lutPreviewActive }"
         :srcObject="stream"
-        :style="{ filter: liveFilter }"
+        :style="{ filter: lutPreviewActive ? 'none' : liveFilter }"
         autoplay
         muted
         playsinline
+      />
+      <LiveLutCanvas
+        v-if="lutPreviewActive"
+        :lut="parsedLut"
+        :base-filter="filter?.baseFilter"
+        :video="stream ? videoRef : null"
+        :frame-src="stream ? null : liveViewFrame || null"
+        :css-filter="'none'"
+        :adjustments="adj"
+        :lr-spatial="filter?.lrSpatial"
       />
       <p v-else class="flp-placeholder">
         {{ cameraError || "Opening camera…" }}
@@ -374,6 +385,14 @@ onUnmounted(() => {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.flp-video--hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .flp-placeholder {

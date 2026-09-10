@@ -51,6 +51,14 @@ export type LrPreset = {
   hslHue: number[];
   hslSat: number[];
   hslLum: number[];
+  grayMixer: number[];
+  calShadowTint: number;
+  calRedHue: number;
+  calRedSat: number;
+  calGreenHue: number;
+  calGreenSat: number;
+  calBlueHue: number;
+  calBlueSat: number;
   vignette: number;
   grain: number;
   grainSize: number;
@@ -108,6 +116,21 @@ function crsNumber(xml: string, key: string, fallback = 0): number {
   if (!raw) return fallback;
   const n = parseFloat(raw.replace(/^\+/, ""));
   return Number.isFinite(n) ? n : fallback;
+}
+
+function crsNumberAny(xml: string, keys: string[], fallback = 0): number {
+  for (const key of keys) {
+    if (crsHas(xml, key)) return crsNumber(xml, key, fallback);
+  }
+  return fallback;
+}
+
+/** Adobe FilterList / LensBlur / compressed Table_* blobs are not develop sliders. */
+function stripNonDevelopBlocks(xml: string): string {
+  return xml
+    .replace(/<crs:FilterList\b[\s\S]*?<\/crs:FilterList>/gi, "")
+    .replace(/<crs:LensBlur\b[^>]*\/>/gi, "")
+    .replace(/\s+crs:Table_[A-Fa-f0-9]+="[^"]*"/g, "");
 }
 
 function crsBool(xml: string, key: string): boolean {
@@ -265,9 +288,11 @@ export function isLightroomXmp(text: string): boolean {
 
 export function parseLightroomXmp(xml: string): LrPreset | null {
   if (!isLightroomXmp(xml)) return null;
+  xml = stripNonDevelopBlocks(xml);
   const hslHue = HSL_KEYS.map((k) => crsNumber(xml, `HueAdjustment${k}`));
   const hslSat = HSL_KEYS.map((k) => crsNumber(xml, `SaturationAdjustment${k}`));
   const hslLum = HSL_KEYS.map((k) => crsNumber(xml, `LuminanceAdjustment${k}`));
+  const grayMixer = HSL_KEYS.map((k) => crsNumber(xml, `GrayMixer${k}`));
   const incTemp = crsNumber(xml, "IncrementalTemperature");
   const incTint = crsNumber(xml, "IncrementalTint");
   const jpegRelativeWb =
@@ -318,11 +343,26 @@ export function parseLightroomXmp(xml: string): LrPreset | null {
     paramShadowSplit: crsNumber(xml, "ParametricShadowSplit", 25),
     paramMidSplit: crsNumber(xml, "ParametricMidtoneSplit", 50),
     paramHighlightSplit: crsNumber(xml, "ParametricHighlightSplit", 75),
-    splitShadowHue: crsNumber(xml, "SplitToneShadowHue"),
-    splitShadowSat: crsNumber(xml, "SplitToneShadowSaturation"),
-    splitHighlightHue: crsNumber(xml, "SplitToneHighlightHue"),
-    splitHighlightSat: crsNumber(xml, "SplitToneHighlightSaturation"),
-    splitBalance: crsNumber(xml, "SplitToneBalance"),
+    splitShadowHue: crsNumberAny(xml, [
+      "SplitToningShadowHue",
+      "SplitToneShadowHue",
+    ]),
+    splitShadowSat: crsNumberAny(xml, [
+      "SplitToningShadowSaturation",
+      "SplitToneShadowSaturation",
+    ]),
+    splitHighlightHue: crsNumberAny(xml, [
+      "SplitToningHighlightHue",
+      "SplitToneHighlightHue",
+    ]),
+    splitHighlightSat: crsNumberAny(xml, [
+      "SplitToningHighlightSaturation",
+      "SplitToneHighlightSaturation",
+    ]),
+    splitBalance: crsNumberAny(xml, [
+      "SplitToningBalance",
+      "SplitToneBalance",
+    ]),
     gradeShadow: {
       h: crsNumber(xml, "ColorGradeShadowHue"),
       s: crsNumber(xml, "ColorGradeShadowSat"),
@@ -348,6 +388,14 @@ export function parseLightroomXmp(xml: string): LrPreset | null {
     hslHue,
     hslSat,
     hslLum,
+    grayMixer,
+    calShadowTint: crsNumber(xml, "ShadowTint"),
+    calRedHue: crsNumber(xml, "RedHue"),
+    calRedSat: crsNumber(xml, "RedSaturation"),
+    calGreenHue: crsNumber(xml, "GreenHue"),
+    calGreenSat: crsNumber(xml, "GreenSaturation"),
+    calBlueHue: crsNumber(xml, "BlueHue"),
+    calBlueSat: crsNumber(xml, "BlueSaturation"),
     vignette: crsNumber(
       xml,
       "PostCropVignetteAmount",
@@ -419,6 +467,14 @@ function hasDevelopWork(p: LrPreset): boolean {
     ...p.hslHue,
     ...p.hslSat,
     ...p.hslLum,
+    ...p.grayMixer,
+    p.calShadowTint,
+    p.calRedHue,
+    p.calRedSat,
+    p.calGreenHue,
+    p.calGreenSat,
+    p.calBlueHue,
+    p.calBlueSat,
   ];
   const moved = nums.some((n) => Math.abs(n) > 0.001);
   const wb = Math.abs(p.temperature - REF_TEMP) > 8;
@@ -488,6 +544,59 @@ function hueRgb(h: number, s: number): [number, number, number] {
   return hslToRgb(h, clamp01(s / 100), 0.5);
 }
 
+function applyCalibration(rgb: [number, number, number], p: LrPreset) {
+  const used =
+    p.calShadowTint ||
+    p.calRedHue ||
+    p.calRedSat ||
+    p.calGreenHue ||
+    p.calGreenSat ||
+    p.calBlueHue ||
+    p.calBlueSat;
+  if (!used) return;
+  const r = rgb[0];
+  const g = rgb[1];
+  const b = rgb[2];
+  const y = luma(rgb);
+  const rh = p.calRedHue / 100;
+  const gh = p.calGreenHue / 100;
+  const bh = p.calBlueHue / 100;
+  const rs = 1 + p.calRedSat / 100;
+  const gs = 1 + p.calGreenSat / 100;
+  const bs = 1 + p.calBlueSat / 100;
+  rgb[0] =
+    y + (r - y) * rs + g * Math.max(0, rh) * 0.4 + b * Math.max(0, -rh) * 0.4;
+  rgb[1] =
+    y + (g - y) * gs + b * Math.max(0, gh) * 0.4 + r * Math.max(0, -gh) * 0.4;
+  rgb[2] =
+    y + (b - y) * bs + r * Math.max(0, bh) * 0.4 + g * Math.max(0, -bh) * 0.4;
+  const tint = p.calShadowTint / 100;
+  if (Math.abs(tint) > 0.001) {
+    const shW = 1 - smoothstep(0.02, 0.42, luma(rgb));
+    rgb[0] += tint * 0.08 * shW;
+    rgb[1] -= tint * 0.1 * shW;
+    rgb[2] += tint * 0.05 * shW;
+  }
+}
+
+function applyGrayMixer(rgb: [number, number, number], p: LrPreset) {
+  const [h, s] = rgbToHsl(rgb[0], rgb[1], rgb[2]);
+  let mix = 0;
+  let wsum = 0;
+  for (let i = 0; i < 8; i++) {
+    const w = hueWeight(h, HSL_HUES[i]!, HSL_WIDTHS[i]!);
+    if (w <= 0) continue;
+    mix += w * (p.grayMixer[i] ?? 0);
+    wsum += w;
+  }
+  const adj = wsum > 0 ? mix / wsum : 0;
+  const y = luma(rgb);
+  const gray = clamp01(y * (1 + (adj / 100) * (0.4 + 0.6 * s)));
+  rgb[0] = gray;
+  rgb[1] = gray;
+  rgb[2] = gray;
+}
+
 function applyWb(rgb: [number, number, number], temp: number, tint: number) {
   const src = kelvinToRgb(temp);
   const ref = kelvinToRgb(REF_TEMP);
@@ -527,7 +636,12 @@ function applyTone(c: number, p: LrPreset): number {
   else x *= 1 + bl * blW * 0.55;
 
   const haze = p.dehaze / 100;
-  x += (x - 0.18) * haze * 0.42 + haze * 0.03;
+  if (haze >= 0) {
+    x += (x - 0.18) * haze * 0.42 + haze * 0.03;
+  } else {
+    const fog = -haze;
+    x += (0.16 - x) * fog * 0.32 * (1 - smoothstep(0.42, 1, x));
+  }
   return x;
 }
 
@@ -540,9 +654,9 @@ function applyParametric(t: number, p: LrPreset): number {
   const wDk = Math.max(0, smoothstep(0, s0, t) * (1 - smoothstep(s0, s1, t)));
   const wLi = Math.max(0, smoothstep(s1, s2, t) * (1 - smoothstep(s2, 1, t)));
   let y = t;
-  y += (p.paramShadows / 100) * 0.18 * wSh;
-  y += (p.paramDarks / 100) * 0.16 * wDk;
-  y += (p.paramLights / 100) * 0.16 * wLi;
+  y += (p.paramShadows / 100) * 0.2 * wSh;
+  y += (p.paramDarks / 100) * 0.18 * wDk;
+  y += (p.paramLights / 100) * 0.2 * wLi;
   y += (p.paramHighlights / 100) * 0.18 * wHi;
   return clamp01(y);
 }
@@ -631,11 +745,14 @@ function mixColor(
   amount: number,
 ) {
   if (sat === 0 || amount === 0) return;
-  const [cr, cg, cb] = hueRgb(hue, Math.abs(sat));
-  const t = clamp01(Math.abs(amount) * Math.abs(sat) / 100);
-  rgb[0] = lerp(rgb[0], cr, t);
-  rgb[1] = lerp(rgb[1], cg, t);
-  rgb[2] = lerp(rgb[2], cb, t);
+  const y = luma(rgb);
+  const fadeHi = 1 - smoothstep(0.58, 0.97, y);
+  const k = (Math.abs(sat) / 100) * Math.abs(amount) * 0.38 * fadeHi;
+  if (k < 0.001) return;
+  const [cr, cg, cb] = hslToRgb(hue, 1, 0.5);
+  rgb[0] = clamp01(rgb[0] + (cr - 0.5) * k);
+  rgb[1] = clamp01(rgb[1] + (cg - 0.5) * k);
+  rgb[2] = clamp01(rgb[2] + (cb - 0.5) * k);
 }
 
 function applyGrade(rgb: [number, number, number], p: LrPreset) {
@@ -646,8 +763,8 @@ function applyGrade(rgb: [number, number, number], p: LrPreset) {
   const midW = 4 * y * (1 - y);
   const blend = clamp01(p.gradeBlending / 100);
 
-  mixColor(rgb, p.splitShadowHue, p.splitShadowSat, shW * 0.5);
-  mixColor(rgb, p.splitHighlightHue, p.splitHighlightSat, hiW * 0.5);
+  mixColor(rgb, p.splitShadowHue, p.splitShadowSat, shW * 0.7 + midW * 0.18);
+  mixColor(rgb, p.splitHighlightHue, p.splitHighlightSat, hiW * 0.55);
 
   applyGradeBand(rgb, p.gradeShadow, shW * (0.35 + blend * 0.65));
   applyGradeBand(rgb, p.gradeMid, midW * (0.25 + blend * 0.75));
@@ -656,11 +773,12 @@ function applyGrade(rgb: [number, number, number], p: LrPreset) {
 }
 
 function processRgb(r: number, g: number, b: number, p: LrPreset): [number, number, number] {
-  let rgb: [number, number, number] = [
+  const rgb: [number, number, number] = [
     srgbToLinear(r),
     srgbToLinear(g),
     srgbToLinear(b),
   ];
+  applyCalibration(rgb, p);
   applyWb(rgb, p.temperature, p.tint);
   rgb[0] = applyTone(rgb[0], p);
   rgb[1] = applyTone(rgb[1], p);
@@ -671,14 +789,14 @@ function processRgb(r: number, g: number, b: number, p: LrPreset): [number, numb
   rgb[0] = evalCurve(p.curveR, evalCurve(p.curve, rgb[0]));
   rgb[1] = evalCurve(p.curveG, evalCurve(p.curve, rgb[1]));
   rgb[2] = evalCurve(p.curveB, evalCurve(p.curve, rgb[2]));
-  applySatVibrance(rgb, p.saturation, p.vibrance);
-  applyHsl(rgb, p);
-  applyGrade(rgb, p);
   if (p.grayscale) {
-    const y = luma(rgb);
-    rgb = [y, y, y];
+    applyGrayMixer(rgb, p);
+  } else {
+    applySatVibrance(rgb, p.saturation, p.vibrance);
+    applyHsl(rgb, p);
   }
-  if (p.dehaze) {
+  applyGrade(rgb, p);
+  if (p.dehaze && !p.grayscale) {
     const satBoost = 1 + clamp01(p.dehaze / 100) * 0.12;
     const y = luma(rgb);
     rgb[0] = y + (rgb[0] - y) * satBoost;
@@ -697,6 +815,7 @@ function buildCubeFromPreset(preset: LrPreset, title: string): string {
   const lines = [
     `TITLE "${(preset.name || title).replace(/"/g, "")}"`,
     "# Generated from a Lightroom / Camera Raw XMP preset (PV2012-style)",
+    "# Adobe FilterList / compressed tables are ignored",
     `LUT_3D_SIZE ${size}`,
     "DOMAIN_MIN 0.0 0.0 0.0",
     "DOMAIN_MAX 1.0 1.0 1.0",
@@ -769,7 +888,11 @@ export function importLightroomXmp(
     throw new Error("That XMP has no Lightroom develop settings to import.");
   }
   const grain = Math.max(0, Math.min(100, Math.round(preset.grain)));
-  const vignette = Math.max(-100, Math.min(100, Math.round(preset.vignette)));
+  // Lightroom Amount < 0 darkens corners; our slider uses the opposite sign.
+  const vignette = Math.max(
+    -100,
+    Math.min(100, Math.round(-preset.vignette)),
+  );
   return {
     cubeData: buildCubeFromPreset(preset, title),
     name: preset.name || title,

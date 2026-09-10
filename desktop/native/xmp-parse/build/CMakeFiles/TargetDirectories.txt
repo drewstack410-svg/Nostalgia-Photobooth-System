@@ -1,0 +1,4 @@
+A:/GitHub/Nostalgia-Photobooth-System/desktop/native/xmp-parse/build/CMakeFiles/xmpcore_static.dir
+A:/GitHub/Nostalgia-Photobooth-System/desktop/native/xmp-parse/build/CMakeFiles/xmp-parse.dir
+A:/GitHub/Nostalgia-Photobooth-System/desktop/native/xmp-parse/build/CMakeFiles/ALL_BUILD.dir
+A:/GitHub/Nostalgia-Photobooth-System/desktop/native/xmp-parse/build/CMakeFiles/ZERO_CHECK.dir

@@ -1,0 +1,7 @@
+[package]
+name = "xmp-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+xmp_toolkit = "1.12.1"

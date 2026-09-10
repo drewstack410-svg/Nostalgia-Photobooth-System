@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="A:\GitHub\Nostalgia-Photobooth-System\desktop\native\xmp-parse\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="A:\GitHub\Nostalgia-Photobooth-System\desktop\native\xmp-parse\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{0817CE57-F9A9-3829-BAB2-0A6212D68B28}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

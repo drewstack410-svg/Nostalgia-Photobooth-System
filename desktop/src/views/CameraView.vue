@@ -13,19 +13,18 @@ import {
   SEPIA_MATRIX,
   applyFilmGrainToImageData,
   buildAdjustmentTable,
-  buildCubePreview,
   glowPreviewSvg,
   grainPreviewOpacity,
   saturationPreviewAmount,
   vignettePreviewStyle,
 } from "@/utils/filterPreview";
-import type { CubePreview } from "@/utils/filterPreview";
 import {
   cropBarPercentForTemplate,
   highlightedViewRect,
 } from "@/utils/viewfinderCrop";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
 import FilterOverlayLayers from "@/components/FilterOverlayLayers.vue";
+import LiveLutCanvas from "@/components/LiveLutCanvas.vue";
 import {
   HIGHLIGHT_LEAD_MS,
   HIGHLIGHT_PREVIEW_MS,
@@ -168,7 +167,6 @@ const selectedFilter = computed<CameraFilter | undefined>(
  * costs nothing extra — the GPU composites it.
  */
 const PREVIEW_FILTER_ID = "nostalgia-preview-filter";
-const cubeCurves = ref<CubePreview | null>(null);
 const highlightLut = ref<ParsedLut | null>(null);
 
 const matrixFor = (kind?: string) => {
@@ -178,17 +176,17 @@ const matrixFor = (kind?: string) => {
   return null;
 };
 
+const lutPreviewActive = computed(
+  () => selectedFilter.value?.effectType === "cube" && !!highlightLut.value,
+);
+
 const previewMatrix = computed(() => {
   const f = selectedFilter.value;
   if (!f || f.effectType === "original") return null;
   if (f.effectType === "cube") {
-    // The curves are indexed by LUMINANCE and already include the base
-    // filter, so the matrix stage's only job is to collapse to luminance.
-    // Applying the base matrix here as well would tone the image twice and
-    // then sample each channel's curve at the wrong point.
-    if (cubeCurves.value) return BW_MATRIX;
-    // Curves still loading — show the base look meanwhile rather than
-    // nothing. Transient, and closer than an unfiltered feed.
+    // Real 3D LUT is drawn by LiveLutCanvas — do not collapse to
+    // luminance (that made Lightroom grades look like the raw camera).
+    if (lutPreviewActive.value) return null;
     return matrixFor(f.baseFilter);
   }
   return matrixFor(f.effectType);
@@ -213,7 +211,6 @@ const saturationAmount = computed(() =>
 const hasPreviewFilter = computed(
   () =>
     !!previewMatrix.value ||
-    !!cubeCurves.value ||
     !!adjustmentTable.value ||
     !!saturationAmount.value ||
     !!glowSvg.value,
@@ -221,6 +218,10 @@ const hasPreviewFilter = computed(
 
 const livePreviewFilter = computed(() =>
   hasPreviewFilter.value ? `url(#${PREVIEW_FILTER_ID})` : "none",
+);
+/** Raw camera pixels stay unfiltered when the 3D LUT canvas is drawing. */
+const sourceCssFilter = computed(() =>
+  lutPreviewActive.value ? "none" : livePreviewFilter.value,
 );
 /** Same colour, plus the blur the "blur" frame style needs behind the window. */
 const livePreviewFilterBlurred = computed(() =>
@@ -235,32 +236,18 @@ watch(
   selectedFilter,
   async (f) => {
     if (!f || f.effectType !== "cube") {
-      cubeCurves.value = null;
       highlightLut.value = null;
       return;
     }
     const cubeData = await store.ensureFilterCubeData(f);
     if (!cubeData) {
-      cubeCurves.value = null;
       highlightLut.value = null;
       return;
     }
     try {
-      const lut = await loadLut(cubeData);
-      highlightLut.value = lut;
-      const preview = buildCubePreview(lut, f.baseFilter);
-      cubeCurves.value = preview;
-      if (preview.residual > 8) {
-        // A colour-grading LUT rather than a tone map: a luminance curve can
-        // only get so close. Still far better than the old fixed CSS, but
-        // worth knowing about if someone reports a mismatch on a custom LUT.
-        console.warn(
-          `[Camera] Preview for "${f.name}" approximates its LUT (ΔRGB ${preview.residual.toFixed(1)}) — non-separable grade`,
-        );
-      }
+      highlightLut.value = await loadLut(cubeData);
     } catch (e) {
-      console.warn("[Camera] Could not build LUT preview, falling back:", e);
-      cubeCurves.value = null;
+      console.warn("[Camera] Could not load LUT for live preview:", e);
       highlightLut.value = null;
     }
   },
@@ -1306,11 +1293,6 @@ onUnmounted(() => {
           type="matrix"
           :values="previewMatrix"
         />
-        <feComponentTransfer v-if="cubeCurves">
-          <feFuncR type="table" :tableValues="cubeCurves.r" />
-          <feFuncG type="table" :tableValues="cubeCurves.g" />
-          <feFuncB type="table" :tableValues="cubeCurves.b" />
-        </feComponentTransfer>
         <feComponentTransfer v-if="adjustmentTable">
           <feFuncR type="table" :tableValues="adjustmentTable" />
           <feFuncG type="table" :tableValues="adjustmentTable" />
@@ -1408,9 +1390,12 @@ onUnmounted(() => {
             v-if="stream"
             ref="videoBlurRef"
             class="liveview-img"
-            :class="{ mirror: store.mirrorMode }"
+            :class="{
+              mirror: store.mirrorMode,
+              'liveview-source-hidden': lutPreviewActive,
+            }"
             :srcObject="stream"
-            :style="{ filter: livePreviewFilter }"
+            :style="{ filter: sourceCssFilter }"
             autoplay
             muted
             playsinline
@@ -1419,8 +1404,22 @@ onUnmounted(() => {
             v-else-if="liveViewFrame"
             :src="liveViewFrame"
             class="liveview-img"
-            :class="{ mirror: store.mirrorMode }"
-            :style="{ filter: livePreviewFilter }"
+            :class="{
+              mirror: store.mirrorMode,
+              'liveview-source-hidden': lutPreviewActive,
+            }"
+            :style="{ filter: sourceCssFilter }"
+          />
+          <LiveLutCanvas
+            v-if="lutPreviewActive"
+            :lut="highlightLut"
+            :base-filter="selectedFilter?.baseFilter"
+            :video="stream ? videoBlurRef : null"
+            :frame-src="stream ? null : liveViewFrame"
+            css-filter="none"
+            :mirror="store.mirrorMode"
+            :adjustments="selectedAdjustments"
+            :lr-spatial="selectedFilter?.lrSpatial"
           />
         </div>
         <!-- Blur style: sharp feed in centered window with white border -->
@@ -1431,9 +1430,12 @@ onUnmounted(() => {
                 v-if="stream"
                 ref="videoRef"
                 class="liveview-img"
-                :class="{ mirror: store.mirrorMode }"
+                :class="{
+                  mirror: store.mirrorMode,
+                  'liveview-source-hidden': lutPreviewActive,
+                }"
                 :srcObject="stream"
-                :style="{ filter: livePreviewFilter }"
+                :style="{ filter: sourceCssFilter }"
                 autoplay
                 muted
                 playsinline
@@ -1442,8 +1444,22 @@ onUnmounted(() => {
                 v-else-if="liveViewFrame"
                 :src="liveViewFrame"
                 class="liveview-img"
-                :class="{ mirror: store.mirrorMode }"
-                :style="{ filter: livePreviewFilter }"
+                :class="{
+                  mirror: store.mirrorMode,
+                  'liveview-source-hidden': lutPreviewActive,
+                }"
+                :style="{ filter: sourceCssFilter }"
+              />
+              <LiveLutCanvas
+                v-if="lutPreviewActive"
+                :lut="highlightLut"
+                :base-filter="selectedFilter?.baseFilter"
+                :video="stream ? videoRef : null"
+                :frame-src="stream ? null : liveViewFrame"
+                css-filter="none"
+                :mirror="store.mirrorMode"
+                :adjustments="selectedAdjustments"
+                :lr-spatial="selectedFilter?.lrSpatial"
               />
               <!-- Crop indicator: faded bars marking how much of the
                    3:2 capture the SELECTED template trims off each
@@ -1464,8 +1480,8 @@ onUnmounted(() => {
                 :media-url="selectedMediaRuntime?.url"
                 :media-kind="selectedMediaRuntime?.type"
                 :media-style="mediaOverlayStyle"
-                :vignette-style="vignetteOverlayStyle"
-                :grain-style="grainOverlayStyle"
+                :vignette-style="lutPreviewActive ? null : vignetteOverlayStyle"
+                :grain-style="lutPreviewActive ? null : grainOverlayStyle"
               />
             </div>
           </div>
@@ -1476,9 +1492,12 @@ onUnmounted(() => {
             v-if="stream"
             ref="videoRef"
             class="liveview-img"
-            :class="{ mirror: store.mirrorMode }"
+            :class="{
+              mirror: store.mirrorMode,
+              'liveview-source-hidden': lutPreviewActive,
+            }"
             :srcObject="stream"
-            :style="{ filter: livePreviewFilter }"
+            :style="{ filter: sourceCssFilter }"
             autoplay
             muted
             playsinline
@@ -1487,8 +1506,22 @@ onUnmounted(() => {
             v-else-if="liveViewFrame"
             :src="liveViewFrame"
             class="liveview-img"
-            :class="{ mirror: store.mirrorMode }"
-            :style="{ filter: livePreviewFilter }"
+            :class="{
+              mirror: store.mirrorMode,
+              'liveview-source-hidden': lutPreviewActive,
+            }"
+            :style="{ filter: sourceCssFilter }"
+          />
+          <LiveLutCanvas
+            v-if="lutPreviewActive"
+            :lut="highlightLut"
+            :base-filter="selectedFilter?.baseFilter"
+            :video="stream ? videoRef : null"
+            :frame-src="stream ? null : liveViewFrame"
+            css-filter="none"
+            :mirror="store.mirrorMode"
+            :adjustments="selectedAdjustments"
+            :lr-spatial="selectedFilter?.lrSpatial"
           />
           <div v-else class="liveview-placeholder">
             <div class="liveview-placeholder-text">{{ !store.cameraDetectionEnabled ? "Test mode — starting camera..." : cameraReady ? 'Starting preview...' : 'Connecting camera...' }}</div>
@@ -1511,8 +1544,8 @@ onUnmounted(() => {
             :media-url="selectedMediaRuntime?.url"
             :media-kind="selectedMediaRuntime?.type"
             :media-style="mediaOverlayStyle"
-            :vignette-style="vignetteOverlayStyle"
-            :grain-style="grainOverlayStyle"
+            :vignette-style="lutPreviewActive ? null : vignetteOverlayStyle"
+            :grain-style="lutPreviewActive ? null : grainOverlayStyle"
           />
         </div>
 
@@ -1925,11 +1958,14 @@ onUnmounted(() => {
 }
 
 .camera-feed {
+  position: relative;
   width: 100%;
   height: 100%;
   object-fit: cover;
   background: #1a1a1a;
   display: block;
+  overflow: hidden;
+  isolation: isolate;
 }
 
 /* The per-filter CSS approximations that used to live here are gone. They
@@ -1995,6 +2031,10 @@ onUnmounted(() => {
    flips, which is the exact mismatch this was fixed for. */
 .liveview-img.mirror {
   transform: scaleX(-1);
+}
+
+.liveview-source-hidden {
+  opacity: 0;
 }
 
 /* Blur background layer keeps its extra bleed scale alongside the flip. */

@@ -300,14 +300,14 @@ export function applyVignetteToImageData(
   const feather = shape?.feather ?? 50;
   const roundness = shape?.roundness ?? 0;
   const inner = hasShape
-    ? Math.max(0.04, Math.min(0.9, (mid / 100) * 0.82))
+    ? Math.max(0.08, Math.min(0.88, (mid / 100) * 0.7))
     : 0.35;
-  const featherT = Math.max(0.08, Math.min(1, 0.2 + (feather / 100) * 0.95));
+  const featherT = Math.max(0.12, Math.min(1, 0.28 + (feather / 100) * 0.85));
   const span = hasShape
-    ? Math.max(0.08, (1 - inner) * featherT)
+    ? Math.max(0.12, (1 - inner) * featherT)
     : 1 - inner;
   const roundT = hasShape ? Math.max(-1, Math.min(1, roundness / 100)) : 0;
-  const strength = Math.abs(signed) * (hasShape ? 0.78 : 0.72);
+  const strength = Math.abs(signed) * (hasShape ? 0.76 : 0.72);
   const darken = signed > 0;
   for (let y = 0; y < h; y++) {
     const ny = (y - cy) / maxDist;
@@ -327,7 +327,9 @@ export function applyVignetteToImageData(
       const falloff = strength * t * t;
       const i = (y * w + x) * 4;
       if (darken) {
-        const m = 1 - falloff;
+        const lum = (data[i]! * 0.2126 + data[i + 1]! * 0.7152 + data[i + 2]! * 0.0722) / 255;
+        const hiProtect = lum * lum;
+        const m = 1 - falloff * (1 - hiProtect * 0.72);
         data[i]! *= m;
         data[i + 1]! *= m;
         data[i + 2]! *= m;
@@ -440,7 +442,39 @@ export function applyGlowToImageData(imageData: ImageData, glow: number): void {
 }
 
 export function grainCaptureIntensity(grain: number, size = 25): number {
-  return Math.max(0, Math.min(42, (grain / 100) * (20 + size * 0.4)));
+  return Math.max(0, Math.min(72, (grain / 100) * (36 + size * 0.85)));
+}
+
+const GRAIN_TILE = 256;
+let grainTile: Float32Array | null = null;
+
+function grainNoiseTile(): Float32Array {
+  if (!grainTile) {
+    grainTile = new Float32Array(GRAIN_TILE * GRAIN_TILE);
+    for (let i = 0; i < grainTile.length; i++) {
+      grainTile[i] = Math.random() - 0.5;
+    }
+  }
+  return grainTile;
+}
+
+function sampleGrain(tile: Float32Array, x: number, y: number, smooth: boolean): number {
+  const w = GRAIN_TILE;
+  const at = (gx: number, gy: number) =>
+    tile[(((gy % w) + w) % w) * w + (((gx % w) + w) % w)]!;
+  if (!smooth) {
+    return at(Math.floor(x), Math.floor(y));
+  }
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const fx = x - x0;
+  const fy = y - y0;
+  return (
+    at(x0, y0) * (1 - fx) * (1 - fy) +
+    at(x0 + 1, y0) * fx * (1 - fy) +
+    at(x0, y0 + 1) * (1 - fx) * fy +
+    at(x0 + 1, y0 + 1) * fx * fy
+  );
 }
 
 export function applyFilmGrainToImageData(
@@ -454,33 +488,35 @@ export function applyFilmGrainToImageData(
   const data = imageData.data;
   const w = imageData.width;
   const h = imageData.height;
-  const cell = Math.max(
-    1,
-    Math.round(1 + ((100 - Math.max(0, Math.min(100, freq))) / 100) * 4),
-  );
-  const cache: number[] = [];
-  const cols = Math.ceil(w / cell) + 1;
+  const tile = grainNoiseTile();
+  const clump = 1.15 + (Math.max(1, size) / 100) * 2.2;
+  const freqT = 0.85 + (Math.max(0, Math.min(100, freq)) / 100) * 0.55;
   for (let y = 0; y < h; y++) {
-    const gy = Math.floor(y / cell);
     for (let x = 0; x < w; x++) {
-      const gx = Math.floor(x / cell);
-      const key = gy * cols + gx;
-      let noise = cache[key];
-      if (noise === undefined) {
-        noise = (Math.random() - 0.5) * intensity;
-        cache[key] = noise;
-      }
+      const n1 = sampleGrain(tile, x / clump, y / clump, false);
+      const n2 = sampleGrain(
+        tile,
+        x * freqT * 0.42 + 51,
+        y * freqT * 0.42 + 17,
+        true,
+      );
+      const noise = (n1 * 0.78 + n2 * 0.22) * intensity;
       const i = (y * w + x) * 4;
-      data[i] = Math.min(255, Math.max(0, data[i]! + noise));
-      data[i + 1] = Math.min(255, Math.max(0, data[i + 1]! + noise));
-      data[i + 2] = Math.min(255, Math.max(0, data[i + 2]! + noise));
+      const yL =
+        (data[i]! * 0.2126 + data[i + 1]! * 0.7152 + data[i + 2]! * 0.0722) /
+        255;
+      const mid = 4 * yL * (1 - yL);
+      const n = noise * (0.72 + 0.28 * mid);
+      data[i] = Math.min(255, Math.max(0, data[i]! + n));
+      data[i + 1] = Math.min(255, Math.max(0, data[i + 1]! + n));
+      data[i + 2] = Math.min(255, Math.max(0, data[i + 2]! + n));
     }
   }
 }
 
 /** Live-preview overlay opacity from a 0–100 slider. */
 export function grainPreviewOpacity(grain: number): number {
-  return Math.max(0, Math.min(0.55, (grain / 100) * 0.55));
+  return Math.max(0, Math.min(0.7, (grain / 100) * 0.7));
 }
 
 /** CSS for the live-preview vignette overlay, or null when off. */
