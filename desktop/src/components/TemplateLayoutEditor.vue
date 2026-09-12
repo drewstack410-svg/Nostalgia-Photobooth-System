@@ -36,7 +36,8 @@ import {
   cellShotNumber,
   downloadPhotoLayoutFile,
   draftTemplateFromLayoutPng,
-  embedImageAsDataUrl,
+  // Including PNG on export — hidden for now
+  // embedImageAsDataUrl,
   layoutFileSlug,
   parsePhotoLayoutDocumentJson,
   serializePhotoLayout,
@@ -321,18 +322,19 @@ async function exportLayout() {
     seedNote.value = "Nothing to export yet — add or reset slots first.";
     return;
   }
-  let frameImage: string | undefined;
-  try {
-    frameImage = await embedImageAsDataUrl(props.frameImageUrl);
-  } catch {
-    frameImage = undefined;
-  }
+  // Including PNG on export — hidden for now
+  // let frameImage: string | undefined;
+  // try {
+  //   frameImage = await embedImageAsDataUrl(props.frameImageUrl);
+  // } catch {
+  //   frameImage = undefined;
+  // }
   const payload = serializePhotoLayout({
     name: props.layoutName,
     photoCount: props.photoCount,
     paperSize: props.paperSize,
     cells: cells.value,
-    frameImage,
+    // frameImage,
     frameRows: props.frameRows,
     frameCols: props.frameCols,
   });
@@ -340,13 +342,14 @@ async function exportLayout() {
     payload,
     `${layoutFileSlug(props.layoutName || "photo-layout")}.photo-layout.json`,
   );
-  seedNote.value = frameImage
-    ? `Exported ${cells.value.length} slot(s) and the layout PNG.`
-    : `Exported ${cells.value.length} slot(s). Add a layout PNG before exporting to include it.`;
+  seedNote.value = `Exported ${cells.value.length} slot(s).`;
+  // seedNote.value = frameImage
+  //   ? `Exported ${cells.value.length} slot(s) and the layout PNG.`
+  //   : `Exported ${cells.value.length} slot(s). Add a layout PNG before exporting to include it.`;
 }
 
 const store = usePhotoboothStore();
-const testShotOn = ref(false);
+const testShotOn = ref(true);
 const testShotUrl = ref("");
 const placeholderShotUrl = ref("");
 const testShotInputRef = ref<HTMLInputElement | null>(null);
@@ -622,30 +625,32 @@ async function onImportFile(event: Event) {
   const file = input.files?.[0];
   input.value = "";
   if (!file) return;
-  const isImage =
-    file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file.name);
-  if (isImage) {
-    try {
-      await applyOverlayDataUrl(await readFileAsDataUrl(file));
-    } catch {
-      seedNote.value = "Could not import that image.";
-    }
-    return;
-  }
+  // Including PNG on import — hidden for now
+  // const isImage =
+  //   file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file.name);
+  // if (isImage) {
+  //   try {
+  //     await applyOverlayDataUrl(await readFileAsDataUrl(file));
+  //   } catch {
+  //     seedNote.value = "Could not import that image.";
+  //   }
+  //   return;
+  // }
   try {
     const imported = parsePhotoLayoutDocumentJson(await file.text());
     if (imported.name) emit("update:layoutName", imported.name);
     if (imported.paperSize) emit("update:paperSize", imported.paperSize);
-    if (imported.frameImage) emit("update:frameImageUrl", imported.frameImage);
+    // if (imported.frameImage) emit("update:frameImageUrl", imported.frameImage);
     snapshot();
     if (imported.cells.length) {
       cells.value = imported.cells;
     }
     if (imported.photoCount) emit("update:photoCount", imported.photoCount);
     commit();
-    seedNote.value = imported.frameImage
-      ? `Imported layout with PNG overlay (${cells.value.length} photo box(es)).`
-      : `Imported ${cells.value.length} photo box(es).`;
+    seedNote.value = `Imported ${cells.value.length} photo box(es).`;
+    // seedNote.value = imported.frameImage
+    //   ? `Imported layout with PNG overlay (${cells.value.length} photo box(es)).`
+    //   : `Imported ${cells.value.length} photo box(es).`;
   } catch (err) {
     seedNote.value =
       err instanceof Error ? err.message : "Could not import that layout.";
@@ -872,6 +877,9 @@ const CORNERS: { key: string; sx: -1 | 1; sy: -1 | 1 }[] = [
 ];
 
 onMounted(async () => {
+  if (!placeholderShotUrl.value) placeholderShotUrl.value = makePlaceholderShot();
+  if (!testShotUrl.value) testShotUrl.value = placeholderShotUrl.value;
+  testShotOn.value = true;
   if (props.modelValue?.length) {
     cells.value = JSON.parse(JSON.stringify(props.modelValue));
     seedNote.value = "";
@@ -979,7 +987,7 @@ watch(
       <button
         type="button"
         class="tool-btn"
-        title="Import a LumaBooth-style layout package or PNG overlay"
+        title="Import a layout JSON file"
         @click="triggerImport"
       >
         <svg class="tool-btn__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -991,16 +999,16 @@ watch(
       <input
         ref="importInputRef"
         type="file"
-        accept=".json,application/json,.photo-layout.json,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+        accept=".json,application/json,.photo-layout.json"
         class="tool-file"
-        aria-label="Import layout package or PNG"
+        aria-label="Import layout JSON"
         @change="onImportFile"
       />
       <button
         type="button"
         class="tool-btn"
-        :disabled="!cells.length && !frameImageUrl"
-        title="Export this layout and PNG as a shareable file"
+        :disabled="!cells.length"
+        title="Export this layout as a shareable JSON file"
         @click="exportLayout"
       >
         <svg class="tool-btn__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -1045,6 +1053,7 @@ watch(
         </svg>
         <span class="tool-btn__label">Reset</span>
       </button>
+      <!-- Test shot — hidden for now
       <button
         type="button"
         class="tool-btn"
@@ -1059,6 +1068,8 @@ watch(
         </svg>
         <span class="tool-btn__label">Test</span>
       </button>
+      -->
+      <!-- Live camera preview — hidden for now; slots show the dummy photo only
       <button
         type="button"
         class="tool-btn"
@@ -1073,6 +1084,8 @@ watch(
         </svg>
         <span class="tool-btn__label">Camera</span>
       </button>
+      -->
+      <!-- Test shot photo picker — hidden for now
       <button
         v-if="testShotOn"
         type="button"
@@ -1086,6 +1099,7 @@ watch(
         </svg>
         <span class="tool-btn__label">Photo</span>
       </button>
+      -->
       <button
         type="button"
         class="tool-btn"
@@ -1099,6 +1113,7 @@ watch(
         </svg>
         <span class="tool-btn__label">{{ previewFullscreen ? "Exit" : "Full" }}</span>
       </button>
+      <!--
       <input
         ref="testShotInputRef"
         type="file"
@@ -1107,6 +1122,7 @@ watch(
         aria-label="Choose a test shot photo"
         @change="onTestShotFile"
       />
+      -->
       <button
         type="button"
         class="tool-btn"

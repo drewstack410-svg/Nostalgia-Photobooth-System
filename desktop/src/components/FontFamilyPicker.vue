@@ -56,6 +56,7 @@ const knownValues = computed(() => {
         </option>
       </optgroup>
     </select>
+    <!-- Custom font import — hidden for now
     <button
       type="button"
       class="font-picker__import"
@@ -81,6 +82,7 @@ const knownValues = computed(() => {
         </button>
       </li>
     </ul>
+    -->
   </div>
 </template>
 

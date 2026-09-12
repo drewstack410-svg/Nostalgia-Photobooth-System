@@ -1486,6 +1486,7 @@ const screenDirty = computed(() => layoutDirty());
             class="upload-card-input"
             @change="onAssetInput"
           />
+          <!-- Custom font import — hidden for now
           <input
             ref="fontInputRef"
             type="file"
@@ -1493,6 +1494,7 @@ const screenDirty = computed(() => layoutDirty());
             class="upload-card-input"
             @change="onFontInput"
           />
+          -->
           <button
             type="button"
             class="screen-icon-btn"
@@ -1562,6 +1564,7 @@ const screenDirty = computed(() => layoutDirty());
               />
             </svg>
           </button>
+          <!-- Custom font import — hidden for now
           <button
             type="button"
             class="screen-icon-btn"
@@ -1585,6 +1588,7 @@ const screenDirty = computed(() => layoutDirty());
               />
             </svg>
           </button>
+          -->
         </div>
         <button
           type="button"

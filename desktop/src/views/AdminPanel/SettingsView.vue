@@ -33,7 +33,8 @@ import {
 import {
   downloadPhotoLayoutFile,
   draftTemplateFromLayoutPng,
-  embedImageAsDataUrl,
+  // Including PNG on export — hidden for now
+  // embedImageAsDataUrl,
   layoutFileSlug,
   parsePhotoLayoutDocumentJson,
   serializePhotoLayout,
@@ -945,16 +946,17 @@ function triggerLayoutPngImport() {
 
 async function exportTemplatePackage(t: Template) {
   templateImportError.value = "";
-  let frameImage: string | undefined;
-  try {
-    frameImage = await embedImageAsDataUrl(t.frameImageUrl);
-  } catch {
-    frameImage = undefined;
-  }
+  // Including PNG on export — hidden for now
+  // let frameImage: string | undefined;
+  // try {
+  //   frameImage = await embedImageAsDataUrl(t.frameImageUrl);
+  // } catch {
+  //   frameImage = undefined;
+  // }
   const cells = t.cells ?? [];
-  if (!cells.length && !frameImage) {
+  if (!cells.length) {
     templateImportError.value =
-      "Nothing to export yet — add a layout PNG or edit the photo layout first.";
+      "Nothing to export yet — edit the photo layout first.";
     return;
   }
   const payload = serializePhotoLayout({
@@ -962,7 +964,7 @@ async function exportTemplatePackage(t: Template) {
     photoCount: t.photoCount,
     paperSize: t.paperSize,
     cells,
-    frameImage,
+    // frameImage,
     layout: t.layout,
     frameRows: t.frameRows,
     frameCols: t.frameCols,
@@ -972,12 +974,12 @@ async function exportTemplatePackage(t: Template) {
     fitMode: t.fitMode,
     cellOffsetX: t.cellOffsetX,
     cellOffsetY: t.cellOffsetY,
-    thumbnailDefault: await embedImageAsDataUrl(t.thumbnailDefaultUrl).catch(
-      () => undefined,
-    ),
-    thumbnailActive: await embedImageAsDataUrl(t.thumbnailActiveUrl).catch(
-      () => undefined,
-    ),
+    // thumbnailDefault: await embedImageAsDataUrl(t.thumbnailDefaultUrl).catch(
+    //   () => undefined,
+    // ),
+    // thumbnailActive: await embedImageAsDataUrl(t.thumbnailActiveUrl).catch(
+    //   () => undefined,
+    // ),
   });
   downloadPhotoLayoutFile(
     payload,
@@ -1010,7 +1012,9 @@ async function onTemplatePackageImport(event: Event) {
     fillAddTemplateForm({
       name,
       paperSize,
-      frameImageUrl: imported.frameImage || "",
+      // Including PNG on import — hidden for now
+      // frameImageUrl: imported.frameImage || "",
+      frameImageUrl: "",
       frameRows,
       frameCols,
       photoCount,
@@ -1020,8 +1024,10 @@ async function onTemplatePackageImport(event: Event) {
       fitMode: imported.fitMode,
       cellOffsetX: imported.cellOffsetX,
       cellOffsetY: imported.cellOffsetY,
-      thumbnailDefaultUrl: imported.thumbnailDefault || "",
-      thumbnailActiveUrl: imported.thumbnailActive || "",
+      // thumbnailDefaultUrl: imported.thumbnailDefault || "",
+      // thumbnailActiveUrl: imported.thumbnailActive || "",
+      thumbnailDefaultUrl: "",
+      thumbnailActiveUrl: "",
       cells: imported.cells,
     });
   } catch (err) {
@@ -1930,6 +1936,7 @@ function templatePriceLabel(id: string): string {
           </p>
         </button>
 
+        <!-- Custom fonts import — hidden for now
         <button
           type="button"
           class="general-card general-card--clickable"
@@ -1940,6 +1947,7 @@ function templatePriceLabel(id: string): string {
             Display font for headings; body font for paragraphs and UI text.
           </p>
         </button>
+        -->
 
         <!-- Booth identity. Every dashboard record is filtered by kiosk id,
              so two booths sharing one id have their sales merged and become
@@ -2421,6 +2429,7 @@ function templatePriceLabel(id: string): string {
       </button>
     </AdminFormModal>
 
+    <!-- Custom fonts import — hidden for now
     <AdminFormModal
       v-model:open="showFontsModal"
       title="Fonts"
@@ -2540,6 +2549,7 @@ function templatePriceLabel(id: string): string {
         <p v-if="fontLibraryError" class="form-error">{{ fontLibraryError }}</p>
       </div>
     </AdminFormModal>
+    -->
 
     <AdminFormModal
       v-model:open="showSecurityModal"

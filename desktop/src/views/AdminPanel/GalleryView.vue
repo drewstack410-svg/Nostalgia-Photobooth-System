@@ -750,6 +750,7 @@ onUnmounted(() => {
             Saved ({{ savedPhotos.length }})
           </button>
         </div>
+        <!-- Gallery date/session filters — hidden for now
         <div v-if="allPhotos.length > 0" class="gallery-filters">
           <label class="gallery-filter-label">
             <span class="gallery-filter-text">Date</span>
@@ -790,6 +791,7 @@ onUnmounted(() => {
             Clear filters
           </button>
         </div>
+        -->
       </div>
       <div class="gallery-header-right" v-if="displayPhotos.length > 0 || canRetryUploads">
         <template v-if="!selectionMode">
