@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * Live camera feed with the same 3D LUT / vignette / grain path as capture.
- * SVG 1D curves cannot show Lightroom mixer, split-tone, or film grain.
+ * Live camera feed with the same 3D LUT path as capture.
+ * Film grain / vignette stay on the CSS overlay stack — baking grain
+ * with getImageData every RAF made filter preview stutter badly.
  */
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import type { ParsedLut } from "@/utils/lut";
@@ -9,10 +10,7 @@ import {
   applyCaptureLook,
   drawCoverMedia,
 } from "@/utils/applyCaptureLook";
-import {
-  applyFilmGrainToImageData,
-  type FilterAdjustments,
-} from "@/utils/filterPreview";
+import type { FilterAdjustments } from "@/utils/filterPreview";
 import type { LrSpatialLook } from "@/utils/lightroomSpatial";
 
 const MAX_EDGE = 960;
@@ -82,25 +80,17 @@ function tick() {
       ctx.restore();
 
       const adj = props.adjustments;
+      // Preview grain is CSS (FilterOverlayLayers). Skip the per-pixel
+      // bake here so switching to a grainy look stays responsive.
       applyCaptureLook(ctx, {
         effectType: "cube",
         baseFilter: props.baseFilter,
         lut: props.lut,
         overlay: null,
-        adjustments: adj ? { ...adj, grain: 0 } : null,
+        adjustments: adj ? { ...adj, grain: 0, vignette: 0 } : null,
         lrSpatial: props.lrSpatial,
         skipSpatial: true,
       });
-      if (adj && adj.grain > 0) {
-        const imageData = ctx.getImageData(0, 0, w, h);
-        applyFilmGrainToImageData(
-          imageData,
-          adj.grain,
-          props.lrSpatial?.grainSize ?? 25,
-          props.lrSpatial?.grainFreq ?? 50,
-        );
-        ctx.putImageData(imageData, 0, 0);
-      }
     }
   }
   raf = requestAnimationFrame(tick);

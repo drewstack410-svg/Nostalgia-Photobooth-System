@@ -117,15 +117,12 @@ const mediaStyle = computed(() => {
 });
 
 const grainStyle = computed(() => {
-  if (lutPreviewActive.value) return null;
   const opacity = grainPreviewOpacity(adj.value.grain);
   if (opacity <= 0) return null;
   return { opacity: String(opacity) };
 });
 
-const vignetteStyle = computed(() =>
-  lutPreviewActive.value ? null : vignettePreviewStyle(adj.value.vignette),
-);
+const vignetteStyle = computed(() => vignettePreviewStyle(adj.value.vignette));
 
 watch(
   () => props.filter,

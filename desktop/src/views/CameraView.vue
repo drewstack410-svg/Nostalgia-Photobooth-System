@@ -293,6 +293,18 @@ const overlayLayersRef = ref<{
 const overlayDecodeRef = ref<HTMLImageElement | HTMLVideoElement | null>(null);
 
 function lookMediaSource(): CanvasImageSource | null {
+  // Prefer the visible overlay when it is mounted (avoids a second decoder).
+  const visible = overlayLayersRef.value?.mediaEl ?? null;
+  if (visible instanceof HTMLVideoElement && visible.readyState >= 2) {
+    return visible;
+  }
+  if (
+    visible instanceof HTMLImageElement &&
+    visible.complete &&
+    visible.naturalWidth >= 2
+  ) {
+    return visible;
+  }
   const decode = overlayDecodeRef.value;
   if (decode instanceof HTMLVideoElement && decode.readyState >= 2) {
     return decode;
@@ -304,7 +316,7 @@ function lookMediaSource(): CanvasImageSource | null {
   ) {
     return decode;
   }
-  return overlayLayersRef.value?.mediaEl ?? null;
+  return null;
 }
 
 watch(selectedMediaRuntime, async () => {
@@ -1480,8 +1492,8 @@ onUnmounted(() => {
                 :media-url="selectedMediaRuntime?.url"
                 :media-kind="selectedMediaRuntime?.type"
                 :media-style="mediaOverlayStyle"
-                :vignette-style="lutPreviewActive ? null : vignetteOverlayStyle"
-                :grain-style="lutPreviewActive ? null : grainOverlayStyle"
+                :vignette-style="vignetteOverlayStyle"
+                :grain-style="grainOverlayStyle"
               />
             </div>
           </div>
@@ -1544,15 +1556,15 @@ onUnmounted(() => {
             :media-url="selectedMediaRuntime?.url"
             :media-kind="selectedMediaRuntime?.type"
             :media-style="mediaOverlayStyle"
-            :vignette-style="lutPreviewActive ? null : vignetteOverlayStyle"
-            :grain-style="lutPreviewActive ? null : grainOverlayStyle"
+            :vignette-style="vignetteOverlayStyle"
+            :grain-style="grainOverlayStyle"
           />
         </div>
 
-        <!-- Decodes the overlay file so capture/highlight can sample it
-             even if the visible layer has not painted yet. -->
+        <!-- Decode only when the visible overlay is not mounted (e.g.
+             opacity 0). Avoids double-decoding the same MOV in preview. -->
         <video
-          v-if="selectedMediaRuntime?.type === 'video'"
+          v-if="selectedMediaRuntime?.type === 'video' && !mediaOverlayStyle"
           ref="overlayDecodeRef"
           class="overlay-media-decode"
           :src="selectedMediaRuntime.url"
@@ -1562,7 +1574,7 @@ onUnmounted(() => {
           playsinline
         />
         <img
-          v-else-if="selectedMediaRuntime?.type === 'image'"
+          v-else-if="selectedMediaRuntime?.type === 'image' && !mediaOverlayStyle"
           ref="overlayDecodeRef"
           class="overlay-media-decode"
           :src="selectedMediaRuntime.url"
