@@ -15,9 +15,14 @@ import {
 import { loadLut } from "@/utils/lut";
 import type { ParsedLut } from "@/utils/lut";
 import {
+  applyCaptureLook,
+  drawCoverMedia,
+} from "@/utils/applyCaptureLook";
+import {
   BW_MATRIX,
   FUJIFILM_MATRIX,
   SEPIA_MATRIX,
+  applyFilmGrainToImageData,
   buildAdjustmentTable,
   glowPreviewSvg,
   grainPreviewOpacity,
@@ -44,7 +49,18 @@ const stream = ref<MediaStream | null>(null);
 const liveViewFrame = ref("");
 const usingCanon = ref(false);
 const cameraError = ref("");
+const stillSrc = ref("");
+const isCountingDown = ref(false);
+const isReviewing = ref(false);
+const showFlash = ref(false);
+const countdownValue = ref(0);
+const freezeCountdown = ref(0);
+const overlayLayersRef = ref<{
+  mediaEl: HTMLImageElement | HTMLVideoElement | null;
+} | null>(null);
+const liveImgRef = ref<HTMLImageElement | null>(null);
 const FILTER_ID = "filter-studio-preview";
+let shotGen = 0;
 
 const adj = computed(() =>
   props.filter ? store.resolvedAdjustments(props.filter) : store.DEFAULT_ADJUSTMENTS,
@@ -117,12 +133,15 @@ const mediaStyle = computed(() => {
 });
 
 const grainStyle = computed(() => {
+  if (lutPreviewActive.value) return null;
   const opacity = grainPreviewOpacity(adj.value.grain);
   if (opacity <= 0) return null;
   return { opacity: String(opacity) };
 });
 
-const vignetteStyle = computed(() => vignettePreviewStyle(adj.value.vignette));
+const vignetteStyle = computed(() =>
+  lutPreviewActive.value ? null : vignettePreviewStyle(adj.value.vignette),
+);
 
 watch(
   () => props.filter,
@@ -204,17 +223,154 @@ async function startPreview() {
   }
 }
 
+const testShotBusy = computed(
+  () => isCountingDown.value || isReviewing.value,
+);
+
+const canTestShot = computed(
+  () => !!(stream.value || liveViewFrame.value),
+);
+
+function sleepMs(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function captureSource(): CanvasImageSource | null {
+  if (videoRef.value && videoRef.value.readyState >= 2) return videoRef.value;
+  if (liveImgRef.value && liveImgRef.value.naturalWidth >= 2) {
+    return liveImgRef.value;
+  }
+  return null;
+}
+
+function lookMediaSource(): CanvasImageSource | null {
+  const el = overlayLayersRef.value?.mediaEl;
+  if (el instanceof HTMLVideoElement && el.readyState >= 2) return el;
+  if (el instanceof HTMLImageElement && el.complete && el.naturalWidth >= 2) {
+    return el;
+  }
+  return null;
+}
+
+function grabTestStill(): string | null {
+  const src = captureSource();
+  if (!src) return null;
+  let sw = 1280;
+  let sh = 720;
+  if (src instanceof HTMLVideoElement) {
+    sw = src.videoWidth;
+    sh = src.videoHeight;
+  } else if (src instanceof HTMLImageElement) {
+    sw = src.naturalWidth;
+    sh = src.naturalHeight;
+  }
+  if (sw < 2 || sh < 2) return null;
+  const maxEdge = 1600;
+  const scale = Math.min(1, maxEdge / Math.max(sw, sh));
+  const w = Math.max(2, Math.round(sw * scale));
+  const h = Math.max(2, Math.round(sh * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  drawCoverMedia(ctx, src, w, h);
+  const f = props.filter;
+  const media = f?.mediaOverlay;
+  const mediaEl = lookMediaSource();
+  applyCaptureLook(ctx, {
+    effectType: f?.effectType ?? "original",
+    baseFilter: f?.baseFilter,
+    lut: parsedLut.value,
+    overlay:
+      f?.overlay && f.overlay.opacity > 0
+        ? {
+            color: f.overlay.color,
+            blendMode: f.overlay.blendMode,
+            opacity: f.overlay.opacity,
+          }
+        : null,
+    media:
+      media && mediaEl && media.opacity > 0
+        ? {
+            source: mediaEl,
+            blendMode: media.blendMode,
+            opacity: media.opacity,
+          }
+        : null,
+    adjustments: f ? store.resolvedAdjustments(f) : null,
+    lrSpatial: f?.lrSpatial,
+  });
+  if (f) {
+    const a = store.resolvedAdjustments(f);
+    if (a.grain > 0) {
+      const imageData = ctx.getImageData(0, 0, w, h);
+      applyFilmGrainToImageData(
+        imageData,
+        a.grain,
+        f.lrSpatial?.grainSize ?? 25,
+        f.lrSpatial?.grainFreq ?? 50,
+      );
+      ctx.putImageData(imageData, 0, 0);
+    }
+  }
+  return canvas.toDataURL("image/jpeg", 0.92);
+}
+
+async function runTestShot() {
+  if (testShotBusy.value || !canTestShot.value) return;
+  const gen = ++shotGen;
+  const poseSeconds = store.shootingFirstCountdownSeconds;
+  stillSrc.value = "";
+  isReviewing.value = false;
+  isCountingDown.value = true;
+  for (let n = poseSeconds; n >= 1; n--) {
+    if (gen !== shotGen) return;
+    countdownValue.value = n;
+    await sleepMs(1000);
+  }
+  if (gen !== shotGen) return;
+  isCountingDown.value = false;
+  showFlash.value = true;
+  await sleepMs(120);
+  showFlash.value = false;
+  if (gen !== shotGen) return;
+  const shot = grabTestStill();
+  if (gen !== shotGen) return;
+  if (!shot) return;
+  stillSrc.value = shot;
+  isReviewing.value = true;
+  const previewSeconds = store.shootingPreviewCountdownSeconds;
+  for (let n = previewSeconds; n >= 1; n--) {
+    if (gen !== shotGen) return;
+    freezeCountdown.value = n;
+    await sleepMs(1000);
+  }
+  if (gen !== shotGen) return;
+  isReviewing.value = false;
+  stillSrc.value = "";
+}
+
 onMounted(() => {
   void startPreview();
 });
 
 onUnmounted(() => {
+  shotGen += 1;
   stopWebcamTracks(stream.value);
   stream.value = null;
   if (usingCanon.value) {
     window.electronAPI?.offLiveViewFrame?.();
     void window.electronAPI?.canonStopLiveView?.();
   }
+});
+
+defineExpose({
+  runTestShot,
+  testShotBusy,
+  canTestShot,
 });
 </script>
 
@@ -270,6 +426,7 @@ onUnmounted(() => {
       </svg>
       <img
         v-if="liveViewFrame"
+        ref="liveImgRef"
         class="flp-video"
         :class="{ 'flp-video--hidden': lutPreviewActive }"
         :src="liveViewFrame"
@@ -297,17 +454,32 @@ onUnmounted(() => {
         :adjustments="adj"
         :lr-spatial="filter?.lrSpatial"
       />
-      <p v-else class="flp-placeholder">
+      <p v-if="!liveViewFrame && !stream" class="flp-placeholder">
         {{ cameraError || "Opening camera…" }}
       </p>
       <FilterOverlayLayers
-        :overlay-style="overlayStyle"
-        :media-url="mediaRuntime?.url"
+        ref="overlayLayersRef"
+        :overlay-style="isReviewing ? null : overlayStyle"
+        :media-url="isReviewing ? null : mediaRuntime?.url"
         :media-kind="mediaRuntime?.type"
-        :media-style="mediaStyle"
-        :vignette-style="vignetteStyle"
-        :grain-style="grainStyle"
+        :media-style="isReviewing ? null : mediaStyle"
+        :vignette-style="isReviewing ? null : vignetteStyle"
+        :grain-style="isReviewing ? null : grainStyle"
       />
+      <img
+        v-if="stillSrc"
+        class="flp-still"
+        :src="stillSrc"
+        alt=""
+      />
+      <div v-if="showFlash" class="flp-flash" />
+      <div v-if="isCountingDown" class="flp-countdown" aria-live="assertive">
+        <div class="flp-countdown-number">{{ countdownValue }}</div>
+      </div>
+      <div v-if="isReviewing" class="flp-preview-cd">
+        <p class="flp-preview-cd-label">Preview</p>
+        <div class="flp-preview-cd-number">{{ freezeCountdown }}</div>
+      </div>
     </div>
     <p v-if="chrome" class="flp-hint">
       {{ filter ? filter.name : "Select a filter" }}
@@ -403,6 +575,87 @@ onUnmounted(() => {
   text-align: center;
   color: rgba(255, 255, 255, 0.55);
   font-size: 0.85rem;
+}
+
+.flp-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  z-index: 2;
+}
+
+.flp-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  background: #fff;
+  pointer-events: none;
+}
+
+.flp-countdown {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.flp-countdown-number {
+  font-family: var(--font-display);
+  font-size: clamp(4rem, 22vw, 9rem);
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 0 48px rgba(201, 162, 39, 0.8);
+  animation: flpCountPulse 1s ease-in-out infinite;
+}
+
+@keyframes flpCountPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.85;
+  }
+}
+
+.flp-preview-cd {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 3.4rem;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  pointer-events: none;
+}
+
+.flp-preview-cd-label {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #f4e6c3;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
+}
+
+.flp-preview-cd-number {
+  font-family: var(--font-display);
+  font-size: 2.4rem;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
 }
 
 .flp-hint {

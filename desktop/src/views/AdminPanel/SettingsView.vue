@@ -142,6 +142,10 @@ function updateShootingSubsequentCountdown(e: Event) {
   const val = parseInt((e.target as HTMLInputElement).value, 10);
   if (!isNaN(val)) store.setShootingSubsequentCountdown(val);
 }
+function updateShootingPreviewCountdown(e: Event) {
+  const val = parseInt((e.target as HTMLInputElement).value, 10);
+  if (!isNaN(val)) store.setShootingPreviewCountdown(val);
+}
 function updatePrintingCountdown(e: Event) {
   const val = parseInt((e.target as HTMLInputElement).value, 10);
   if (!isNaN(val)) store.setPrintingCountdown(val);
@@ -625,6 +629,11 @@ function toggleFilterGrain(id: string, event: Event) {
 
 const editingFilterId = ref("");
 const filterPreviewMode = ref<"wide" | "full">("wide");
+const filterPreviewRef = ref<{
+  runTestShot: () => void;
+  testShotBusy: boolean;
+  canTestShot: boolean;
+} | null>(null);
 const editingFilter = computed(
   () =>
     store.filters.find((f) => f.id === editingFilterId.value) ??
@@ -2627,6 +2636,17 @@ function templatePriceLabel(id: string): string {
             @change="updateShootingSubsequentCountdown"
           />
         </div>
+        <div class="form-row">
+          <label class="form-label">Shot preview countdown (seconds)</label>
+          <input
+            type="number"
+            min="1"
+            max="30"
+            :value="store.shootingPreviewCountdownSeconds"
+            class="form-input form-input--short"
+            @change="updateShootingPreviewCountdown"
+          />
+        </div>
 
         <h3 class="subsection-title" style="margin-top: 1.5rem;">Printing</h3>
         <div class="form-row">
@@ -2700,6 +2720,14 @@ function templatePriceLabel(id: string): string {
             Full Screen
           </button>
         </div>
+        <button
+          type="button"
+          class="filters-test-shot"
+          :disabled="!filterPreviewRef?.canTestShot || filterPreviewRef?.testShotBusy"
+          @click="filterPreviewRef?.runTestShot()"
+        >
+          {{ filterPreviewRef?.testShotBusy ? "Testing…" : "Test Shot" }}
+        </button>
         <p class="filters-preview-bar-hint">Edit with controls visible.</p>
       </div>
       <Teleport to="body" :disabled="filterPreviewMode !== 'full'">
@@ -2707,6 +2735,15 @@ function templatePriceLabel(id: string): string {
           class="filters-studio-preview"
           :class="{ 'filters-studio-preview--fullscreen': filterPreviewMode === 'full' }"
         >
+          <button
+            v-if="filterPreviewMode === 'full'"
+            type="button"
+            class="filters-test-shot filters-test-shot--fullscreen"
+            :disabled="!filterPreviewRef?.canTestShot || filterPreviewRef?.testShotBusy"
+            @click="filterPreviewRef?.runTestShot()"
+          >
+            {{ filterPreviewRef?.testShotBusy ? "Testing…" : "Test Shot" }}
+          </button>
           <button
             v-if="filterPreviewMode === 'full'"
             type="button"
@@ -2718,6 +2755,7 @@ function templatePriceLabel(id: string): string {
           </button>
           <FilterLivePreview
             v-if="showFiltersModal"
+            ref="filterPreviewRef"
             fill
             :chrome="filterPreviewMode !== 'full'"
             :filter="editingFilter"
@@ -4532,6 +4570,36 @@ function templatePriceLabel(id: string): string {
 .filters-view-toggle__btn--on {
   background: var(--color-brown-dark);
   color: var(--color-cream);
+}
+
+.filters-test-shot {
+  padding: 0.4rem 0.95rem;
+  border: 2px solid var(--color-brown-light);
+  border-radius: 10px;
+  background: #e8c56b;
+  color: #3b2a14;
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.filters-test-shot:hover:not(:disabled) {
+  background: #f0d27a;
+}
+
+.filters-test-shot:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.filters-test-shot--fullscreen {
+  position: absolute;
+  top: 1rem;
+  right: 4.5rem;
+  z-index: 3;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
 }
 
 .filters-preview-bar-hint {

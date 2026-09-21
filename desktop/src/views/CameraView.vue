@@ -27,7 +27,6 @@ import FilterOverlayLayers from "@/components/FilterOverlayLayers.vue";
 import LiveLutCanvas from "@/components/LiveLutCanvas.vue";
 import {
   HIGHLIGHT_LEAD_MS,
-  HIGHLIGHT_PREVIEW_MS,
   abortHighlightCapture,
   freezeHighlightCapture,
   isHighlightRecording,
@@ -77,8 +76,7 @@ const isReviewing = ref(false);
 const highlightRecording = ref(false);
 const countdownValue = ref(3);
 /** Last-frame freeze after each shot — also encoded as the last 5s of the highlight. */
-const SHOT_REVIEW_SECONDS = Math.round(HIGHLIGHT_PREVIEW_MS / 1000);
-const freezeCountdown = ref(SHOT_REVIEW_SECONDS);
+const freezeCountdown = ref(store.shootingPreviewCountdownSeconds);
 const showFlash = ref(false);
 const cameraReady = ref(false);
 const showInactivityWarning = ref(false);
@@ -293,18 +291,6 @@ const overlayLayersRef = ref<{
 const overlayDecodeRef = ref<HTMLImageElement | HTMLVideoElement | null>(null);
 
 function lookMediaSource(): CanvasImageSource | null {
-  // Prefer the visible overlay when it is mounted (avoids a second decoder).
-  const visible = overlayLayersRef.value?.mediaEl ?? null;
-  if (visible instanceof HTMLVideoElement && visible.readyState >= 2) {
-    return visible;
-  }
-  if (
-    visible instanceof HTMLImageElement &&
-    visible.complete &&
-    visible.naturalWidth >= 2
-  ) {
-    return visible;
-  }
   const decode = overlayDecodeRef.value;
   if (decode instanceof HTMLVideoElement && decode.readyState >= 2) {
     return decode;
@@ -316,7 +302,7 @@ function lookMediaSource(): CanvasImageSource | null {
   ) {
     return decode;
   }
-  return null;
+  return overlayLayersRef.value?.mediaEl ?? null;
 }
 
 watch(selectedMediaRuntime, async () => {
@@ -777,12 +763,13 @@ async function saveHighlightLocally(clipUrl: string, shot: number) {
 /** Hold the last shutter frame on screen, then continue. */
 async function showShotReview() {
   isReviewing.value = true;
-  for (let n = SHOT_REVIEW_SECONDS; n >= 1; n--) {
+  const seconds = store.shootingPreviewCountdownSeconds;
+  for (let n = seconds; n >= 1; n--) {
     if (isUnmounted) return;
     freezeCountdown.value = n;
     await sleepReview(1000);
   }
-  freezeCountdown.value = SHOT_REVIEW_SECONDS;
+  freezeCountdown.value = store.shootingPreviewCountdownSeconds;
   isReviewing.value = false;
 }
 
@@ -1492,8 +1479,8 @@ onUnmounted(() => {
                 :media-url="selectedMediaRuntime?.url"
                 :media-kind="selectedMediaRuntime?.type"
                 :media-style="mediaOverlayStyle"
-                :vignette-style="vignetteOverlayStyle"
-                :grain-style="grainOverlayStyle"
+                :vignette-style="lutPreviewActive ? null : vignetteOverlayStyle"
+                :grain-style="lutPreviewActive ? null : grainOverlayStyle"
               />
             </div>
           </div>
@@ -1556,15 +1543,15 @@ onUnmounted(() => {
             :media-url="selectedMediaRuntime?.url"
             :media-kind="selectedMediaRuntime?.type"
             :media-style="mediaOverlayStyle"
-            :vignette-style="vignetteOverlayStyle"
-            :grain-style="grainOverlayStyle"
+            :vignette-style="lutPreviewActive ? null : vignetteOverlayStyle"
+            :grain-style="lutPreviewActive ? null : grainOverlayStyle"
           />
         </div>
 
-        <!-- Decode only when the visible overlay is not mounted (e.g.
-             opacity 0). Avoids double-decoding the same MOV in preview. -->
+        <!-- Decodes the overlay file so capture/highlight can sample it
+             even if the visible layer has not painted yet. -->
         <video
-          v-if="selectedMediaRuntime?.type === 'video' && !mediaOverlayStyle"
+          v-if="selectedMediaRuntime?.type === 'video'"
           ref="overlayDecodeRef"
           class="overlay-media-decode"
           :src="selectedMediaRuntime.url"
@@ -1574,7 +1561,7 @@ onUnmounted(() => {
           playsinline
         />
         <img
-          v-else-if="selectedMediaRuntime?.type === 'image' && !mediaOverlayStyle"
+          v-else-if="selectedMediaRuntime?.type === 'image'"
           ref="overlayDecodeRef"
           class="overlay-media-decode"
           :src="selectedMediaRuntime.url"

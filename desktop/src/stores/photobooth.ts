@@ -468,6 +468,7 @@ const STORAGE_KEY_ADMIN_PIN = "nostalgia-admin-pin";
 const STORAGE_KEY_BUILTIN_TEMPLATE_OVERRIDES = "nostalgia-builtin-template-overrides";
 const STORAGE_KEY_SHOOTING_FIRST_COUNTDOWN = "nostalgia-shooting-first-countdown";
 const STORAGE_KEY_SHOOTING_SUBSEQUENT_COUNTDOWN = "nostalgia-shooting-subsequent-countdown";
+const STORAGE_KEY_SHOOTING_PREVIEW_COUNTDOWN = "nostalgia-shooting-preview-countdown";
 const STORAGE_KEY_PRINTING_COUNTDOWN = "nostalgia-printing-countdown";
 const STORAGE_KEY_QR_COUNTDOWN = "nostalgia-qr-countdown";
 const STORAGE_KEY_QR_AUTO_ADVANCE = "nostalgia-qr-auto-advance";
@@ -929,6 +930,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   // is extra and must not shorten this. (Used to default to 10, which
   // made shot 2 look like 15−5.)
   const shootingSubsequentCountdownSeconds = ref(15);
+  /** Freeze after a capture — guest (and filter Test Shot) review. */
+  const shootingPreviewCountdownSeconds = ref(5);
   const printingCountdownSeconds = ref(20);
   const qrCountdownSeconds = ref(30);
   const qrAutoAdvanceEnabled = ref(true);
@@ -945,6 +948,11 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     if (subsequent !== null) {
       const n = parseInt(subsequent, 10);
       if (!isNaN(n)) shootingSubsequentCountdownSeconds.value = clamp(n, 1, 60);
+    }
+    const preview = localStorage.getItem(STORAGE_KEY_SHOOTING_PREVIEW_COUNTDOWN);
+    if (preview !== null) {
+      const n = parseInt(preview, 10);
+      if (!isNaN(n)) shootingPreviewCountdownSeconds.value = clamp(n, 1, 30);
     }
     // Old default was 10 while first-shot was 15. The freeze-after-shot
     // is NOT part of the posing countdown — bump the legacy 10 so shot
@@ -979,6 +987,11 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     const clamped = Math.max(1, Math.min(60, Math.round(seconds)));
     shootingSubsequentCountdownSeconds.value = clamped;
     localStorage.setItem(STORAGE_KEY_SHOOTING_SUBSEQUENT_COUNTDOWN, String(clamped));
+  }
+  function setShootingPreviewCountdown(seconds: number) {
+    const clamped = Math.max(1, Math.min(30, Math.round(seconds)));
+    shootingPreviewCountdownSeconds.value = clamped;
+    localStorage.setItem(STORAGE_KEY_SHOOTING_PREVIEW_COUNTDOWN, String(clamped));
   }
   function setPrintingCountdown(seconds: number) {
     const clamped = Math.max(1, Math.min(120, Math.round(seconds)));
@@ -3486,11 +3499,13 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // -----------------------------
     shootingFirstCountdownSeconds,
     shootingSubsequentCountdownSeconds,
+    shootingPreviewCountdownSeconds,
     printingCountdownSeconds,
     qrCountdownSeconds,
     qrAutoAdvanceEnabled,
     setShootingFirstCountdown,
     setShootingSubsequentCountdown,
+    setShootingPreviewCountdown,
     setPrintingCountdown,
     setQrCountdown,
     setQrAutoAdvanceEnabled,

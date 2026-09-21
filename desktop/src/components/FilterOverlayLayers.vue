@@ -81,8 +81,7 @@ defineExpose({ mediaEl });
     muted
     loop
     playsinline
-    preload="metadata"
-    disablePictureInPicture
+    preload="auto"
     @loadeddata="playOverlayVideo"
     @canplay="playOverlayVideo"
     aria-hidden="true"
@@ -117,18 +116,11 @@ defineExpose({ mediaEl });
   height: 100%;
   object-fit: cover;
   display: block;
-  /* Own compositor layer so MOV + grain do not thrash the live feed. */
-  transform: translateZ(0);
-  will-change: opacity;
-  contain: paint;
 }
 
 .filter-stack-grain {
   mix-blend-mode: overlay;
-  transform: translateZ(0);
-  contain: paint;
-  /* Lighter tile than capture bake — 3 octaves is enough for live preview. */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 128px 128px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.35' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 96px 96px;
 }
 </style>
