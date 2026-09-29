@@ -328,6 +328,10 @@ interface ElectronAPI {
   canonListCameras: () => Promise<CanonListResult>;
   canonConnect: (cameraIndex: number) => Promise<CanonConnectResult>;
   canonTakePhoto: () => Promise<CanonPhotoResult>;
+  canonPrepareShot: (opts?: {
+    settleMs?: number;
+  }) => Promise<{ success: boolean; error?: string }>;
+  canonAbortShotPrep: () => Promise<{ success: boolean; error?: string }>;
   canonDisconnect: () => Promise<{ success: boolean; error?: string }>;
   canonStartLiveView: () => Promise<{ success: boolean; error?: string }>;
   canonStopLiveView: () => Promise<{ success: boolean; error?: string }>;

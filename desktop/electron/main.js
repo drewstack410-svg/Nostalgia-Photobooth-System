@@ -25,7 +25,7 @@ function loadRuntimeEnv() {
 loadRuntimeEnv();
 
 // Try to load Canon EDSDK wrapper (optional - will fallback if not available)
-let CanonCameraBrowser, Camera, CameraProperty, Option, ImageQuality;
+let CanonCameraBrowser, Camera, CameraProperty, Option, ImageQuality, Flag;
 let edsdkAvailable = false;
 
 try {
@@ -35,6 +35,7 @@ try {
   CameraProperty = canonModule.CameraProperty;
   Option = canonModule.Option;
   ImageQuality = canonModule.ImageQuality;
+  Flag = canonModule.Flag;
   edsdkAvailable = true;
   console.log('[Main] ✓ Canon EDSDK module loaded successfully');
 } catch (err) {
@@ -46,6 +47,171 @@ try {
 let canonCameraBrowser = null;
 let connectedCanonCamera = null;
 let liveViewInterval = null;
+let lastEvfStoppedAt = 0;
+let shutterArmed = false;
+let shutterArmedNonAf = false;
+let prepareShotPromise = null;
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function canonPropNumber(camera, id) {
+  if (id == null) return null;
+  try {
+    const prop = camera.getProperty(id);
+    if (prop == null) return null;
+    const value = prop.value;
+    if (value == null) return null;
+    if (typeof value === 'number') return value;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    if (typeof value.value === 'number') return value.value;
+    if (typeof value.flag === 'boolean') return value.flag ? 1 : 0;
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function trySetCanonProp(camera, id, value, label) {
+  if (id == null || value == null) return;
+  try {
+    camera.setProperties({ [id]: value });
+    console.log(`[Canon] ✓ ${label}=${value}`);
+  } catch (err) {
+    console.warn(`[Canon] ⚠ ${label} not set:`, err.message);
+  }
+}
+
+function logCanonFlashState(camera, tag) {
+  const ids = CameraProperty && CameraProperty.ID;
+  if (!ids) return;
+  const parts = [
+    ['FlashOn', ids.FlashOn],
+    ['FlashMode', ids.FlashMode],
+    ['DC_Strobe', ids.DC_Strobe],
+    ['DriveMode', ids.DriveMode],
+    ['AEMode', ids.AEMode],
+  ].map(([name, id]) => `${name}=${canonPropNumber(camera, id)}`);
+  console.log(`[Canon] ${tag} ${parts.join(' ')}`);
+}
+
+function enableCanonHardwareFlash(camera) {
+  if (!camera || !CameraProperty || !Option) return;
+  const ids = CameraProperty.ID;
+  const silentDrives = new Set(
+    [
+      Option.DriveMode && Option.DriveMode.SilentSingleShooting,
+      Option.DriveMode && Option.DriveMode.SingleSilentShooting,
+      Option.DriveMode && Option.DriveMode.SilentContinuousShooting,
+      Option.DriveMode && Option.DriveMode.SilentHSContinuous,
+      Option.DriveMode && Option.DriveMode.SilentLSContinuous,
+    ].filter((v) => typeof v === 'number'),
+  );
+  const drive = canonPropNumber(camera, ids.DriveMode);
+  if (
+    drive != null &&
+    silentDrives.has(drive) &&
+    Option.DriveMode &&
+    Option.DriveMode.SingleShooting != null
+  ) {
+    trySetCanonProp(camera, ids.DriveMode, Option.DriveMode.SingleShooting, 'DriveMode SingleShooting');
+  }
+
+  const ae = canonPropNumber(camera, ids.AEMode);
+  const flashOffAe = Option.AEMode && Option.AEMode.FlashOff;
+  const silentAe = Option.AEMode && Option.AEMode.Silent;
+  if (
+    (ae === flashOffAe || ae === silentAe) &&
+    ids.AEModeSelect != null &&
+    Option.AEModeSelect &&
+    Option.AEModeSelect.ProgramAE != null
+  ) {
+    trySetCanonProp(camera, ids.AEModeSelect, Option.AEModeSelect.ProgramAE, 'AEModeSelect ProgramAE');
+  }
+
+  const flashOnValue = Flag && Flag.True != null ? Flag.True : 1;
+  trySetCanonProp(camera, ids.FlashOn, flashOnValue, 'FlashOn');
+  trySetCanonProp(camera, ids.FlashMode, 1, 'FlashMode On');
+  if (ids.DC_Strobe != null && Option.DCStrobe && Option.DCStrobe.On != null) {
+    trySetCanonProp(camera, ids.DC_Strobe, Option.DCStrobe.On, 'DC_Strobe On');
+  }
+}
+
+function silenceCanonEvfForFlash(camera) {
+  if (!camera || !CameraProperty) return;
+  const none = (Option && Option.EvfOutputDevice && Option.EvfOutputDevice.None) || 0;
+  trySetCanonProp(camera, CameraProperty.ID.Evf_OutputDevice, none, 'Evf_OutputDevice None');
+  trySetCanonProp(camera, CameraProperty.ID.Evf_Mode, 0, 'Evf_Mode off');
+}
+
+function canonShutter() {
+  return {
+    cmd: Camera.Command.PressShutterButton,
+    off: Camera.PressShutterButton.OFF,
+    halfway: Camera.PressShutterButton.Halfway,
+    halfwayNonAf: Camera.PressShutterButton.HalfwayNonAF,
+    completely: Camera.PressShutterButton.Completely,
+    completelyNonAf: Camera.PressShutterButton.CompletelyNonAF,
+  };
+}
+
+function isCanonAfNg(err) {
+  const msg = (err && err.message) || '';
+  return msg.includes('TAKE_PICTURE_AF_NG') || msg.includes('AF_NG');
+}
+
+function releaseCanonShutter(tag) {
+  shutterArmed = false;
+  shutterArmedNonAf = false;
+  if (!connectedCanonCamera || !Camera) return;
+  try {
+    const S = canonShutter();
+    connectedCanonCamera.sendCommand(S.cmd, S.off);
+    if (tag) console.log(`[Canon] shutter released (${tag})`);
+  } catch (err) {
+    console.warn('[Canon] shutter release failed (non-fatal):', err.message);
+  }
+}
+
+async function stopCanonEvfForShot() {
+  if (liveViewInterval) {
+    clearInterval(liveViewInterval);
+    liveViewInterval = null;
+  }
+  if (!connectedCanonCamera) return;
+  try {
+    connectedCanonCamera.stopLiveView();
+    lastEvfStoppedAt = Date.now();
+    console.log('[Canon] live view torn down for flash');
+  } catch (lvErr) {
+    console.warn('[Canon] stopLiveView for flash failed:', lvErr.message);
+  }
+  silenceCanonEvfForFlash(connectedCanonCamera);
+}
+
+async function prepareCanonShot(settleMs) {
+  if (!connectedCanonCamera) throw new Error('No Canon camera connected');
+  await stopCanonEvfForShot();
+  enableCanonHardwareFlash(connectedCanonCamera);
+  logCanonFlashState(connectedCanonCamera, 'prepare');
+  const elapsed = lastEvfStoppedAt ? Date.now() - lastEvfStoppedAt : 0;
+  const wait = Math.max((settleMs || 1100) - elapsed, 80);
+  console.log(`[Canon] flash settle ${wait}ms before half-press`);
+  await sleepMs(wait);
+  const S = canonShutter();
+  try {
+    connectedCanonCamera.sendCommand(S.cmd, S.halfway);
+    shutterArmedNonAf = false;
+    console.log('[Canon] shutter Halfway (armed until 0)');
+  } catch (halfErr) {
+    if (!isCanonAfNg(halfErr)) throw halfErr;
+    connectedCanonCamera.sendCommand(S.cmd, S.halfwayNonAf);
+    shutterArmedNonAf = true;
+    console.log('[Canon] shutter HalfwayNonAF (armed until 0)');
+  }
+  shutterArmed = true;
+}
 
 // Use app.isPackaged as the primary indicator (most reliable for Electron)
 // If app.isPackaged is true, we're in production regardless of NODE_ENV
@@ -1931,6 +2097,9 @@ if (edsdkAvailable) {
         console.warn('[Main] ⚠ Could not set ImageQuality property (non-critical, continuing):', qualityError.message);
         // Continue - camera might use default quality or property not available
       }
+
+      enableCanonHardwareFlash(camera);
+      logCanonFlashState(camera, 'connect');
       
       console.log('[Main] ✓ Camera connection successful');
       return { success: true, cameraName: camera.name || `Canon Camera ${cameraIndex + 1}` };
@@ -2025,6 +2194,30 @@ if (edsdkAvailable) {
   
   canonCameraBrowser.setEventHandler(downloadRequestHandler);
   
+  ipcMain.handle('canon-prepare-shot', async (_event, opts) => {
+    try {
+      if (!connectedCanonCamera) {
+        return { success: false, error: 'No Canon camera connected' };
+      }
+      const settleMs = opts && typeof opts.settleMs === 'number' ? opts.settleMs : 1100;
+      prepareShotPromise = prepareCanonShot(settleMs);
+      await prepareShotPromise;
+      return { success: true };
+    } catch (error) {
+      releaseCanonShutter('prepare failed');
+      console.error('[Canon] prepare-shot failed:', error.message);
+      return { success: false, error: error.message };
+    } finally {
+      prepareShotPromise = null;
+    }
+  });
+
+  ipcMain.handle('canon-abort-shot-prep', async () => {
+    prepareShotPromise = null;
+    releaseCanonShutter('abort prep');
+    return { success: true };
+  });
+
   // Take photo with Canon camera
   ipcMain.handle('canon-take-photo', async () => {
     try {
@@ -2048,6 +2241,7 @@ if (edsdkAvailable) {
           console.warn('[Main] Session closed, reconnecting camera...');
           try {
             connectedCanonCamera.connect();
+            enableCanonHardwareFlash(connectedCanonCamera);
             console.log('[Main] ✓ Camera session reopened');
           } catch (reconnectErr) {
             console.error('[Main] Failed to reopen session:', reconnectErr.message);
@@ -2057,69 +2251,86 @@ if (edsdkAvailable) {
       }
 
       shotNo++;
-      console.log(`[Canon][shot #${shotNo}] BEGIN — pendingPhoto=${!!pendingPhotoPromise}, liveViewInterval=${!!liveViewInterval}`);
+      console.log(`[Canon][shot #${shotNo}] BEGIN — pendingPhoto=${!!pendingPhotoPromise}, liveViewInterval=${!!liveViewInterval}, armed=${shutterArmed}`);
 
-      // Pause live view during capture. The camera needs a moment to fully
-      // settle out of live-view streaming before it'll accept a shutter
-      // command — too short a wait here is a common cause of
-      // EDSDK - DEVICE_BUSY on the very next takePicture() call.
-      //
-      // CameraView tears EVF down during the last countdown second so the
-      // shutter at "0" isn't waiting on this. If live view is already
-      // gone, only a short settle is needed; the old unconditional 700ms
-      // was dead time between the on-screen "0" and the actual capture.
-      const liveViewWasRunning = !!liveViewInterval;
-      if (liveViewInterval) { clearInterval(liveViewInterval); liveViewInterval = null; }
-      try {
-        connectedCanonCamera.stopLiveView();
-        console.log(`[Canon][shot #${shotNo}] live view torn down before shutter`);
-      } catch (lvErr) {
-        console.warn(`[Canon][shot #${shotNo}] stopLiveView before shutter failed:`, lvErr.message);
-      }
-      await new Promise(r => setTimeout(r, liveViewWasRunning ? 700 : 80));
-
-      // Fire the shutter, retrying a couple of times if the camera reports
-      // DEVICE_BUSY — that error is normally transient (camera still
-      // finishing a prior operation) and clears within a few hundred ms.
-      // Shutter constants from the addon rather than magic numbers.
-      const CMD_PRESS_SHUTTER = Camera.Command.PressShutterButton;     // 4
-      const SHUTTER_OFF = Camera.PressShutterButton.OFF;               // 0
-      const SHUTTER_NONAF = Camera.PressShutterButton.CompletelyNonAF; // 65539
-
-      // ALWAYS leave the shutter button released. Camera::takePicture()
-      // sends Halfway -> Completely -> OFF but bails out of that chain the
-      // moment a step errors, so an AF failure at the half-press (very
-      // likely under photobooth lighting) leaves the button logically HELD
-      // DOWN on the body. The old AF_NG recovery below then sent another
-      // press and never a matching OFF, so every later command returned
-      // DEVICE_BUSY for the rest of the session — exactly "the 1st shot
-      // works, then a camera error blocks everything". Releasing in a
-      // finally makes each shot independent and lets the DEVICE_BUSY retry
-      // loop actually recover instead of re-pressing a held button.
-      const releaseShutter = () => {
+      if (prepareShotPromise) {
         try {
-          connectedCanonCamera.sendCommand(CMD_PRESS_SHUTTER, SHUTTER_OFF);
-          console.log(`[Canon][shot #${shotNo}] shutter released`);
-        } catch (relErr) {
-          console.warn(`[Canon][shot #${shotNo}] shutter release failed (non-fatal):`, relErr.message);
+          await prepareShotPromise;
+        } catch (prepErr) {
+          console.warn(`[Canon][shot #${shotNo}] pending prepare failed:`, prepErr.message);
         }
+      }
+
+      if (!shutterArmed) {
+        // No countdown arming (direct shot). Stop EVF, enable flash, then
+        // half-press in fireShutter. Countdown shots arm during "2"/"1"
+        // so this path is skipped and the shutter fires at 0.
+        await stopCanonEvfForShot();
+        enableCanonHardwareFlash(connectedCanonCamera);
+        logCanonFlashState(connectedCanonCamera, `shot #${shotNo}`);
+        const evfElapsed = lastEvfStoppedAt ? Date.now() - lastEvfStoppedAt : 0;
+        const evfWaitMs = Math.max(1100 - evfElapsed, 250);
+        console.log(`[Canon][shot #${shotNo}] unarmed — waiting ${evfWaitMs}ms after EVF`);
+        await sleepMs(evfWaitMs);
+      } else {
+        console.log(`[Canon][shot #${shotNo}] armed — firing at countdown 0`);
+      }
+
+      const S = canonShutter();
+
+      const pressShutter = (param, label) => {
+        connectedCanonCamera.sendCommand(S.cmd, param);
+        console.log(`[Canon][shot #${shotNo}] shutter ${label}`);
       };
 
-      const fireShutter = () => {
+      const isLegacyShutter = (err) => {
+        const msg = (err && err.message) || '';
+        return msg.includes('INVALID_PARAMETER') || msg.includes('NOT_SUPPORTED');
+      };
+
+      // Half-press happens in prepareCanonShot during countdown. At 0 we
+      // only send Completely so the flash hits with the on-screen 0.
+      const fireShutter = async () => {
         try {
-          try {
-            connectedCanonCamera.takePicture();
-          } catch (afErr) {
-            const msg = afErr.message || '';
-            if (msg.includes('TAKE_PICTURE_AF_NG') || msg.includes('AF_NG')) {
-              console.warn(`[Canon][shot #${shotNo}] AF_NG -> firing CompletelyNonAF`);
-              connectedCanonCamera.sendCommand(CMD_PRESS_SHUTTER, SHUTTER_NONAF);
-            } else {
-              throw afErr;
+          if (shutterArmed) {
+            const nonAf = shutterArmedNonAf;
+            shutterArmed = false;
+            shutterArmedNonAf = false;
+            try {
+              pressShutter(nonAf ? S.completelyNonAf : S.completely, nonAf ? 'CompletelyNonAF' : 'Completely');
+            } catch (compErr) {
+              if (!isCanonAfNg(compErr)) throw compErr;
+              pressShutter(S.completelyNonAf, 'CompletelyNonAF');
             }
+            await sleepMs(280);
+            return;
           }
+
+          let halfNonAf = false;
+          try {
+            pressShutter(S.halfway, 'Halfway');
+          } catch (halfErr) {
+            if (isLegacyShutter(halfErr)) {
+              console.warn(`[Canon][shot #${shotNo}] PressShutterButton unsupported, takePicture()`);
+              connectedCanonCamera.takePicture();
+              return;
+            }
+            if (!isCanonAfNg(halfErr)) throw halfErr;
+            console.warn(`[Canon][shot #${shotNo}] AF_NG on Halfway -> HalfwayNonAF`);
+            pressShutter(S.halfwayNonAf, 'HalfwayNonAF');
+            halfNonAf = true;
+          }
+          await sleepMs(400);
+          try {
+            pressShutter(halfNonAf ? S.completelyNonAf : S.completely, halfNonAf ? 'CompletelyNonAF' : 'Completely');
+          } catch (compErr) {
+            if (!isCanonAfNg(compErr)) throw compErr;
+            console.warn(`[Canon][shot #${shotNo}] AF_NG on Completely -> CompletelyNonAF`);
+            pressShutter(S.completelyNonAf, 'CompletelyNonAF');
+          }
+          await sleepMs(280);
         } finally {
-          releaseShutter();
+          releaseCanonShutter(`shot #${shotNo}`);
         }
       };
 
@@ -2138,17 +2349,12 @@ if (edsdkAvailable) {
 
               pendingPhotoPromise = { resolve, reject };
 
-              // fireShutter() throws SYNCHRONOUSLY on an EDSDK error, which
-              // rejects this promise via the executor and bypasses the
-              // stored reject wrapper. The old code cleared the timeout only
-              // inside those wrappers, so the 10s timer stayed armed and —
-              // 10s later, which is EXACTLY the subsequent-shot countdown —
-              // nulled a LATER shot's pendingPhotoPromise. That shot's
-              // DownloadRequest was then dropped and its image left
-              // un-transferred, jamming the camera. The finally below makes
-              // each capture's timer strictly its own.
+              // fireShutter() is async (flash half-press delay). Errors
+              // reject this promise via .catch. The finally below still
+              // owns this capture's 10s timer so a late timeout cannot
+              // null a later shot's pendingPhotoPromise.
               shutterFiredAt = Date.now();
-              fireShutter();
+              fireShutter().catch(reject);
             });
           } finally {
             if (captureTimeout) clearTimeout(captureTimeout);
@@ -2239,6 +2445,7 @@ if (edsdkAvailable) {
     try {
       if (connectedCanonCamera) {
         connectedCanonCamera.stopLiveView();
+        lastEvfStoppedAt = Date.now();
         console.log('[Main] Live view stopped');
       }
     } catch (lvErr) {
@@ -2283,7 +2490,15 @@ if (edsdkAvailable) {
   ipcMain.handle('canon-take-photo', async () => {
     return { success: false, error: 'EDSDK not available' };
   });
-  
+
+  ipcMain.handle('canon-prepare-shot', async () => {
+    return { success: false, error: 'EDSDK not available' };
+  });
+
+  ipcMain.handle('canon-abort-shot-prep', async () => {
+    return { success: true };
+  });
+
   ipcMain.handle('canon-disconnect', async () => {
     return { success: false, error: 'EDSDK not available' };
   });

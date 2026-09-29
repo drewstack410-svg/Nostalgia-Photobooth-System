@@ -586,9 +586,32 @@ function endSequence() {
 }
 
 let countdownSleepTimer: ReturnType<typeof setTimeout> | null = null;
-/** True when EVF was torn down during countdown "1" and must come back after the shot. */
+/** True when EVF was torn down during countdown "2"/"1" and must come back after the shot. */
 let restoreLiveViewAfterShot = false;
 let isUnmounted = false;
+let prepareShotPromise: Promise<void> | null = null;
+
+function beginCanonShotPrep(settleMs: number) {
+  if (prepareShotPromise) return;
+  if (!canonCameraConnected.value || !window.electronAPI?.canonPrepareShot) return;
+  restoreLiveViewAfterShot = true;
+  prepareShotPromise = (async () => {
+    if (liveViewActive.value) await stopLiveView({ keepFrame: true });
+    try {
+      const result = await window.electronAPI.canonPrepareShot({ settleMs });
+      if (!result?.success) {
+        console.warn("[Camera] Flash prep failed:", result?.error);
+      }
+    } catch (err) {
+      console.warn("[Camera] Flash prep error:", err);
+    }
+  })();
+}
+
+function abortCanonShotPrep() {
+  prepareShotPromise = null;
+  void window.electronAPI?.canonAbortShotPrep?.();
+}
 
 function sleepCountdown(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -789,25 +812,28 @@ async function runCountdownAndCapture() {
   for (let n = seconds; n >= 1; n--) {
     if (isUnmounted) return;
     countdownValue.value = n;
-    // Keep live view running through the last second so the highlight
-    // file gets a full 10s of motion. capturePhoto() still stops EVF
-    // right before the shutter.
-    if (n === 1 && liveViewActive.value) {
-      restoreLiveViewAfterShot = true;
+    // Arm flash during the last 2 seconds (or the only second if the
+    // posing timer is 1s) so EVF teardown + charge happen before 0.
+    // At 0 the shutter is only a full-press.
+    if (n === Math.min(2, seconds) && canonCameraConnected.value) {
+      beginCanonShotPrep(n === 1 ? 500 : 1100);
     }
     await sleepCountdown(1000);
   }
 
   if (isUnmounted) return;
-  isCountingDown.value = false;
-  isCapturing.value = true;
-  const shotNumber = store.capturedPhotos.length + 1;
   if (isHighlightRecording()) {
     await waitForHighlightLead();
     freezeLivePreview();
   }
+  if (isUnmounted) return;
+  countdownValue.value = 0;
+  isCapturing.value = true;
+  const shotNumber = store.capturedPhotos.length + 1;
   const success = await capturePhoto();
+  isCountingDown.value = false;
   isCapturing.value = false;
+  prepareShotPromise = null;
 
   if (success && !isUnmounted) {
     await showShotReview();
@@ -1235,6 +1261,7 @@ onUnmounted(() => {
   // component that no longer exists.
   isUnmounted = true;
   sequenceActive = false;
+  abortCanonShotPrep();
   cancelCountdownSleep();
   cancelHighlightLead();
   abortHighlightCapture();

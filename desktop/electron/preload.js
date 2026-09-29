@@ -198,6 +198,14 @@ try {
     canonTakePhoto: () => {
       return ipcRenderer.invoke('canon-take-photo');
     },
+
+    canonPrepareShot: (opts) => {
+      return ipcRenderer.invoke('canon-prepare-shot', opts);
+    },
+
+    canonAbortShotPrep: () => {
+      return ipcRenderer.invoke('canon-abort-shot-prep');
+    },
     
     canonDisconnect: () => {
       return ipcRenderer.invoke('canon-disconnect');
