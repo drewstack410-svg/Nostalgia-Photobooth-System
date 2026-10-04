@@ -4,6 +4,7 @@
   "description": "NOSTALGIA BOOTH — vintage photobooth software for touchscreen kiosks",
   "main": "electron/main.js",
   "scripts": {
+    "preinstall": "node scripts/preinstall.js",
     "pb:serve": "node scripts/ensure-pocketbase.js && vendor/pocketbase/pocketbase.exe serve --http=127.0.0.1:8090 --dir=./pb_data --migrationsDir=pb_migrations",
     "pb:ensure": "node scripts/ensure-pocketbase.js",
     "dev": "vite",
@@ -13,10 +14,10 @@
     "electron:build": "node scripts/ensure-pocketbase.js && node scripts/generate-app-icon.js && vite build && electron-builder",
     "electron:build:win": "node scripts/ensure-pocketbase.js && node scripts/generate-app-icon.js && vite build && electron-builder --win",
     "electron:build:mac": "node scripts/build-mac.js",
-    "icon:generate": "node scripts/generate-app-icon.js"
+    "icon:generate": "node scripts/generate-app-icon.js",
+    "install:mac": "npm install --omit=optional"
   },
   "dependencies": {
-    "@brick-a-brack/napi-canon-cameras": "^0.1.5",
     "mp4-muxer": "^5.2.2",
     "pinia": "^2.1.7",
     "pocketbase": "^0.26.8",
@@ -40,6 +41,9 @@
     "vite": "^5.1.6",
     "vue-tsc": "^2.0.6",
     "wait-on": "^7.2.0"
+  },
+  "optionalDependencies": {
+    "@brick-a-brack/napi-canon-cameras": "^0.1.5"
   },
   "build": {
     "appId": "com.nostalgia.photobooth",
