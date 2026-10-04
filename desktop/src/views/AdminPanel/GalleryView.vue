@@ -6,6 +6,11 @@ import type { MediaUploadStatus } from "@/stores/photobooth";
 import { useDashboardStore } from "@/stores/dashboard";
 import QRCode from "qrcode";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
+import { printCropSiblingPath } from "@/utils/gallerySession";
+import {
+  cropBarPercentForTemplate,
+  cropDataUrlToHighlightedView,
+} from "@/utils/viewfinderCrop";
 import {
   isBrowserOffline,
   jobForSession,
@@ -536,34 +541,83 @@ async function confirmReprint() {
   // Skip the composite "printed strip" entry — reprint re-renders the
   // sheet from the raw captures, so feeding the composite back in would
   // wrongly treat it as an extra photo.
-  const sessionStrips = store.recentStrips
-    .filter((s) => s.sessionId === seed.sessionId && !s.isComposite && !s.isOriginal)
-    .slice()
-    .sort((a, b) => (a.sessionIndex ?? 0) - (b.sessionIndex ?? 0));
+  const folder = sessionFolderOf(seed.path);
+  type ReprintSrc = {
+    id: string;
+    sessionIndex: number;
+    path?: string;
+    printPath?: string;
+    previewUrl?: string;
+  };
+  const byIndex = new Map<number, ReprintSrc>();
+  const consider = (src: ReprintSrc) => {
+    const prev = byIndex.get(src.sessionIndex);
+    if (!prev) {
+      byIndex.set(src.sessionIndex, src);
+      return;
+    }
+    if (!prev.printPath && src.printPath) prev.printPath = src.printPath;
+    if (!prev.path && src.path) prev.path = src.path;
+    if (!prev.previewUrl && src.previewUrl) prev.previewUrl = src.previewUrl;
+  };
+  for (const s of store.recentStrips) {
+    if (s.sessionId !== seed.sessionId || s.isComposite || s.isOriginal) continue;
+    consider({
+      id: s.id,
+      sessionIndex: s.sessionIndex ?? 0,
+      path: s.path,
+      printPath: s.printPath,
+      previewUrl: s.dataUrl,
+    });
+  }
+  for (const p of diskSessionPhotos.value) {
+    if (p.isComposite || p.isOriginal) continue;
+    if (isPrintCropName(fileNameOf(p.path || p.name))) continue;
+    const sameSession =
+      (p.sessionId && p.sessionId === seed.sessionId) ||
+      (folder && sessionFolderOf(p.path) === folder);
+    if (!sameSession) continue;
+    consider({
+      id: p.id,
+      sessionIndex: p.sessionIndex ?? 0,
+      path: p.path,
+      previewUrl: p.src,
+    });
+  }
 
-  // Prefer the FULL-RESOLUTION capture from disk: recent-strip entries
-  // persist only a downscaled preview (localStorage quota), while the
-  // original PNG lives at `path`. Fall back to the stored preview if
-  // the file is gone — a soft reprint beats a failed one.
+  const tpl =
+    store.templates.find((t) => t.id === seed.templateId) ??
+    store.selectedTemplate;
+  const cropBar = cropBarPercentForTemplate(tpl);
+
+  async function readDisk(filePath?: string | null): Promise<string | null> {
+    if (!filePath || !window.electronAPI?.readPhoto) return null;
+    try {
+      return (await window.electronAPI.readPhoto(filePath)) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Prefer photo-N-print.jpg (the exact still the first print used).
+  // If that file is missing, recrop photo-N.jpg the same way CameraView
+  // does — never feed the wide live-view frame or a tiny gallery preview
+  // straight into the composite.
+  const sessionStrips = [...byIndex.values()].sort(
+    (a, b) => a.sessionIndex - b.sessionIndex,
+  );
   const captures: { id: string; dataUrl: string }[] = [];
   for (const s of sessionStrips) {
-    let dataUrl = s.dataUrl;
-    if (s.path && window.electronAPI) {
-      try {
-        const printCrop = s.path.replace(
-          /photo-(\d+)\.jpg$/i,
-          "photo-$1-print.jpg",
-        );
-        const full =
-          (printCrop !== s.path
-            ? await window.electronAPI.readPhoto(printCrop)
-            : null) || (await window.electronAPI.readPhoto(s.path));
-        if (full) dataUrl = full;
-      } catch {
-        /* fall back to the stored preview */
-      }
+    const printFile = s.printPath || printCropSiblingPath(s.path);
+    let dataUrl = await readDisk(printFile);
+    const usedPrintFile = !!dataUrl;
+    if (!dataUrl) dataUrl = await readDisk(s.path);
+    if (!dataUrl) dataUrl = s.previewUrl || "";
+    if (!dataUrl) continue;
+    if (!usedPrintFile) {
+      dataUrl = await cropDataUrlToHighlightedView(dataUrl, cropBar);
     }
-    if (dataUrl) captures.push({ id: s.id, dataUrl });
+    captures.push({ id: s.id, dataUrl });
   }
 
   const ok = store.loadSessionForReprint(

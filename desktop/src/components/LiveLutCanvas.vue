@@ -10,12 +10,9 @@ import {
   drawCoverMedia,
 } from "@/utils/applyCaptureLook";
 import {
-  applyFilmGrainToImageData,
   type FilterAdjustments,
 } from "@/utils/filterPreview";
 import type { LrSpatialLook } from "@/utils/lightroomSpatial";
-
-const MAX_EDGE = 960;
 
 const props = withDefaults(
   defineProps<{
@@ -27,14 +24,17 @@ const props = withDefaults(
     mirror?: boolean;
     adjustments?: FilterAdjustments | null;
     lrSpatial?: LrSpatialLook | null;
+    /** Cap the working bitmap. Filter studio uses a smaller edge so EVF can stay fast. */
+    maxEdge?: number;
   }>(),
-  { cssFilter: "none", mirror: false },
+  { cssFilter: "none", mirror: false, maxEdge: 960 },
 );
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const frameImg = ref<HTMLImageElement | null>(null);
 let raf = 0;
 let running = false;
+let drawing = false;
 
 watch(
   () => props.frameSrc,
@@ -44,6 +44,11 @@ watch(
     if (img && img.src !== src) img.src = src;
   },
 );
+
+function pushFrame(src: string) {
+  const img = frameImg.value;
+  if (img && img.src !== src) img.src = src;
+}
 
 function source(): CanvasImageSource | null {
   const video = props.video;
@@ -55,31 +60,36 @@ function source(): CanvasImageSource | null {
 
 function tick() {
   if (!running) return;
+  raf = requestAnimationFrame(tick);
+  if (drawing) return;
   const canvas = canvasRef.value;
   const src = source();
-  if (canvas && src && props.lut) {
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (ctx) {
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(1.5, window.devicePixelRatio || 1);
-      let w = Math.max(2, Math.round(rect.width * dpr));
-      let h = Math.max(2, Math.round(rect.height * dpr));
-      const edge = Math.max(w, h);
-      if (edge > MAX_EDGE) {
-        const s = MAX_EDGE / edge;
-        w = Math.max(2, Math.round(w * s));
-        h = Math.max(2, Math.round(h * s));
-      }
-      if (canvas.width !== w) canvas.width = w;
-      if (canvas.height !== h) canvas.height = h;
+  if (!canvas || !src || !props.lut) return;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return;
+  drawing = true;
+  try {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(1.5, window.devicePixelRatio || 1);
+    let w = Math.max(2, Math.round(rect.width * dpr));
+    let h = Math.max(2, Math.round(rect.height * dpr));
+    const cap = props.maxEdge ?? 960;
+    const edge = Math.max(w, h);
+    if (edge > cap) {
+      const s = cap / edge;
+      w = Math.max(2, Math.round(w * s));
+      h = Math.max(2, Math.round(h * s));
+    }
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
 
-      ctx.save();
-      if (props.mirror) {
-        ctx.translate(w, 0);
-        ctx.scale(-1, 1);
-      }
-      drawCoverMedia(ctx, src, w, h);
-      ctx.restore();
+    ctx.save();
+    if (props.mirror) {
+      ctx.translate(w, 0);
+      ctx.scale(-1, 1);
+    }
+    drawCoverMedia(ctx, src, w, h);
+    ctx.restore();
 
       const adj = props.adjustments;
       applyCaptureLook(ctx, {
@@ -91,19 +101,11 @@ function tick() {
         lrSpatial: props.lrSpatial,
         skipSpatial: true,
       });
-      if (adj && adj.grain > 0) {
-        const imageData = ctx.getImageData(0, 0, w, h);
-        applyFilmGrainToImageData(
-          imageData,
-          adj.grain,
-          props.lrSpatial?.grainSize ?? 25,
-          props.lrSpatial?.grainFreq ?? 50,
-        );
-        ctx.putImageData(imageData, 0, 0);
-      }
-    }
+      // Grain is applied on capture. Doing it every live frame (getImageData)
+      // is what made the Canon preview hitch and lag.
+  } finally {
+    drawing = false;
   }
-  raf = requestAnimationFrame(tick);
 }
 
 onMounted(() => {
@@ -115,6 +117,8 @@ onUnmounted(() => {
   running = false;
   cancelAnimationFrame(raf);
 });
+
+defineExpose({ pushFrame });
 </script>
 
 <template>
@@ -126,7 +130,7 @@ onUnmounted(() => {
   <img
     v-if="frameSrc"
     ref="frameImg"
-    class="live-lut-src"
+    class="live-lut-src js-canon-evf"
     :src="frameSrc"
     alt=""
   />

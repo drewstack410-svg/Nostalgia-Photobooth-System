@@ -22,6 +22,7 @@ import {
   cropBarPercentForTemplate,
   highlightedViewRect,
 } from "@/utils/viewfinderCrop";
+import { onCanonLiveViewFrames, paintCanonEvfImages } from "@/utils/liveViewFrames";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
 import FilterOverlayLayers from "@/components/FilterOverlayLayers.vue";
 import LiveLutCanvas from "@/components/LiveLutCanvas.vue";
@@ -100,6 +101,7 @@ const canonCameraName = ref<string | null>(null);
 // Live view
 const liveViewActive = ref(false);
 const liveViewFrame = ref<string | null>(null);
+const cameraScreenRef = ref<HTMLElement | null>(null);
 
 // Sample still used to stand in for a camera — commented out while test
 // mode uses this computer's webcam instead.
@@ -511,8 +513,9 @@ async function startLiveView() {
     if (result.success) {
       liveViewActive.value = true;
       console.log('[Camera] Live view started');
-      window.electronAPI.onLiveViewFrame((dataUrl: string) => {
-        liveViewFrame.value = dataUrl;
+      onCanonLiveViewFrames((dataUrl) => {
+        if (!liveViewFrame.value) liveViewFrame.value = dataUrl;
+        paintCanonEvfImages(dataUrl, cameraScreenRef.value);
       });
     } else {
       // Latching this silently is why the preview goes black for the rest
@@ -1292,7 +1295,11 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="camera-screen" :class="{ 'kiosk-laid-out': laidOut }">
+  <div
+    ref="cameraScreenRef"
+    class="camera-screen"
+    :class="{ 'kiosk-laid-out': laidOut }"
+  >
     <KioskDecor screen-id="camera" />
     <!-- The live preview's colour, built from the same definition the
          capture uses (see filterPreview.ts). Zero-sized and hidden: it only
@@ -1415,7 +1422,7 @@ onUnmounted(() => {
           <video
             v-if="stream"
             ref="videoBlurRef"
-            class="liveview-img"
+            class="liveview-img js-canon-evf"
             :class="{
               mirror: store.mirrorMode,
               'liveview-source-hidden': lutPreviewActive,
@@ -1429,7 +1436,7 @@ onUnmounted(() => {
           <img
             v-else-if="liveViewFrame"
             :src="liveViewFrame"
-            class="liveview-img"
+            class="liveview-img js-canon-evf"
             :class="{
               mirror: store.mirrorMode,
               'liveview-source-hidden': lutPreviewActive,
@@ -1446,6 +1453,7 @@ onUnmounted(() => {
             :mirror="store.mirrorMode"
             :adjustments="selectedAdjustments"
             :lr-spatial="selectedFilter?.lrSpatial"
+            :max-edge="640"
           />
         </div>
         <!-- Blur style: sharp feed in centered window with white border -->
@@ -1455,7 +1463,7 @@ onUnmounted(() => {
               <video
                 v-if="stream"
                 ref="videoRef"
-                class="liveview-img"
+                class="liveview-img js-canon-evf"
                 :class="{
                   mirror: store.mirrorMode,
                   'liveview-source-hidden': lutPreviewActive,
@@ -1469,7 +1477,7 @@ onUnmounted(() => {
               <img
                 v-else-if="liveViewFrame"
                 :src="liveViewFrame"
-                class="liveview-img"
+                class="liveview-img js-canon-evf"
                 :class="{
                   mirror: store.mirrorMode,
                   'liveview-source-hidden': lutPreviewActive,
@@ -1486,6 +1494,7 @@ onUnmounted(() => {
                 :mirror="store.mirrorMode"
                 :adjustments="selectedAdjustments"
                 :lr-spatial="selectedFilter?.lrSpatial"
+            :max-edge="640"
               />
               <!-- Crop indicator: faded bars marking how much of the
                    3:2 capture the SELECTED template trims off each
@@ -1517,7 +1526,7 @@ onUnmounted(() => {
           <video
             v-if="stream"
             ref="videoRef"
-            class="liveview-img"
+            class="liveview-img js-canon-evf"
             :class="{
               mirror: store.mirrorMode,
               'liveview-source-hidden': lutPreviewActive,
@@ -1531,7 +1540,7 @@ onUnmounted(() => {
           <img
             v-else-if="liveViewFrame"
             :src="liveViewFrame"
-            class="liveview-img"
+            class="liveview-img js-canon-evf"
             :class="{
               mirror: store.mirrorMode,
               'liveview-source-hidden': lutPreviewActive,
@@ -1548,6 +1557,7 @@ onUnmounted(() => {
             :mirror="store.mirrorMode"
             :adjustments="selectedAdjustments"
             :lr-spatial="selectedFilter?.lrSpatial"
+            :max-edge="640"
           />
           <div v-else class="liveview-placeholder">
             <div class="liveview-placeholder-text">{{ !store.cameraDetectionEnabled ? "Test mode — starting camera..." : cameraReady ? 'Starting preview...' : 'Connecting camera...' }}</div>

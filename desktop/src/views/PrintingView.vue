@@ -16,7 +16,8 @@ import { getFrameWindows, scaleWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { buildSessionGif } from "@/utils/sessionGif";
-import { composeStripVideo } from "@/utils/composeStripVideo";
+import { composeStripStill, composeStripVideo } from "@/utils/composeStripVideo";
+import type { StripSlot } from "@/utils/composeStripVideo";
 import { mediaUrlToBytes, revokeMediaUrl } from "@/utils/mediaBytes";
 import { isPlayableMp4, remuxToGuestMp4 } from "@/utils/guestMp4";
 import {
@@ -170,6 +171,7 @@ type GallerySlot = {
   w: number;
   h: number;
   rotation?: number;
+  shot?: number;
 };
 
 // Same precedence as the print composite / live preview: hand-placed
@@ -180,15 +182,17 @@ async function galleryLayoutParam(): Promise<{ slots: string; par: string } | nu
   if (!t) return null;
   const sheet = getPaperSizePx(t.paperSize);
   const par = `${Math.round(sheet.width)}x${Math.round(sheet.height)}`;
+  const shotCount = Math.max(1, t.photoCount ?? t.cells?.length ?? 1);
   let rects: GallerySlot[] = [];
 
   if (t.cells?.length) {
-    rects = t.cells.map((c) => ({
+    rects = t.cells.map((c, i) => ({
       x: c.x,
       y: c.y,
       w: c.w,
       h: c.h,
       rotation: c.rotation || 0,
+      shot: cellCaptureIndex(c, i, shotCount),
     }));
   } else if (t.frameImageUrl) {
     const expected =
@@ -215,21 +219,23 @@ async function galleryLayoutParam(): Promise<{ slots: string; par: string } | nu
       const src = frameIsFullSheet
         ? windows.filter((r) => r.x + r.width / 2 < areaW)
         : windows;
-      rects = src.map((r) => ({
+      rects = src.map((r, i) => ({
         x: r.x / areaW,
         y: r.y / areaH,
         w: r.width / areaW,
         h: r.height / areaH,
+        shot: cellCaptureIndex(undefined, i, shotCount),
       }));
     }
   }
 
   if (!rects.length) {
-    rects = getTemplateCellRects(t).map((r) => ({
+    rects = getTemplateCellRects(t).map((r, i) => ({
       x: r.x / sheet.width,
       y: r.y / sheet.height,
       w: r.width / sheet.width,
       h: r.height / sheet.height,
+      shot: cellCaptureIndex(undefined, i, shotCount),
     }));
   }
 
@@ -237,11 +243,64 @@ async function galleryLayoutParam(): Promise<{ slots: string; par: string } | nu
   const slots = rects
     .map((c) => {
       const parts = [c.x, c.y, c.w, c.h].map((v) => Number(v).toFixed(4));
-      if (c.rotation) parts.push(Number(c.rotation).toFixed(2));
+      parts.push(Number(c.rotation || 0).toFixed(2));
+      parts.push(String(c.shot ?? 0));
       return parts.join("_");
     })
     .join(",");
   return { slots, par };
+}
+
+function parseStripSlots(packed: string | undefined): StripSlot[] {
+  if (!packed) return [];
+  return packed
+    .split(",")
+    .map((part) => {
+      const n = part.split("_").map(Number);
+      return {
+        x: n[0],
+        y: n[1],
+        w: n[2],
+        h: n[3],
+        rotation: n.length >= 5 ? n[4] : 0,
+        shot: n.length >= 6 && Number.isFinite(n[5]) ? n[5] : undefined,
+      };
+    })
+    .filter(
+      (s) =>
+        isFinite(s.x) &&
+        isFinite(s.y) &&
+        isFinite(s.w) &&
+        isFinite(s.h) &&
+        s.w > 0 &&
+        s.h > 0,
+    );
+}
+
+async function orderedHighlightStripPicture(
+  frameDataUrl: string,
+): Promise<string> {
+  const t = store.sessionTemplate ?? store.selectedTemplate;
+  const layout = await galleryLayoutParam();
+  const slots = parseStripSlots(layout?.slots);
+  if (!slots.length) return frameDataUrl;
+  const stills = store.capturedPhotos
+    .map((p) => p.dataUrl)
+    .filter(Boolean);
+  if (!stills.length) return frameDataUrl;
+  let overlayDataUrl: string | undefined;
+  const pngFrame = t?.frameImageUrl;
+  if (pngFrame) {
+    overlayDataUrl = await prepareFrameDataUrl(pngFrame);
+  }
+  const still = await composeStripStill({
+    frameDataUrl,
+    stillDataUrls: stills,
+    slots,
+    overlayDataUrl,
+    cropBarPercent: 0,
+  });
+  return still || frameDataUrl;
 }
 
 // makePreviewDataUrl (downscale-for-localStorage) moved to
@@ -464,7 +523,8 @@ async function createCompositeImage(
       );
 
       for (let i = 0; i < slotCount; i++) {
-        const img = loadedImages[i % count];
+        const img =
+          loadedImages[cellCaptureIndex(template.cells?.[i], i, count)];
         let cellX: number;
         let cellY: number;
         let cw: number;
@@ -868,8 +928,13 @@ async function createCompositeImage(
         // the template has more cells than captured photos — rare for
         // display but keeps the layout intact).
         const cellCount = cols * rows;
+        const shotCount = Math.max(1, template.photoCount ?? loadedImages.length);
         for (let i = 0; i < cellCount; i++) {
-          const img = loadedImages[i % loadedImages.length];
+          const img =
+            loadedImages[
+              cellCaptureIndex(template.cells?.[i], i, shotCount) %
+                loadedImages.length
+            ];
           const col = i % cols;
           const row = Math.floor(i / cols);
           ctx.drawImage(img, col * photoW, row * photoH, photoW, photoH);
@@ -1031,11 +1096,14 @@ async function saveComposite() {
       // WITHOUT the session tag so it stays out of the animated GIF
       // (which is just the captures). Runs concurrently with the
       // per-capture uploads below.
-      const shareComposite =
+      const shareCompositeRaw =
         printComposite &&
         store.selectedTemplate?.paperSize === "2x6-portrait"
           ? await cropLeftHalf(printComposite)
           : printComposite;
+      const shareComposite = shareCompositeRaw
+        ? await orderedHighlightStripPicture(shareCompositeRaw)
+        : "";
 
       type PreparedClip = {
         name: string;
@@ -1054,29 +1122,7 @@ async function saveComposite() {
         if (shareComposite) {
         try {
           const layout = await galleryLayoutParam();
-          const slots = layout
-            ? layout.slots
-                .split(",")
-                .map((part) => {
-                  const n = part.split("_").map(Number);
-                  return {
-                    x: n[0],
-                    y: n[1],
-                    w: n[2],
-                    h: n[3],
-                    rotation: n.length >= 5 ? n[4] : 0,
-                  };
-                })
-                .filter(
-                  (s) =>
-                    isFinite(s.x) &&
-                    isFinite(s.y) &&
-                    isFinite(s.w) &&
-                    isFinite(s.h) &&
-                    s.w > 0 &&
-                    s.h > 0,
-                )
-            : [];
+          const slots = parseStripSlots(layout?.slots);
           const pngFrame = store.sessionTemplate?.frameImageUrl
             || store.selectedTemplate?.frameImageUrl;
           let overlayDataUrl: string | undefined;
@@ -1171,6 +1217,7 @@ async function saveComposite() {
         dataUrl: string;
         fullDataUrl?: string;
         localPath?: string;
+        printPath?: string;
         originalPath?: string;
         originalDataUrl?: string;
       };
@@ -1187,6 +1234,7 @@ async function saveComposite() {
           // including the dimmed side bars). The portrait crop is only
           // for print/reprint, saved as photo-N-print.jpg.
           let localPath: string | undefined;
+          let printPath: string | undefined;
           try {
             const r = await window.electronAPI.savePhoto(
               fullDataUrl,
@@ -1207,11 +1255,7 @@ async function saveComposite() {
             console.error(`[Save] Capture ${idx} disk save error:`, e);
           }
 
-          if (
-            photo.dataUrl &&
-            photo.dataUrl !== fullDataUrl &&
-            window.electronAPI?.savePhoto
-          ) {
+          if (window.electronAPI?.savePhoto) {
             try {
               const r = await window.electronAPI.savePhoto(
                 photo.dataUrl,
@@ -1220,6 +1264,7 @@ async function saveComposite() {
                   : `nostalgia_${sessionTs}_${idx + 1}-print.jpg`,
               );
               if (r.success && r.path) {
+                printPath = r.path;
                 console.log(`[Save] Capture ${idx} print crop saved to:`, r.path);
               } else {
                 console.warn(
@@ -1268,6 +1313,7 @@ async function saveComposite() {
             dataUrl: photo.dataUrl,
             fullDataUrl,
             localPath,
+            printPath,
             originalPath,
             originalDataUrl: photo.originalDataUrl,
           };
@@ -1346,6 +1392,7 @@ async function saveComposite() {
           dataUrl: previewUrl,
           timestamp: new Date(),
           path: r.localPath,
+          printPath: r.printPath,
           sessionId,
           templateId,
           sessionIndex: r.idx,

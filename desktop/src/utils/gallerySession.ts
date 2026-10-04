@@ -14,6 +14,18 @@ export function makeGalleryShortCode(length = 6): string {
   return out;
 }
 
+/** `photo-1.jpg` → sibling `photo-1-print.jpg` (preserves Windows separators). */
+export function printCropSiblingPath(filePath?: string): string | null {
+  if (!filePath) return null;
+  const lastSlash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
+  const dir = lastSlash >= 0 ? filePath.slice(0, lastSlash + 1) : "";
+  const name = lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath;
+  if (/photo-\d+-print\.(jpe?g|png)$/i.test(name)) return filePath;
+  const m = name.match(/^photo-(\d+)\.(jpe?g|png)$/i);
+  if (!m) return null;
+  return `${dir}photo-${m[1]}-print.jpg`;
+}
+
 /** QR target: gallery page + `?s=` only — no photo/video keys in the link. */
 export function buildShortGalleryUrl(shortCode: string): string {
   const raw = (

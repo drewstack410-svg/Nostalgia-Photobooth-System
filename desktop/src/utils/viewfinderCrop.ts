@@ -44,6 +44,41 @@ export function highlightedViewRect(
   return { sx, sy, sw, sh };
 }
 
+/** Same crop CameraView bakes into `dataUrl` before the print composite. */
+export function cropDataUrlToHighlightedView(
+  dataUrl: string,
+  cropBarPct: number,
+): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const srcW = img.naturalWidth;
+      const srcH = img.naturalHeight;
+      if (srcW < 2 || srcH < 2) {
+        resolve(dataUrl);
+        return;
+      }
+      const r = highlightedViewRect(srcW, srcH, cropBarPct);
+      if (r.sw >= srcW && r.sh >= srcH) {
+        resolve(dataUrl);
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = r.sw;
+      canvas.height = r.sh;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+      ctx.drawImage(img, r.sx, r.sy, r.sw, r.sh, 0, 0, r.sw, r.sh);
+      resolve(canvas.toDataURL("image/jpeg", 0.92));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
 /** Percent cropped off each side of the 3:2 view for this template. */
 export function cropBarPercentForTemplate(
   t: TemplateLayoutSpec | null | undefined,

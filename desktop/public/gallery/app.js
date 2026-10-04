@@ -370,9 +370,10 @@
       const grid = document.createElement("div");
       grid.className = "stage-grid";
       const layout = resolveShotGrid(view.ids.length);
+      const cellAr = printCellAspect();
       grid.style.gridTemplateColumns = `repeat(${layout.cols}, 1fr)`;
       grid.style.gridTemplateRows = `repeat(${layout.rows}, 1fr)`;
-      stageEl.style.aspectRatio = `${layout.cols} / ${layout.rows}`;
+      stageEl.style.aspectRatio = `${layout.cols * cellAr} / ${layout.rows}`;
       const cellCount = layout.cols * layout.rows;
       for (let i = 0; i < cellCount; i++) {
         if (i < view.ids.length) {
@@ -710,6 +711,7 @@
           w: n[2],
           h: n[3],
           r: n.length >= 5 && isFinite(n[4]) ? n[4] : 0,
+          shot: n.length >= 6 && isFinite(n[5]) ? n[5] : undefined,
         };
       })
       .filter(Boolean);
@@ -750,6 +752,37 @@
     ).length;
     if (cols < 1 || rows < 1) return null;
     return { cols, rows };
+  }
+
+  function uniquePrintSlots() {
+    const slots = Array.isArray(layoutSlots) ? layoutSlots : [];
+    const seen = new Set();
+    const out = [];
+    for (const s of slots) {
+      if (!s || !(s.w > 0) || !(s.h > 0)) continue;
+      if (Number.isFinite(s.shot)) {
+        if (seen.has(s.shot)) continue;
+        seen.add(s.shot);
+      }
+      out.push(s);
+    }
+    return out;
+  }
+
+  // Same photo-window aspect as the printed strip cells.
+  function printCellAspect() {
+    const slot = uniquePrintSlots()[0];
+    if (slot && slot.h > 0) return slot.w / slot.h;
+    if (
+      printAspect &&
+      printAspect.w > 0 &&
+      printAspect.h > 0 &&
+      gridCols > 0 &&
+      gridRows > 0
+    ) {
+      return printAspect.w / gridCols / (printAspect.h / gridRows);
+    }
+    return 2 / 3;
   }
 
   // Grid tab: tight rows/cols for the photos that exist.
@@ -1452,10 +1485,12 @@
     const layout = resolveShotGrid(imgs.length);
     const cols = layout.cols;
     const rows = layout.rows;
-    const cell = 600;
+    const cellAr = printCellAspect();
+    const cellW = 600;
+    const cellH = Math.max(1, Math.round(cellW / cellAr));
     const gap = 10;
-    const W = cols * cell + (cols - 1) * gap;
-    const H = rows * cell + (rows - 1) * gap;
+    const W = cols * cellW + (cols - 1) * gap;
+    const H = rows * cellH + (rows - 1) * gap;
 
     const canvas = document.createElement("canvas");
     canvas.width = W;
@@ -1467,9 +1502,9 @@
     imgs.forEach((img, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
-      const x = col * (cell + gap);
-      const y = row * (cell + gap);
-      drawCoverFit(ctx, img, x, y, cell, cell);
+      const x = col * (cellW + gap);
+      const y = row * (cellH + gap);
+      drawCoverFit(ctx, img, x, y, cellW, cellH);
     });
 
     return new Promise((resolve, reject) => {

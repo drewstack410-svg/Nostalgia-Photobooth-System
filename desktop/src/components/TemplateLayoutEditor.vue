@@ -22,6 +22,7 @@ import {
   stopWebcamTracks,
   webcamErrorMessage,
 } from "@/utils/openCamera";
+import { onCanonLiveViewFrames } from "@/utils/liveViewFrames";
 import { getFrameWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
 import {
@@ -389,7 +390,7 @@ async function startCanonTest(): Promise<boolean> {
     if (!connected.success) return false;
     const live = await api.canonStartLiveView();
     if (!live.success) return false;
-    api.onLiveViewFrame((dataUrl: string) => {
+    onCanonLiveViewFrames((dataUrl) => {
       testShotUrl.value = dataUrl;
     });
     testCameraOn.value = true;

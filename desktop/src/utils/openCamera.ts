@@ -41,6 +41,8 @@ export async function openVideoStream(
   stopWebcamTracks(previous);
 
   const attempts: MediaStreamConstraints[] = [
+    { audio: false, video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 120, max: 120 } } },
+    { audio: false, video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } } },
     { audio: false, video: { width: { ideal: 1920 }, height: { ideal: 1080 } } },
     { audio: false, video: { facingMode: "user" } },
     { audio: false, video: true },

@@ -24,6 +24,7 @@ const AUTO_RESUME_MS = 20_000;
 
 export type GalleryAssetKind =
   | "photo"
+  | "photo-full"
   | "print"
   | "gif"
   | "highlight-strip"
@@ -301,6 +302,7 @@ export async function processSessionUpload(sessionId: string): Promise<boolean> 
 
   try {
     const photoIds: string[] = [];
+    const fullStillIds: string[] = [];
     const photoMeta: Array<{ url: string; publicId: string }> = [];
     let printId: string | undefined;
     const stripIds: string[] = [];
@@ -321,6 +323,8 @@ export async function processSessionUpload(sessionId: string): Promise<boolean> 
         if (uploaded.url) {
           photoMeta.push({ url: uploaded.url, publicId: uploaded.publicId });
         }
+      } else if (asset.kind === "photo-full") {
+        fullStillIds.push(uploaded.publicId);
       } else if (asset.kind === "print") {
         printId = uploaded.publicId;
       } else if (asset.kind === "highlight-strip") {
@@ -338,7 +342,11 @@ export async function processSessionUpload(sessionId: string): Promise<boolean> 
         publicIds: photoIds,
         printId,
         videoIds: stripIds.length ? stripIds : undefined,
-        fullIds: photoIds.length ? photoIds : undefined,
+        fullIds: fullStillIds.length
+          ? fullStillIds
+          : photoIds.length
+            ? photoIds
+            : undefined,
         fullVids: fullVids.length ? fullVids : undefined,
         gifId,
         layout: job.layout,
@@ -487,14 +495,25 @@ async function reconstructJobFromDisk(
 
   const sessionTs = Number(sessionId.replace(/^session_/, "")) || Date.now();
   const assets: GalleryUploadAsset[] = [];
+  const printStills: GalleryUploadAsset[] = [];
+  const fullStills: GalleryUploadAsset[] = [];
   for (const file of files) {
     const name = file.name;
-    if (/^photo-\d+\.jpe?g$/i.test(name)) {
+    if (/^photo-\d+-print\.(jpe?g|png)$/i.test(name)) {
       const n = Number(name.match(/\d+/)?.[0] || "1") - 1;
-      assets.push({
+      printStills.push({
         kind: "photo",
         filename: name,
         publicId: `nostalgia_${sessionTs}_${n}`,
+        mime: mimeFromName(name),
+        captureIndex: n,
+      });
+    } else if (/^photo-\d+\.jpe?g$/i.test(name)) {
+      const n = Number(name.match(/\d+/)?.[0] || "1") - 1;
+      fullStills.push({
+        kind: "photo-full",
+        filename: name,
+        publicId: `nostalgia_${sessionTs}_${n}_full`,
         mime: mimeFromName(name),
         captureIndex: n,
       });
@@ -529,6 +548,9 @@ async function reconstructJobFromDisk(
       });
     }
   }
+  printStills.sort((a, b) => (a.captureIndex ?? 0) - (b.captureIndex ?? 0));
+  fullStills.sort((a, b) => (a.captureIndex ?? 0) - (b.captureIndex ?? 0));
+  assets.push(...printStills, ...fullStills);
   if (!assets.length) return null;
 
   return {

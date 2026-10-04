@@ -247,6 +247,12 @@ export interface SavedPhotoStrip {
   timestamp: Date;
   path?: string;
   /**
+   * Disk path of the viewfinder-cropped JPEG used on the original print
+   * (`photo-N-print.jpg`). Reprint must prefer this over `path` (the full
+   * live-view frame); compositing the wide file again crops differently.
+   */
+  printPath?: string;
+  /**
    * Groups all captures from the same booth session under one ID.
    * A reprint flow can filter recent strips by sessionId to pull
    * exactly the photos that belong together (and re-feed them through

@@ -585,8 +585,13 @@ body.hl-lightbox-open {
   min-height: 0;
 }
 
+.stage.is-grid {
+  overflow: hidden;
+}
+
 .stage-grid img {
   object-fit: cover;
+  object-position: center;
   display: block;
 }
 

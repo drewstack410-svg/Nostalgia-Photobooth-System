@@ -12,6 +12,7 @@ import {
   stopWebcamTracks,
   webcamErrorMessage,
 } from "@/utils/openCamera";
+import { onCanonLiveViewFrames, paintCanonEvfImages } from "@/utils/liveViewFrames";
 import { loadLut } from "@/utils/lut";
 import type { ParsedLut } from "@/utils/lut";
 import {
@@ -59,6 +60,8 @@ const overlayLayersRef = ref<{
   mediaEl: HTMLImageElement | HTMLVideoElement | null;
 } | null>(null);
 const liveImgRef = ref<HTMLImageElement | null>(null);
+const lutCanvasRef = ref<{ pushFrame: (src: string) => void } | null>(null);
+const flpRootRef = ref<HTMLElement | null>(null);
 const FILTER_ID = "filter-studio-preview";
 let shotGen = 0;
 
@@ -185,8 +188,9 @@ async function startCanonPreview(): Promise<boolean> {
       console.warn("[FilterPreview] Canon live view failed:", live.error);
       return false;
     }
-    api.onLiveViewFrame((dataUrl: string) => {
-      liveViewFrame.value = dataUrl;
+    onCanonLiveViewFrames((dataUrl) => {
+      if (!liveViewFrame.value) liveViewFrame.value = dataUrl;
+      paintCanonEvfImages(dataUrl, flpRootRef.value);
     });
     usingCanon.value = true;
     console.log("[FilterPreview] Canon live view:", connected.cameraName);
@@ -375,7 +379,11 @@ defineExpose({
 </script>
 
 <template>
-  <div class="flp" :class="{ 'flp--fill': fill, 'flp--bare': !chrome }">
+  <div
+    ref="flpRootRef"
+    class="flp"
+    :class="{ 'flp--fill': fill, 'flp--bare': !chrome }"
+  >
     <p v-if="chrome" class="flp-label">Live preview</p>
     <div class="flp-frame">
       <svg class="flp-defs" aria-hidden="true" focusable="false" width="0" height="0">
@@ -427,7 +435,7 @@ defineExpose({
       <img
         v-if="liveViewFrame"
         ref="liveImgRef"
-        class="flp-video"
+        class="flp-video js-canon-evf"
         :class="{ 'flp-video--hidden': lutPreviewActive }"
         :src="liveViewFrame"
         :style="{ filter: lutPreviewActive ? 'none' : liveFilter }"
@@ -446,6 +454,7 @@ defineExpose({
       />
       <LiveLutCanvas
         v-if="lutPreviewActive"
+        ref="lutCanvasRef"
         :lut="parsedLut"
         :base-filter="filter?.baseFilter"
         :video="stream ? videoRef : null"
@@ -453,6 +462,7 @@ defineExpose({
         :css-filter="'none'"
         :adjustments="adj"
         :lr-spatial="filter?.lrSpatial"
+        :max-edge="640"
       />
       <p v-if="!liveViewFrame && !stream" class="flp-placeholder">
         {{ cameraError || "Opening camera…" }}

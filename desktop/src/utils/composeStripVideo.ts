@@ -15,6 +15,8 @@ export type StripSlot = {
   w: number;
   h: number;
   rotation?: number;
+  /** 0-based capture index — same mapping as the printed still (`cell.shot`). */
+  shot?: number;
 };
 
 const FPS = 30;
@@ -257,7 +259,11 @@ export async function composeStripVideo(opts: {
       ctx.drawImage(frame, 0, 0, width, height);
     }
     slots.forEach((slot, i) => {
-      const v = videos[i % videos.length];
+      const clipIndex =
+        typeof slot.shot === "number" && slot.shot >= 0
+          ? slot.shot % videos.length
+          : i % videos.length;
+      const v = videos[clipIndex];
       const x = slot.x * width;
       const y = slot.y * height;
       const w = slot.w * width;
@@ -324,6 +330,78 @@ export async function composeStripVideo(opts: {
   });
   host.remove();
   return dataUrl;
+}
+
+export async function composeStripStill(opts: {
+  stillDataUrls: string[];
+  slots: StripSlot[];
+  overlayDataUrl?: string;
+  frameDataUrl?: string;
+  cropBarPercent?: number;
+}): Promise<string | null> {
+  const stills = opts.stillDataUrls.filter(Boolean);
+  if (!stills.length || !opts.slots.length) {
+    console.warn("[StripStill] Missing stills or slots");
+    return null;
+  }
+  const frame = opts.frameDataUrl
+    ? await loadImage(opts.frameDataUrl).catch(() => null)
+    : null;
+  const overlay = opts.overlayDataUrl
+    ? await loadImage(opts.overlayDataUrl).catch(() => null)
+    : null;
+  const sizeSrc = overlay || frame;
+  if (!sizeSrc) return null;
+  const srcW = sizeSrc.naturalWidth;
+  const srcH = sizeSrc.naturalHeight;
+  if (srcW < 2 || srcH < 2) return null;
+
+  const scale = Math.min(1, MAX_EDGE / Math.max(srcW, srcH));
+  const width = even(Math.round(srcW * scale));
+  const height = even(Math.round(srcH * scale));
+
+  const images = await Promise.all(stills.map(loadImage)).catch((e) => {
+    console.warn("[StripStill] Image load failed:", errText(e));
+    return [] as HTMLImageElement[];
+  });
+  if (!images.length) return null;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const useOverlay = !!overlay;
+  if (!useOverlay && frame) {
+    ctx.drawImage(frame, 0, 0, width, height);
+  }
+  opts.slots.forEach((slot, i) => {
+    const shot =
+      typeof slot.shot === "number" && slot.shot >= 0
+        ? slot.shot % images.length
+        : i % images.length;
+    const img = images[shot];
+    const x = slot.x * width;
+    const y = slot.y * height;
+    const w = slot.w * width;
+    const h = slot.h * height;
+    ctx.save();
+    if (slot.rotation) {
+      ctx.translate(x + w / 2, y + h / 2);
+      ctx.rotate((slot.rotation * Math.PI) / 180);
+      ctx.translate(-(x + w / 2), -(y + h / 2));
+    }
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    drawCover(ctx, img, x, y, w, h, opts.cropBarPercent ?? 0);
+    ctx.restore();
+  });
+  if (overlay) drawPngOverlay(ctx, overlay, width, height);
+  if (useOverlay) fillGalleryBackdrop(ctx, width, height);
+
+  return canvas.toDataURL("image/jpeg", 0.92);
 }
 
 async function encodeWithVideoEncoder(

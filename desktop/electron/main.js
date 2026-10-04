@@ -1609,7 +1609,17 @@ ipcMain.handle("read-photo", async (event, filePath) => {
     const buffer = fs.readFileSync(filePath);
     const base64 = buffer.toString("base64");
     const ext = path.extname(filePath).toLowerCase().slice(1);
-    return `data:image/${ext};base64,${base64}`;
+    const mime =
+      ext === "jpg" || ext === "jpeg"
+        ? "image/jpeg"
+        : ext === "png"
+          ? "image/png"
+          : ext === "gif"
+            ? "image/gif"
+            : ext === "webp"
+              ? "image/webp"
+              : `image/${ext || "jpeg"}`;
+    return `data:${mime};base64,${base64}`;
   } catch (error) {
     console.error("Error reading photo:", error);
     return null;
@@ -2410,10 +2420,16 @@ if (edsdkAvailable) {
       // Give camera time to enter live view mode (R50 needs ~1.5s)
       await new Promise(r => setTimeout(r, 1500));
       let frameCount = 0;
-      // Poll frames at ~15fps and push to renderer
+      let evfPulling = false;
+      // Encode + IPC is the bottleneck. Pulling/sending at 120fps queued
+      // multi-megabyte data URLs in the renderer, so the preview lagged
+      // behind the camera. 60fps matches the display and stays live.
+      const CANON_EVF_SEND_FPS = 60;
+      const CANON_EVF_FRAME_MS = Math.round(1000 / CANON_EVF_SEND_FPS);
       liveViewInterval = setInterval(() => {
+        if (evfPulling || !connectedCanonCamera) return;
+        evfPulling = true;
         try {
-          if (!connectedCanonCamera) return;
           const image = connectedCanonCamera.getLiveViewImage();
           if (image && mainWindow && !mainWindow.isDestroyed()) {
             const dataUrl = image.getDataURL();
@@ -2423,8 +2439,10 @@ if (edsdkAvailable) {
           }
         } catch (err) {
           if (frameCount === 0) console.warn('[Main] Live view frame error:', err.message);
+        } finally {
+          evfPulling = false;
         }
-      }, 66);
+      }, CANON_EVF_FRAME_MS);
       return { success: true };
     } catch (err) {
       console.error('[Main] Error starting live view:', err.message);
