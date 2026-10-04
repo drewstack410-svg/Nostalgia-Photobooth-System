@@ -62,6 +62,25 @@ function loadVideo(src: string): Promise<HTMLVideoElement> {
   });
 }
 
+function mediaSize(
+  media: CanvasImageSource & {
+    videoWidth?: number;
+    videoHeight?: number;
+    naturalWidth?: number;
+    naturalHeight?: number;
+  },
+): { w: number; h: number } {
+  return {
+    w: media.videoWidth || media.naturalWidth || 0,
+    h: media.videoHeight || media.naturalHeight || 0,
+  };
+}
+
+/**
+ * Cover-fit into a slot. When `matchAspect` is set (the print still),
+ * crop the clip to that still first so GIF windows match Strips.
+ * `cropBarPct` is only for uncropped full-frame media with no still.
+ */
 function drawCover(
   ctx: CanvasRenderingContext2D,
   media: CanvasImageSource & {
@@ -75,23 +94,40 @@ function drawCover(
   w: number,
   h: number,
   cropBarPct = 0,
+  matchAspect?: number,
 ) {
-  const iw = media.videoWidth || media.naturalWidth || 0;
-  const ih = media.videoHeight || media.naturalHeight || 0;
+  const { w: iw, h: ih } = mediaSize(media);
   if (!iw || !ih || w <= 0 || h <= 0) return;
-  const src = highlightedViewRect(iw, ih, cropBarPct);
-  const imgAspect = src.sw / src.sh;
+  let sx = 0;
+  let sy = 0;
+  let sw = iw;
+  let sh = ih;
+  if (matchAspect && matchAspect > 0) {
+    const a = iw / ih;
+    if (a > matchAspect + 0.001) {
+      sw = ih * matchAspect;
+      sx = (iw - sw) / 2;
+    } else if (a < matchAspect - 0.001) {
+      sh = iw / matchAspect;
+      sy = (ih - sh) / 2;
+    }
+  } else if (cropBarPct > 0) {
+    const src = highlightedViewRect(iw, ih, cropBarPct);
+    sx = src.sx;
+    sy = src.sy;
+    sw = src.sw;
+    sh = src.sh;
+  }
+  const imgAspect = sw / sh;
   const cellAspect = w / h;
-  let sx = src.sx;
-  let sy = src.sy;
-  let sw = src.sw;
-  let sh = src.sh;
   if (imgAspect > cellAspect) {
-    sw = sh * cellAspect;
-    sx = src.sx + (src.sw - sw) / 2;
+    const nw = sh * cellAspect;
+    sx += (sw - nw) / 2;
+    sw = nw;
   } else {
-    sh = sw / cellAspect;
-    sy = src.sy + (src.sh - sh) / 2;
+    const nh = sw / cellAspect;
+    sy += (sh - nh) / 2;
+    sh = nh;
   }
   ctx.drawImage(media, sx, sy, sw, sh, x, y, w, h);
 }
@@ -192,8 +228,10 @@ export async function composeStripVideo(opts: {
   slots: StripSlot[];
   /** Knocked-out PNG frame overlay. When set, clips go under it. */
   overlayDataUrl?: string;
-  /** Viewfinder side-bar % so uncropped clips match printed stills. */
+  /** Extra viewfinder crop. Use 0 when clips are already print-cropped. */
   cropBarPercent?: number;
+  /** Print stills — GIF crop follows each still's aspect, same as Strips. */
+  stillDataUrls?: string[];
 }): Promise<string | null> {
   const clips = opts.clipDataUrls.filter(Boolean);
   if (!opts.frameDataUrl || !clips.length) {
@@ -251,6 +289,17 @@ export async function composeStripVideo(opts: {
     host.appendChild(v);
   });
 
+  const stillUrls = (opts.stillDataUrls || []).filter(Boolean);
+  const stills = stillUrls.length
+    ? await Promise.all(stillUrls.map(loadImage)).catch(() => [] as HTMLImageElement[])
+    : [];
+  const stillAspect = (i: number) => {
+    const img = stills.length ? stills[i % stills.length] : null;
+    const sw = img?.naturalWidth || 0;
+    const sh = img?.naturalHeight || 0;
+    return sw > 0 && sh > 0 ? sw / sh : 0;
+  };
+
   const slots = opts.slots;
   const useOverlay = !!overlay;
   const paint = () => {
@@ -277,7 +326,16 @@ export async function composeStripVideo(opts: {
       ctx.beginPath();
       ctx.rect(x, y, w, h);
       ctx.clip();
-      drawCover(ctx, v, x, y, w, h, opts.cropBarPercent ?? 0);
+      drawCover(
+        ctx,
+        v,
+        x,
+        y,
+        w,
+        h,
+        stills.length ? 0 : (opts.cropBarPercent ?? 0),
+        stillAspect(clipIndex),
+      );
       ctx.restore();
     });
     if (overlay) drawPngOverlay(ctx, overlay, width, height);

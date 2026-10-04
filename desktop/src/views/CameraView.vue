@@ -216,12 +216,20 @@ const hasPreviewFilter = computed(
     !!glowSvg.value,
 );
 
+/** Paint the look on a GPU canvas so <video> CSS filters cannot skip it. */
+const lookPreviewActive = computed(() => {
+  const f = selectedFilter.value;
+  if (lutPreviewActive.value || hasPreviewFilter.value) return true;
+  if (!f || f.effectType === "original") return false;
+  return true;
+});
+
 const livePreviewFilter = computed(() =>
   hasPreviewFilter.value ? `url(#${PREVIEW_FILTER_ID})` : "none",
 );
-/** Raw camera pixels stay unfiltered when the 3D LUT canvas is drawing. */
+/** Raw camera pixels stay unfiltered when the look canvas is drawing. */
 const sourceCssFilter = computed(() =>
-  lutPreviewActive.value ? "none" : livePreviewFilter.value,
+  lookPreviewActive.value ? "none" : livePreviewFilter.value,
 );
 /** Same colour, plus the blur the "blur" frame style needs behind the window. */
 const livePreviewFilterBlurred = computed(() =>
@@ -689,6 +697,7 @@ function armHighlightRecording(countdownSeconds: number) {
           getStillUrl: () => liveViewFrame.value,
           getMirror: () => store.mirrorMode,
           applyLook: applyHighlightLook,
+          cropBarPercent: cropBarPercent.value,
         });
       } catch (e) {
         console.warn("[Highlight] Start failed:", e);
@@ -1425,7 +1434,7 @@ onUnmounted(() => {
             class="liveview-img js-canon-evf"
             :class="{
               mirror: store.mirrorMode,
-              'liveview-source-hidden': lutPreviewActive,
+              'liveview-source-hidden': lookPreviewActive,
             }"
             :srcObject="stream"
             :style="{ filter: sourceCssFilter }"
@@ -1439,21 +1448,22 @@ onUnmounted(() => {
             class="liveview-img js-canon-evf"
             :class="{
               mirror: store.mirrorMode,
-              'liveview-source-hidden': lutPreviewActive,
+              'liveview-source-hidden': lookPreviewActive,
             }"
             :style="{ filter: sourceCssFilter }"
           />
           <LiveLutCanvas
-            v-if="lutPreviewActive"
+            v-if="lookPreviewActive"
             :lut="highlightLut"
+            :effect-type="selectedFilter?.effectType"
             :base-filter="selectedFilter?.baseFilter"
             :video="stream ? videoBlurRef : null"
             :frame-src="stream ? null : liveViewFrame"
-            css-filter="none"
+            :css-filter="livePreviewFilter"
             :mirror="store.mirrorMode"
             :adjustments="selectedAdjustments"
             :lr-spatial="selectedFilter?.lrSpatial"
-            :max-edge="640"
+            :max-edge="960"
           />
         </div>
         <!-- Blur style: sharp feed in centered window with white border -->
@@ -1466,7 +1476,7 @@ onUnmounted(() => {
                 class="liveview-img js-canon-evf"
                 :class="{
                   mirror: store.mirrorMode,
-                  'liveview-source-hidden': lutPreviewActive,
+                  'liveview-source-hidden': lookPreviewActive,
                 }"
                 :srcObject="stream"
                 :style="{ filter: sourceCssFilter }"
@@ -1480,21 +1490,22 @@ onUnmounted(() => {
                 class="liveview-img js-canon-evf"
                 :class="{
                   mirror: store.mirrorMode,
-                  'liveview-source-hidden': lutPreviewActive,
+                  'liveview-source-hidden': lookPreviewActive,
                 }"
                 :style="{ filter: sourceCssFilter }"
               />
               <LiveLutCanvas
-                v-if="lutPreviewActive"
+                v-if="lookPreviewActive"
                 :lut="highlightLut"
+                :effect-type="selectedFilter?.effectType"
                 :base-filter="selectedFilter?.baseFilter"
                 :video="stream ? videoRef : null"
                 :frame-src="stream ? null : liveViewFrame"
-                css-filter="none"
+                :css-filter="livePreviewFilter"
                 :mirror="store.mirrorMode"
                 :adjustments="selectedAdjustments"
                 :lr-spatial="selectedFilter?.lrSpatial"
-            :max-edge="640"
+                :max-edge="960"
               />
               <!-- Crop indicator: faded bars marking how much of the
                    3:2 capture the SELECTED template trims off each
@@ -1529,7 +1540,7 @@ onUnmounted(() => {
             class="liveview-img js-canon-evf"
             :class="{
               mirror: store.mirrorMode,
-              'liveview-source-hidden': lutPreviewActive,
+              'liveview-source-hidden': lookPreviewActive,
             }"
             :srcObject="stream"
             :style="{ filter: sourceCssFilter }"
@@ -1543,23 +1554,24 @@ onUnmounted(() => {
             class="liveview-img js-canon-evf"
             :class="{
               mirror: store.mirrorMode,
-              'liveview-source-hidden': lutPreviewActive,
+              'liveview-source-hidden': lookPreviewActive,
             }"
             :style="{ filter: sourceCssFilter }"
           />
           <LiveLutCanvas
-            v-if="lutPreviewActive"
+            v-if="lookPreviewActive"
             :lut="highlightLut"
+            :effect-type="selectedFilter?.effectType"
             :base-filter="selectedFilter?.baseFilter"
             :video="stream ? videoRef : null"
             :frame-src="stream ? null : liveViewFrame"
-            css-filter="none"
+            :css-filter="livePreviewFilter"
             :mirror="store.mirrorMode"
             :adjustments="selectedAdjustments"
             :lr-spatial="selectedFilter?.lrSpatial"
-            :max-edge="640"
+            :max-edge="960"
           />
-          <div v-else class="liveview-placeholder">
+          <div v-if="!stream && !liveViewFrame" class="liveview-placeholder">
             <div class="liveview-placeholder-text">{{ !store.cameraDetectionEnabled ? "Test mode — starting camera..." : cameraReady ? 'Starting preview...' : 'Connecting camera...' }}</div>
           </div>
           <!-- Same crop indicator as the blur-style variant — bars
@@ -2071,6 +2083,7 @@ onUnmounted(() => {
 
 .liveview-source-hidden {
   opacity: 0;
+  z-index: -1;
 }
 
 /* Blur background layer keeps its extra bleed scale alongside the flip. */

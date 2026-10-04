@@ -11,6 +11,8 @@
     "preview": "vite preview",
     "electron:dev": "node scripts/ensure-pocketbase.js && concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "node scripts/ensure-pocketbase.js && node scripts/generate-app-icon.js && vite build && electron-builder",
+    "electron:build:win": "node scripts/ensure-pocketbase.js && node scripts/generate-app-icon.js && vite build && electron-builder --win",
+    "electron:build:mac": "node scripts/build-mac.js",
     "icon:generate": "node scripts/generate-app-icon.js"
   },
   "dependencies": {
@@ -51,6 +53,8 @@
       "dist/**/*",
       "electron/**/*",
       "build/icon.ico",
+      "build/icon.icns",
+      "build/icon.png",
       "node_modules/@brick-a-brack/napi-canon-cameras/**/*",
       "!node_modules/@brick-a-brack/napi-canon-cameras/src/**/*",
       "!node_modules/@brick-a-brack/napi-canon-cameras/build/**/*"
@@ -58,6 +62,7 @@
     "asarUnpack": [
       "**/*.{mp4,webm,mov,m4v}"
     ],
+    "npmRebuild": false,
     "extraResources": [
       {
         "from": "public/luts",
@@ -90,10 +95,49 @@
       {
         "from": "build/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "build/icon.icns",
+        "to": "icon.icns"
       }
     ],
     "mac": {
-      "category": "public.app-category.photography"
+      "category": "public.app-category.photography",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSCameraUsageDescription": "NOSTALGIA BOOTH needs the camera to take photobooth portraits.",
+        "NSMicrophoneUsageDescription": "NOSTALGIA BOOTH may use the microphone with the camera.",
+        "NSPhotoLibraryAddUsageDescription": "NOSTALGIA BOOTH saves session photos and videos to Pictures."
+      },
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "NOSTALGIA BOOTH",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "win": {
       "target": "nsis",

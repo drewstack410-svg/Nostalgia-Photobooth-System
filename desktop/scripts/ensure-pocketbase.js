@@ -94,6 +94,13 @@ async function main() {
   if (!fs.existsSync(dest)) {
     throw new Error(`Expected ${dest} after extract`);
   }
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(dest, 0o755);
+    } catch {
+      /* ignore */
+    }
+  }
   console.log("[PocketBase] Ready:", dest);
 }
 

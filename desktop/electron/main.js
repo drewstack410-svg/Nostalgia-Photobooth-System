@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, dialog, shell, desktopCapturer } = require('electron');
+const { app, BrowserWindow, ipcMain, session, dialog, shell, desktopCapturer, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -229,11 +229,14 @@ if (process.platform === "win32") {
  */
 function appIconPath() {
   const candidates = [
+    process.resourcesPath ? path.join(process.resourcesPath, "icon.icns") : null,
+    process.resourcesPath ? path.join(process.resourcesPath, "icon.png") : null,
     process.resourcesPath ? path.join(process.resourcesPath, "icon.ico") : null,
+    path.join(__dirname, "../build/icon.icns"),
+    path.join(__dirname, "../build/icon.png"),
     path.join(__dirname, "../build/icon.ico"),
     path.join(__dirname, "../public/icon.ico"),
     path.join(__dirname, "../dist/icon.ico"),
-    path.join(__dirname, "../build/icon.png"),
     path.join(__dirname, "../public/app-icon.png"),
     path.join(__dirname, "../dist/app-icon.png"),
   ].filter(Boolean);
@@ -511,6 +514,15 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (process.platform === "darwin") {
+    try {
+      const ok = await systemPreferences.askForMediaAccess("camera");
+      console.log("[Main] macOS camera permission:", ok ? "granted" : "denied");
+    } catch (e) {
+      console.warn("[Main] macOS camera permission:", e.message || e);
+    }
+  }
+
   await pocketbaseServer.startPocketBase();
 
   void r2.pingR2().then((status) => {

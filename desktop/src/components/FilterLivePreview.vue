@@ -110,6 +110,13 @@ const liveFilter = computed(() =>
   hasPreviewFilter.value ? `url(#${FILTER_ID})` : "none",
 );
 
+const lookPreviewActive = computed(() => {
+  const f = props.filter;
+  if (lutPreviewActive.value || hasPreviewFilter.value) return true;
+  if (!f || f.effectType === "original") return false;
+  return true;
+});
+
 const overlayStyle = computed(() => {
   const o = props.filter?.overlay;
   if (!o || o.opacity <= 0) return null;
@@ -191,6 +198,7 @@ async function startCanonPreview(): Promise<boolean> {
     onCanonLiveViewFrames((dataUrl) => {
       if (!liveViewFrame.value) liveViewFrame.value = dataUrl;
       paintCanonEvfImages(dataUrl, flpRootRef.value);
+      lutCanvasRef.value?.pushFrame(dataUrl);
     });
     usingCanon.value = true;
     console.log("[FilterPreview] Canon live view:", connected.cameraName);
@@ -436,33 +444,34 @@ defineExpose({
         v-if="liveViewFrame"
         ref="liveImgRef"
         class="flp-video js-canon-evf"
-        :class="{ 'flp-video--hidden': lutPreviewActive }"
+        :class="{ 'flp-video--hidden': lookPreviewActive }"
         :src="liveViewFrame"
-        :style="{ filter: lutPreviewActive ? 'none' : liveFilter }"
+        :style="{ filter: lookPreviewActive ? 'none' : liveFilter }"
         alt=""
       />
       <video
         v-else-if="stream"
         ref="videoRef"
         class="flp-video"
-        :class="{ 'flp-video--hidden': lutPreviewActive }"
+        :class="{ 'flp-video--hidden': lookPreviewActive }"
         :srcObject="stream"
-        :style="{ filter: lutPreviewActive ? 'none' : liveFilter }"
+        :style="{ filter: lookPreviewActive ? 'none' : liveFilter }"
         autoplay
         muted
         playsinline
       />
       <LiveLutCanvas
-        v-if="lutPreviewActive"
+        v-if="lookPreviewActive"
         ref="lutCanvasRef"
         :lut="parsedLut"
+        :effect-type="filter?.effectType"
         :base-filter="filter?.baseFilter"
         :video="stream ? videoRef : null"
         :frame-src="stream ? null : liveViewFrame || null"
-        :css-filter="'none'"
+        :css-filter="liveFilter"
         :adjustments="adj"
         :lr-spatial="filter?.lrSpatial"
-        :max-edge="640"
+        :max-edge="960"
       />
       <p v-if="!liveViewFrame && !stream" class="flp-placeholder">
         {{ cameraError || "Opening camera…" }}

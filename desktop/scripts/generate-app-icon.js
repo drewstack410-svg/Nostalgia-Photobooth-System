@@ -4,6 +4,7 @@
  * use the same artwork:
  *   build/icon.ico      — installer, exe, shortcuts, window/taskbar
  *   build/icon.png      — 1024 master
+ *   build/icon.icns     — macOS app bundle / DMG
  *   public/icon.ico     — copied next to the renderer for packaging
  *   public/app-icon.png — favicon / fallback PNG
  *
@@ -49,6 +50,28 @@ function icoFromImages(entries) {
     out.writeUInt32LE(e.offset, p + 12);
   });
   placed.forEach((e) => e.buf.copy(out, e.offset));
+  return out;
+}
+
+/** PNG-payload ICNS (Finder / Dock / DMG). */
+function icnsFromPngs(parts) {
+  const chunks = parts.map(({ type, buf }) => {
+    const len = 8 + buf.length;
+    const block = Buffer.alloc(len);
+    block.write(type, 0, 4, "ascii");
+    block.writeUInt32BE(len, 4);
+    buf.copy(block, 8);
+    return block;
+  });
+  const total = 8 + chunks.reduce((n, c) => n + c.length, 0);
+  const out = Buffer.alloc(total);
+  out.write("icns", 0, 4, "ascii");
+  out.writeUInt32BE(total, 4);
+  let offset = 8;
+  for (const c of chunks) {
+    c.copy(out, offset);
+    offset += c.length;
+  }
   return out;
 }
 
@@ -156,8 +179,27 @@ async function main() {
   fs.writeFileSync(path.join(BUILD, "icon.ico"), ico);
   fs.writeFileSync(path.join(ROOT, "public", "icon.ico"), ico);
 
+  const icnsParts = [];
+  const icnsMap = [
+    ["ic11", 32],
+    ["ic12", 64],
+    ["ic07", 128],
+    ["ic08", 256],
+    ["ic13", 256],
+    ["ic09", 512],
+    ["ic14", 512],
+    ["ic10", 1024],
+  ];
+  for (const [type, size] of icnsMap) {
+    icnsParts.push({
+      type,
+      buf: await sharp(masterPng).resize(size, size).png().toBuffer(),
+    });
+  }
+  fs.writeFileSync(path.join(BUILD, "icon.icns"), icnsFromPngs(icnsParts));
+
   console.log(
-    "[icon] wrote build/icon.ico, build/icon.png, public/icon.ico, public/app-icon.png",
+    "[icon] wrote build/icon.ico, build/icon.icns, build/icon.png, public/icon.ico, public/app-icon.png",
   );
 }
 

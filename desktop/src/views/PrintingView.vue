@@ -10,7 +10,6 @@ import {
   occupancyFill,
   getTemplateGrid,
 } from "@/utils/printLayout";
-import { cropBarPercentForTemplate } from "@/utils/viewfinderCrop";
 import type { Rect } from "@/utils/printLayout";
 import { getFrameWindows, scaleWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
@@ -1129,14 +1128,16 @@ async function saveComposite() {
           if (pngFrame) {
             overlayDataUrl = await prepareFrameDataUrl(pngFrame);
           }
+          const stills = store.capturedPhotos
+            .map((p) => p.dataUrl)
+            .filter(Boolean);
           stripDataUrl = await composeStripVideo({
             frameDataUrl: shareComposite,
             overlayDataUrl,
             clipDataUrls: clips,
             slots,
-            cropBarPercent: cropBarPercentForTemplate(
-              store.sessionTemplate ?? store.selectedTemplate,
-            ),
+            cropBarPercent: 0,
+            stillDataUrls: stills,
           });
         } catch (e) {
           console.warn("[Save] Strip video compose failed:", e);

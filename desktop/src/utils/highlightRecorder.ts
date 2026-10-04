@@ -1,8 +1,9 @@
 /**
  * Session highlight clips: ~15s MP4 — last 10s of live view before the
- * shutter, then 5s of the frozen last frame. Encoded at the FULL camera
- * frame (not the viewfinder crop). Strip compose cover-fits these clips
- * into print windows. Clips also go to Videos/NostalgiaPhotobooth.
+ * shutter, then 5s of the frozen last frame. Encoded at the same
+ * viewfinder crop as print stills (`highlightedViewRect`) so gallery
+ * Strips and GIF cover-fit the same window. Clips also go to
+ * Videos/NostalgiaPhotobooth.
  *
  * Packaged kiosks often lack a working hardware H.264 encoder (missing
  * GPU drivers, GPU blocklist, software canvas). VideoEncoder.configure()
@@ -13,6 +14,7 @@
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { isPlayableMp4, remuxToGuestMp4 } from "./guestMp4";
 import { mediaUrlToBytes, objectUrlFromBlob, revokeMediaUrl } from "./mediaBytes";
+import { highlightedViewRect } from "./viewfinderCrop";
 
 export const HIGHLIGHT_LEAD_MS = 10000;
 export const HIGHLIGHT_PREVIEW_MS = 5000;
@@ -31,6 +33,8 @@ export type HighlightCaptureOpts = {
   getMirror?: () => boolean;
   /** Bake the booth filter onto each live frame (not the freeze blit). */
   applyLook?: (ctx: CanvasRenderingContext2D) => void;
+  /** Same side-bar % CameraView crops into print stills. */
+  cropBarPercent?: number;
 };
 
 let canvas: HTMLCanvasElement | null = null;
@@ -46,6 +50,7 @@ let sourceVideo: HTMLVideoElement | null = null;
 let getStillUrl: (() => string | null) | null = null;
 let getMirror: (() => boolean) | null = null;
 let applyLook: ((ctx: CanvasRenderingContext2D) => void) | null = null;
+let cropBarPct = 0;
 let stillImg: HTMLImageElement | null = null;
 let lastStillUrl = "";
 let mimeType = "video/mp4";
@@ -90,8 +95,8 @@ function errText(e: unknown): string {
   return String(e);
 }
 
-/** Draw the entire source onto the canvas (no viewfinder crop). */
-function drawFull(
+/** Draw the print/viewfinder crop onto the canvas (not the full sensor). */
+function drawCropped(
   target: CanvasImageSource,
   srcW: number,
   srcH: number,
@@ -99,13 +104,14 @@ function drawFull(
   if (!canvas || !ctx || srcW < 1 || srcH < 1) return;
   const w = canvas.width;
   const h = canvas.height;
+  const r = highlightedViewRect(srcW, srcH, cropBarPct);
   const mirror = currentMirror();
   if (mirror) {
     ctx.save();
     ctx.translate(w, 0);
     ctx.scale(-1, 1);
   }
-  ctx.drawImage(target, 0, 0, srcW, srcH, 0, 0, w, h);
+  ctx.drawImage(target, r.sx, r.sy, r.sw, r.sh, 0, 0, w, h);
   if (mirror) ctx.restore();
 }
 
@@ -135,9 +141,9 @@ function drawLiveOrFreeze() {
   }
   pullStill();
   if (sourceVideo && sourceVideo.readyState >= 2 && sourceVideo.videoWidth >= 2) {
-    drawFull(sourceVideo, sourceVideo.videoWidth, sourceVideo.videoHeight);
+    drawCropped(sourceVideo, sourceVideo.videoWidth, sourceVideo.videoHeight);
   } else if (stillImg && stillImg.complete && stillImg.naturalWidth >= 2) {
-    drawFull(stillImg, stillImg.naturalWidth, stillImg.naturalHeight);
+    drawCropped(stillImg, stillImg.naturalWidth, stillImg.naturalHeight);
   }
   if (ctx) {
     try {
@@ -375,6 +381,7 @@ async function startCanvasCapture(opts: HighlightCaptureOpts): Promise<boolean> 
   getStillUrl = opts.getStillUrl ?? null;
   getMirror = opts.getMirror ?? null;
   applyLook = opts.applyLook ?? null;
+  cropBarPct = Math.max(0, opts.cropBarPercent ?? 0);
 
   const size = await waitForSourceSize();
   if (!size) {
@@ -383,13 +390,15 @@ async function startCanvasCapture(opts: HighlightCaptureOpts): Promise<boolean> 
     getStillUrl = null;
     getMirror = null;
     applyLook = null;
+    cropBarPct = 0;
     return false;
   }
 
-  const scale = Math.min(1, MAX_WIDTH / Math.max(size.width, size.height));
+  const view = highlightedViewRect(size.width, size.height, cropBarPct);
+  const scale = Math.min(1, MAX_WIDTH / Math.max(view.sw, view.sh));
   canvas = document.createElement("canvas");
-  canvas.width = even(Math.round(size.width * scale));
-  canvas.height = even(Math.round(size.height * scale));
+  canvas.width = even(Math.round(view.sw * scale));
+  canvas.height = even(Math.round(view.sh * scale));
   canvas.setAttribute("aria-hidden", "true");
   canvas.style.cssText =
     "position:fixed;left:0;top:0;width:4px;height:4px;opacity:0.02;pointer-events:none;z-index:0";
@@ -462,6 +471,7 @@ function resetState() {
   getStillUrl = null;
   getMirror = null;
   applyLook = null;
+  cropBarPct = 0;
   stillImg = null;
   lastStillUrl = "";
   recorder = null;
