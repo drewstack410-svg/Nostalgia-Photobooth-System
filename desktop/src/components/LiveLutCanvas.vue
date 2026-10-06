@@ -177,14 +177,15 @@ defineExpose({ pushFrame });
 </script>
 
 <template>
-  <canvas
-    ref="canvasRef"
-    class="live-lut-canvas"
+  <div
+    class="live-lut-wrap"
     :style="{
       filter:
         gpuReady && cssFilter && cssFilter !== 'none' ? cssFilter : undefined,
     }"
-  />
+  >
+    <canvas ref="canvasRef" class="live-lut-canvas" />
+  </div>
   <img
     v-if="frameSrc"
     ref="frameImg"
@@ -195,11 +196,14 @@ defineExpose({ pushFrame });
 </template>
 
 <style scoped>
+.live-lut-wrap,
 .live-lut-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+}
+.live-lut-canvas {
   object-fit: cover;
   display: block;
   z-index: 0;

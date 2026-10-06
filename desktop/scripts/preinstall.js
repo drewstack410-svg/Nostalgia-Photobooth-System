@@ -1,11 +1,9 @@
 /**
- * Canon EDSDK (`napi-canon-cameras`) only builds on Windows with the
- * SDK present. On macOS it looks for EDSDK.Framework and fails npm install.
- * That package is optional — Mac booths use the webcam.
+ * Canon EDSDK is optional. Windows kiosks already have it.
+ * On Mac, `npm run canon:edsdk` after you unpack Canon’s Macintosh SDK
+ * into desktop/vendor/EDSDKv131830M (see scripts/setup-canon-edsdk.js).
  */
 if (process.platform === "win32") process.exit(0);
-console.log(
-  "[preinstall] Canon EDSDK is Windows-only. On Mac run:\n" +
-    "  npm install --omit=optional\n" +
-    "(or: npm run install:mac)",
-);
+if (process.env.npm_config_omit && String(process.env.npm_config_omit).includes("optional")) {
+  console.log("[preinstall] optional Canon module omitted (webcam until npm run canon:edsdk)");
+}

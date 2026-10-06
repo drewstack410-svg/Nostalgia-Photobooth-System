@@ -23,7 +23,6 @@ import {
   BW_MATRIX,
   FUJIFILM_MATRIX,
   SEPIA_MATRIX,
-  applyFilmGrainToImageData,
   buildAdjustmentTable,
   glowPreviewSvg,
   grainPreviewOpacity,
@@ -143,14 +142,13 @@ const mediaStyle = computed(() => {
 });
 
 const grainStyle = computed(() => {
-  if (lutPreviewActive.value) return null;
   const opacity = grainPreviewOpacity(adj.value.grain);
   if (opacity <= 0) return null;
   return { opacity: String(opacity) };
 });
 
 const vignetteStyle = computed(() =>
-  lutPreviewActive.value ? null : vignettePreviewStyle(adj.value.vignette),
+  vignettePreviewStyle(adj.value.vignette),
 );
 
 watch(
@@ -286,7 +284,7 @@ function grabTestStill(): string | null {
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return null;
   drawCoverMedia(ctx, src, w, h);
   const f = props.filter;
@@ -315,19 +313,6 @@ function grabTestStill(): string | null {
     adjustments: f ? store.resolvedAdjustments(f) : null,
     lrSpatial: f?.lrSpatial,
   });
-  if (f) {
-    const a = store.resolvedAdjustments(f);
-    if (a.grain > 0) {
-      const imageData = ctx.getImageData(0, 0, w, h);
-      applyFilmGrainToImageData(
-        imageData,
-        a.grain,
-        f.lrSpatial?.grainSize ?? 25,
-        f.lrSpatial?.grainFreq ?? 50,
-      );
-      ctx.putImageData(imageData, 0, 0);
-    }
-  }
   return canvas.toDataURL("image/jpeg", 0.92);
 }
 

@@ -11,7 +11,6 @@ import {
   BW_MATRIX,
   FUJIFILM_MATRIX,
   SEPIA_MATRIX,
-  applyFilmGrainToImageData,
   buildAdjustmentTable,
   glowPreviewSvg,
   grainPreviewOpacity,
@@ -975,7 +974,7 @@ async function capturePhotoInner(hadLiveView: boolean) {
 
         if (!canvasRef.value) return;
         const canvas = canvasRef.value;
-        const ctx = canvas.getContext("2d");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) return;
 
         // Resize to max 3600px wide — gives 3600×2400 at the camera's
@@ -1025,10 +1024,9 @@ async function capturePhotoInner(hadLiveView: boolean) {
           );
         }
 
-        function applyGrain(amount: number, size = 25, freq = 50) {
-          const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
-          applyFilmGrainToImageData(imageData, amount, size, freq);
-          ctx!.putImageData(imageData, 0, 0);
+        const adj = filter ? store.resolvedAdjustments(filter) : null;
+        if (adj) {
+          console.log("[Camera] Baking filter sliders", adj);
         }
 
         applyCaptureLook(ctx, {
@@ -1053,21 +1051,9 @@ async function capturePhotoInner(hadLiveView: boolean) {
                   opacity: filter.mediaOverlay.opacity,
                 }
               : null,
-          adjustments: filter ? store.resolvedAdjustments(filter) : null,
+          adjustments: adj,
           lrSpatial: filter?.lrSpatial,
         });
-
-        if (filter) {
-          const adj = store.resolvedAdjustments(filter);
-          if (adj.grain > 0) {
-            console.log("[Camera] Applying film grain", adj.grain);
-            applyGrain(
-              adj.grain,
-              filter.lrSpatial?.grainSize ?? 25,
-              filter.lrSpatial?.grainFreq ?? 50,
-            );
-          }
-        }
 
         // Full uncropped frame (filters already baked) for local/cloud
         // gallery downloads. Print / left strip still use the lit center.
@@ -1526,8 +1512,8 @@ onUnmounted(() => {
                 :media-url="selectedMediaRuntime?.url"
                 :media-kind="selectedMediaRuntime?.type"
                 :media-style="mediaOverlayStyle"
-                :vignette-style="lutPreviewActive ? null : vignetteOverlayStyle"
-                :grain-style="lutPreviewActive ? null : grainOverlayStyle"
+                :vignette-style="vignetteOverlayStyle"
+                :grain-style="grainOverlayStyle"
               />
             </div>
           </div>
@@ -1592,8 +1578,8 @@ onUnmounted(() => {
             :media-url="selectedMediaRuntime?.url"
             :media-kind="selectedMediaRuntime?.type"
             :media-style="mediaOverlayStyle"
-            :vignette-style="lutPreviewActive ? null : vignetteOverlayStyle"
-            :grain-style="lutPreviewActive ? null : grainOverlayStyle"
+            :vignette-style="vignetteOverlayStyle"
+            :grain-style="grainOverlayStyle"
           />
         </div>
 
@@ -2159,10 +2145,9 @@ onUnmounted(() => {
 }
 
 /* Film-grain preview: a tiled fractal-noise texture, blended over the
- * live feed for Sepia/B&W/Fujifilm so what the guest sees roughly
- * matches the grain baked into the actual capture (see applyGrain()
- * in capturePhoto). Static (no animation) — a kiosk preview doesn't
- * need moving grain, and it keeps this cheap on modest hardware. */
+ * live feed so what the guest sees roughly matches the grain baked
+ * into the actual capture. Static (no animation) — a kiosk preview
+ * doesn't need moving grain, and it keeps this cheap on modest hardware. */
 .film-grain-overlay {
   position: absolute;
   inset: 0;
@@ -2183,7 +2168,13 @@ onUnmounted(() => {
 }
 
 .capture-canvas {
-  display: none;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .overlay-media-decode {

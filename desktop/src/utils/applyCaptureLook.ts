@@ -7,7 +7,9 @@
 import { applyLutToImageData } from "./lut";
 import type { ParsedLut } from "./lut";
 import {
+  adjustmentsHaveWork,
   applyAdjustmentsToImageData,
+  applyFilmGrainToImageData,
   type FilterAdjustments,
 } from "./filterPreview";
 import {
@@ -140,22 +142,26 @@ export function applyCaptureLook(
   const cube = effect === "cube" && look.lut;
   const spatial = look.lrSpatial;
   if (tone || cube || spatial) {
-    const imageData = ctx.getImageData(0, 0, w, h);
-    if (!look.skipSpatial) {
-      applyLightroomLensToImageData(imageData, spatial);
-    }
-    if (tone) {
-      applyPixelFilter(imageData, effect);
-    } else if (look.lut) {
-      if (look.baseFilter && look.baseFilter !== "original") {
-        applyPixelFilter(imageData, look.baseFilter);
+    try {
+      const imageData = ctx.getImageData(0, 0, w, h);
+      if (!look.skipSpatial) {
+        applyLightroomLensToImageData(imageData, spatial);
       }
-      applyLutToImageData(imageData, look.lut);
+      if (tone) {
+        applyPixelFilter(imageData, effect);
+      } else if (look.lut) {
+        if (look.baseFilter && look.baseFilter !== "original") {
+          applyPixelFilter(imageData, look.baseFilter);
+        }
+        applyLutToImageData(imageData, look.lut);
+      }
+      if (!look.skipSpatial) {
+        applyLightroomDetailToImageData(imageData, spatial);
+      }
+      ctx.putImageData(imageData, 0, 0);
+    } catch (error) {
+      console.warn("[Look] LUT/spatial failed:", error);
     }
-    if (!look.skipSpatial) {
-      applyLightroomDetailToImageData(imageData, spatial);
-    }
-    ctx.putImageData(imageData, 0, 0);
   }
 
   const overlay = look.overlay;
@@ -178,19 +184,32 @@ export function applyCaptureLook(
     );
   }
 
-  if (look.adjustments) {
-    const adjusted = ctx.getImageData(0, 0, w, h);
-    applyAdjustmentsToImageData(
-      adjusted,
-      look.adjustments,
-      spatial
-        ? {
-            midpoint: spatial.vignetteMidpoint,
-            feather: spatial.vignetteFeather,
-            roundness: spatial.vignetteRoundness,
-          }
-        : null,
-    );
-    ctx.putImageData(adjusted, 0, 0);
+  const adj = look.adjustments;
+  if (adj && adjustmentsHaveWork(adj)) {
+    try {
+      const adjusted = ctx.getImageData(0, 0, w, h);
+      applyAdjustmentsToImageData(
+        adjusted,
+        adj,
+        spatial
+          ? {
+              midpoint: spatial.vignetteMidpoint,
+              feather: spatial.vignetteFeather,
+              roundness: spatial.vignetteRoundness,
+            }
+          : null,
+      );
+      if (adj.grain > 0) {
+        applyFilmGrainToImageData(
+          adjusted,
+          adj.grain,
+          spatial?.grainSize ?? 25,
+          spatial?.grainFreq ?? 50,
+        );
+      }
+      ctx.putImageData(adjusted, 0, 0);
+    } catch (error) {
+      console.warn("[Look] Slider adjustments failed:", error);
+    }
   }
 }

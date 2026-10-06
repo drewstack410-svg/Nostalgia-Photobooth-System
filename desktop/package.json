@@ -15,7 +15,8 @@
     "electron:build:win": "node scripts/ensure-pocketbase.js && node scripts/generate-app-icon.js && vite build && electron-builder --win",
     "electron:build:mac": "node scripts/build-mac.js",
     "icon:generate": "node scripts/generate-app-icon.js",
-    "install:mac": "npm install --omit=optional"
+    "install:mac": "npm install --omit=optional && node scripts/setup-canon-edsdk.js",
+    "canon:edsdk": "node scripts/setup-canon-edsdk.js"
   },
   "dependencies": {
     "mp4-muxer": "^5.2.2",
@@ -64,7 +65,8 @@
       "!node_modules/@brick-a-brack/napi-canon-cameras/build/**/*"
     ],
     "asarUnpack": [
-      "**/*.{mp4,webm,mov,m4v}"
+      "**/*.{mp4,webm,mov,m4v}",
+      "node_modules/@brick-a-brack/napi-canon-cameras/**"
     ],
     "npmRebuild": false,
     "extraResources": [

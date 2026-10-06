@@ -74,3 +74,9 @@ public/backgrounds/*.mov
 vendor/pocketbase/*
 !vendor/pocketbase/.gitkeep
 
+# Canon EDSDK (proprietary — download from Canon Developer, never commit)
+vendor/EDSDK*
+vendor/edsdk*
+third_party/EDSDK*
+.tmp/edsdk-mac/
+

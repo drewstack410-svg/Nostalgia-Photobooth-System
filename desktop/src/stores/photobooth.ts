@@ -2764,12 +2764,19 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   function clampAdjustments(raw: Partial<FilterAdjustments>): FilterAdjustments {
+    const toNum = (v: unknown, fallback: number) => {
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string" && v.trim() !== "") {
+        const x = Number(v);
+        if (Number.isFinite(x)) return x;
+      }
+      return fallback;
+    };
     const n = (v: unknown, min: number, max: number, fallback: number) => {
-      const x = typeof v === "number" && Number.isFinite(v) ? v : fallback;
-      return Math.max(min, Math.min(max, Math.round(x)));
+      return Math.max(min, Math.min(max, Math.round(toNum(v, fallback))));
     };
     const n2 = (v: unknown, min: number, max: number, fallback: number) => {
-      const x = typeof v === "number" && Number.isFinite(v) ? v : fallback;
+      const x = toNum(v, fallback);
       return Math.max(min, Math.min(max, Math.round(x * 100) / 100));
     };
     return {

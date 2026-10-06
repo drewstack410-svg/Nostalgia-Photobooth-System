@@ -27,6 +27,7 @@ const run = (args) => {
 
 run([path.join(root, "scripts/ensure-pocketbase.js")]);
 run([path.join(root, "scripts/generate-app-icon.js")]);
+run([path.join(root, "scripts/setup-canon-edsdk.js")]);
 run([
   path.join(root, "node_modules/vite/bin/vite.js"),
   "build",

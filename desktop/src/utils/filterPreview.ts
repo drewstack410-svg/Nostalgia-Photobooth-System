@@ -233,6 +233,23 @@ export type VignetteShape = {
   roundness?: number;
 };
 
+/** True when any slider would change pixels (including grain). */
+export function adjustmentsHaveWork(
+  adj: FilterAdjustments | null | undefined,
+): boolean {
+  if (!adj) return false;
+  return !!(
+    adj.grain ||
+    adj.exposure ||
+    adj.levels ||
+    adj.contrast ||
+    adj.shadows ||
+    adj.vignette ||
+    adj.saturation ||
+    adj.glow
+  );
+}
+
 export function applyAdjustmentsToImageData(
   imageData: ImageData,
   adj: FilterAdjustments,
@@ -248,7 +265,11 @@ export function applyAdjustmentsToImageData(
     }
   }
   applySaturationToImageData(imageData, adj.saturation);
-  applyGlowToImageData(imageData, adj.glow);
+  try {
+    applyGlowToImageData(imageData, adj.glow);
+  } catch (error) {
+    console.warn("[Look] Glow skipped:", error);
+  }
   applyVignetteToImageData(imageData, adj.vignette, vignetteShape);
 }
 
@@ -345,19 +366,49 @@ export function applyVignetteToImageData(
 /** Blur working size — bloom does not need full-res pixels. */
 const GLOW_MAX_EDGE = 720;
 
-let glowFullCanvas: HTMLCanvasElement | null = null;
-let glowSmallCanvas: HTMLCanvasElement | null = null;
-
-function glowContext(
-  canvas: HTMLCanvasElement,
-  w: number,
-  h: number,
-): CanvasRenderingContext2D | null {
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w;
-    canvas.height = h;
+function downsampleImageData(src: ImageData, sw: number, sh: number): ImageData {
+  const dst = new ImageData(sw, sh);
+  const s = src.data;
+  const d = dst.data;
+  const xRatio = src.width / sw;
+  const yRatio = src.height / sh;
+  for (let y = 0; y < sh; y++) {
+    const sy = Math.min(src.height - 1, ((y + 0.5) * yRatio) | 0);
+    for (let x = 0; x < sw; x++) {
+      const sx = Math.min(src.width - 1, ((x + 0.5) * xRatio) | 0);
+      const si = (sy * src.width + sx) * 4;
+      const di = (y * sw + x) * 4;
+      d[di] = s[si]!;
+      d[di + 1] = s[si + 1]!;
+      d[di + 2] = s[si + 2]!;
+      d[di + 3] = s[si + 3]!;
+    }
   }
-  return canvas.getContext("2d", { willReadFrequently: true });
+  return dst;
+}
+
+/** Screen-blend a small bloom buffer onto full-res pixels. */
+function screenBlendUpsample(
+  imageData: ImageData,
+  bloom: ImageData,
+): void {
+  const w = imageData.width;
+  const h = imageData.height;
+  const sw = bloom.width;
+  const sh = bloom.height;
+  const a = imageData.data;
+  const b = bloom.data;
+  for (let y = 0; y < h; y++) {
+    const by = Math.min(sh - 1, ((y + 0.5) * sh) / h | 0);
+    for (let x = 0; x < w; x++) {
+      const bx = Math.min(sw - 1, ((x + 0.5) * sw) / w | 0);
+      const bi = (by * sw + bx) * 4;
+      const i = (y * w + x) * 4;
+      a[i] = 255 - ((255 - a[i]!) * (255 - b[bi]!)) / 255;
+      a[i + 1] = 255 - ((255 - a[i + 1]!) * (255 - b[bi + 1]!)) / 255;
+      a[i + 2] = 255 - ((255 - a[i + 2]!) * (255 - b[bi + 2]!)) / 255;
+    }
+  }
 }
 
 /**
@@ -389,23 +440,12 @@ export function applyGlowToImageData(imageData: ImageData, glow: number): void {
   if (!curve) return;
   const w = imageData.width;
   const h = imageData.height;
-  if (w < 2 || h < 2 || typeof document === "undefined") return;
-
-  glowFullCanvas ??= document.createElement("canvas");
-  glowSmallCanvas ??= document.createElement("canvas");
+  if (w < 2 || h < 2) return;
 
   const scale = Math.min(1, GLOW_MAX_EDGE / Math.min(w, h));
   const sw = Math.max(2, Math.round(w * scale));
   const sh = Math.max(2, Math.round(h * scale));
-
-  const fullCtx = glowContext(glowFullCanvas, w, h);
-  const smallCtx = glowContext(glowSmallCanvas, sw, sh);
-  if (!fullCtx || !smallCtx) return;
-
-  fullCtx.putImageData(imageData, 0, 0);
-  smallCtx.drawImage(glowFullCanvas, 0, 0, sw, sh);
-
-  const bloom = smallCtx.getImageData(0, 0, sw, sh);
+  const bloom = downsampleImageData(imageData, sw, sh);
   const px = bloom.data;
   const { gain, knee, slopeR, slopeG, slopeB } = curve;
   for (let i = 0; i < px.length; i += 4) {
@@ -430,15 +470,7 @@ export function applyGlowToImageData(imageData: ImageData, glow: number): void {
     px[i + 1] = Math.max(0, Math.min(255, px[i + 1]! * slopeG));
     px[i + 2] = Math.max(0, Math.min(255, px[i + 2]! * slopeB));
   }
-  smallCtx.putImageData(bloom, 0, 0);
-
-  fullCtx.save();
-  fullCtx.globalCompositeOperation = "screen";
-  fullCtx.globalAlpha = 1;
-  fullCtx.drawImage(glowSmallCanvas, 0, 0, w, h);
-  fullCtx.restore();
-
-  imageData.data.set(fullCtx.getImageData(0, 0, w, h).data);
+  screenBlendUpsample(imageData, bloom);
 }
 
 export function grainCaptureIntensity(grain: number, size = 25): number {
