@@ -15,6 +15,7 @@ import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { isPlayableMp4, remuxToGuestMp4 } from "./guestMp4";
 import { mediaUrlToBytes, objectUrlFromBlob, revokeMediaUrl } from "./mediaBytes";
 import { highlightedViewRect } from "./viewfinderCrop";
+import { flushEncoder, waitEncoderDrain } from "./videoEncoderGuard";
 
 export const HIGHLIGHT_LEAD_MS = 10000;
 export const HIGHLIGHT_PREVIEW_MS = 5000;
@@ -53,6 +54,8 @@ let applyLook: ((ctx: CanvasRenderingContext2D) => void) | null = null;
 let cropBarPct = 0;
 let stillImg: HTMLImageElement | null = null;
 let lastStillUrl = "";
+let pendingStillUrl = "";
+let stillLoading = false;
 let mimeType = "video/mp4";
 let startedAt = 0;
 let encoder: VideoEncoder | null = null;
@@ -127,10 +130,23 @@ function sizeFromSources(): { width: number; height: number } | null {
 
 function pullStill() {
   const url = getStillUrl?.() || "";
-  if (!url || url === lastStillUrl) return;
-  lastStillUrl = url;
-  if (!stillImg) stillImg = new Image();
-  stillImg.src = url;
+  if (!url) return;
+  pendingStillUrl = url;
+  if (stillLoading) return;
+  if (url === lastStillUrl && stillImg?.complete) return;
+  const next = pendingStillUrl;
+  stillLoading = true;
+  const img = new Image();
+  img.onload = () => {
+    stillImg = img;
+    lastStillUrl = next;
+    stillLoading = false;
+    if (pendingStillUrl && pendingStillUrl !== lastStillUrl) pullStill();
+  };
+  img.onerror = () => {
+    stillLoading = false;
+  };
+  img.src = next;
 }
 
 function drawLiveOrFreeze() {
@@ -203,8 +219,13 @@ function requestRecorderFrame() {
 
 async function pumpLoop() {
   while (pumping) {
-    while (encoder && encoder.encodeQueueSize > 12) {
-      await sleep(8);
+    if (encoder) {
+      const drained = await waitEncoderDrain(encoder, 12, 2500);
+      if (!drained) {
+        encodeError = encodeError || "encoder queue stuck";
+        console.warn("[Highlight] Encoder queue stuck — dropping hardware path");
+        closeEncoder();
+      }
     }
     drawLiveOrFreeze();
     await encodeCanvasFrame();
@@ -225,7 +246,7 @@ async function pickAvcCodec(
     "avc1.4D001E",
     "avc1.64001F",
   ];
-  const modes: AvcHwAccel[] = ["prefer-hardware", "prefer-software", "no-preference"];
+  const modes: AvcHwAccel[] = ["prefer-software", "prefer-hardware", "no-preference"];
   for (const hardwareAcceleration of modes) {
     for (const codec of codecs) {
       try {
@@ -474,6 +495,8 @@ function resetState() {
   cropBarPct = 0;
   stillImg = null;
   lastStillUrl = "";
+  pendingStillUrl = "";
+  stillLoading = false;
   recorder = null;
   chunks = [];
   if (canvas?.parentNode) canvas.remove();
@@ -537,7 +560,9 @@ export async function stopHighlightCapture(): Promise<string | null> {
 
   if (usedEncoder) {
     try {
-      if (encoder && encoder.state === "configured") await encoder.flush();
+      if (encoder && encoder.state === "configured") {
+      await flushEncoder(encoder, 4000);
+    }
     } catch (e) {
       console.warn("[Highlight] Encoder flush failed:", e);
     }

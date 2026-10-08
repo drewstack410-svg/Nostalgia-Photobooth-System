@@ -8,6 +8,7 @@ import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { highlightedViewRect } from "./viewfinderCrop";
 import { isPlayableMp4, remuxToGuestMp4 } from "./guestMp4";
 import { objectUrlFromBlob, revokeMediaUrl } from "./mediaBytes";
+import { flushEncoder, waitEncoderDrain } from "./videoEncoderGuard";
 
 export type StripSlot = {
   x: number;
@@ -163,7 +164,7 @@ async function pickAvcCodec(
     "avc1.640028",
     "avc1.42001E",
   ];
-  const modes: AvcHwAccel[] = ["prefer-hardware", "prefer-software", "no-preference"];
+  const modes: AvcHwAccel[] = ["prefer-software", "prefer-hardware", "no-preference"];
   for (const hardwareAcceleration of modes) {
     for (const codec of codecs) {
       try {
@@ -457,9 +458,8 @@ export async function composeStripStill(opts: {
     ctx.restore();
   });
   if (overlay) drawPngOverlay(ctx, overlay, width, height);
-  if (useOverlay) fillGalleryBackdrop(ctx, width, height);
 
-  return canvas.toDataURL("image/jpeg", 0.92);
+  return canvas.toDataURL("image/png");
 }
 
 async function encodeWithVideoEncoder(
@@ -524,7 +524,11 @@ async function encodeWithVideoEncoder(
   const startedAt = performance.now();
   while (performance.now() - startedAt < durationMs) {
     if (encodeError || encoder.state !== "configured") break;
-    while (encoder.encodeQueueSize > 12) await sleep(8);
+    const drained = await waitEncoderDrain(encoder, 12, 2500);
+    if (!drained) {
+      encodeError = encodeError || "encoder queue stuck";
+      break;
+    }
     paint();
     const ts = Math.max(0, Math.round((performance.now() - startedAt) * 1000));
     if (lastTimestampUs < 0 || ts - lastTimestampUs >= 500) {
@@ -551,7 +555,7 @@ async function encodeWithVideoEncoder(
   }
 
   try {
-    if (encoder.state === "configured") await encoder.flush();
+    if (encoder.state === "configured") await flushEncoder(encoder, 4000);
   } catch (e) {
     console.warn("[StripVideo] Flush failed:", errText(e));
   }

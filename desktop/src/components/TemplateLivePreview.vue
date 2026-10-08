@@ -17,7 +17,7 @@ import { getPaperSizePx, getTemplateCellRects, occupancyFill } from "@/utils/pri
 import { getFrameWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
 import { prepareFrameDataUrl } from "@/utils/pngAlpha";
-import { cellCaptureIndex, cellShotNumber } from "@/utils/photoLayoutFile";
+import { cellCaptureIndex, cellShotNumber, templateShotCount } from "@/utils/photoLayoutFile";
 
 const props = withDefaults(
   defineProps<{
@@ -152,11 +152,7 @@ const photoStyle = computed(() => {
 // Shots the guest takes. A sheet may hold MORE cells than shots, in
 // which case the captures repeat across it ("4 shots, 3 copies") —
 // mirroring PrintingView's `loadedImages[i % count]`.
-const shots = computed(() => {
-  const t = props.template;
-  if (t.photoCount != null && t.photoCount > 0) return t.photoCount;
-  return Math.max(1, cells.value.length);
-});
+const shots = computed(() => templateShotCount(props.template));
 
 function photoFor(i: number): string | undefined {
   const s = shots.value;

@@ -310,12 +310,40 @@ export async function processSessionUpload(sessionId: string): Promise<boolean> 
     let gifId: string | undefined;
 
     for (const asset of job.assets) {
-      const payload = await loadAssetPayload(job, asset);
+      const isHighlight =
+        asset.kind === "highlight-strip" || asset.kind === "highlight-full";
+      let payload: { dataUrl?: string; bytes?: Uint8Array; mime: string } | null;
+      try {
+        payload = await loadAssetPayload(job, asset);
+      } catch (e) {
+        if (isHighlight) {
+          console.warn("[UploadQueue] Skip highlight load:", asset.filename, e);
+          continue;
+        }
+        throw e;
+      }
       if (!payload) {
+        if (isHighlight) {
+          console.warn("[UploadQueue] Skip missing highlight:", asset.filename);
+          continue;
+        }
         throw new Error(`Missing local file: ${asset.filename}`);
       }
-      const uploaded = await uploadAsset(payload, asset.publicId);
+      let uploaded: { url?: string; publicId?: string } | null;
+      try {
+        uploaded = await uploadAsset(payload, asset.publicId);
+      } catch (e) {
+        if (isHighlight) {
+          console.warn("[UploadQueue] Skip highlight upload:", asset.filename, e);
+          continue;
+        }
+        throw e;
+      }
       if (!uploaded?.publicId) {
+        if (isHighlight) {
+          console.warn("[UploadQueue] Skip highlight with no id:", asset.filename);
+          continue;
+        }
         throw new Error(`Upload produced no id: ${asset.filename}`);
       }
       if (asset.kind === "photo") {

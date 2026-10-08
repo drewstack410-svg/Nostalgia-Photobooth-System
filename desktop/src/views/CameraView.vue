@@ -642,6 +642,8 @@ function cancelCountdownSleep() {
 let reviewSleepTimer: ReturnType<typeof setTimeout> | null = null;
 /** Canon EVF was up for this shot — restart it after the freeze, not during. */
 let restoreLiveViewAfterReview = false;
+/** Latest EVF JPEG. Not a Vue ref — assigning every frame would re-render the kiosk. */
+let latestEvfUrl = "";
 let highlightLeadTimer: ReturnType<typeof setTimeout> | null = null;
 
 function cancelHighlightLead() {
@@ -694,7 +696,7 @@ function armHighlightRecording(countdownSeconds: number) {
           stream: stream.value,
           video: videoRef.value,
           getStillUrl: () => liveViewFrame.value,
-          getMirror: () => store.mirrorMode,
+          getStillUrl: () => latestEvfUrl || liveViewFrame.value,
           applyLook: applyHighlightLook,
           cropBarPercent: cropBarPercent.value,
         });
@@ -809,6 +811,11 @@ async function showShotReview() {
 
 async function runCountdownAndCapture() {
   if (isUnmounted) return;
+  if (store.hasAllPhotos) {
+    endSequence();
+    router.push("/printing");
+    return;
+  }
 
   const isFirstShot = store.capturedPhotos.length === 0;
   // Posing timer only. The freeze after a capture is extra and is
@@ -972,10 +979,14 @@ async function capturePhotoInner(hadLiveView: boolean) {
           srcH = img.height;
         }
 
-        if (!canvasRef.value) return;
+        if (!canvasRef.value) {
+          throw new Error("Capture canvas is missing");
+        }
         const canvas = canvasRef.value;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (!ctx) return;
+        if (!ctx) {
+          throw new Error("Could not create a 2D capture context");
+        }
 
         // Resize to max 3600px wide — gives 3600×2400 at the camera's
         // native 3:2 aspect (Canon outputs 6000×4000, so this is a 0.6×
@@ -1682,7 +1693,7 @@ onUnmounted(() => {
         :style="laidOut ? { ...boxStyle('counter'), ...textStyle('counter') } : undefined"
       >
         {{
-          laidOut
+          laidOut && textOf("counter").content.includes("{n}")
             ? textOf("counter")
                 .content.replaceAll("{n}", String(currentPhotoNumber))
                 .replaceAll("{total}", String(totalPhotos))

@@ -25,7 +25,7 @@ import {
   flattenPngDataUrlToWhite,
 } from "@/utils/pngAlpha";
 import { makeGalleryShortCode } from "@/utils/gallerySession";
-import { cellCaptureIndex } from "@/utils/photoLayoutFile";
+import { cellCaptureIndex, templateShotCount } from "@/utils/photoLayoutFile";
 import { submitGalleryUpload } from "@/services/uploadQueue";
 import type { GalleryUploadAsset } from "@/services/uploadQueue";
 import TemplateLivePreview from "@/components/TemplateLivePreview.vue";
@@ -181,7 +181,7 @@ async function galleryLayoutParam(): Promise<{ slots: string; par: string } | nu
   if (!t) return null;
   const sheet = getPaperSizePx(t.paperSize);
   const par = `${Math.round(sheet.width)}x${Math.round(sheet.height)}`;
-  const shotCount = Math.max(1, t.photoCount ?? t.cells?.length ?? 1);
+  const shotCount = templateShotCount(t);
   let rects: GallerySlot[] = [];
 
   if (t.cells?.length) {
@@ -394,8 +394,9 @@ async function createCompositeImage(
     const CANVAS_H = printSheetSpec.height;
     canvas.width = CANVAS_W;
     canvas.height = CANVAS_H;
+    const shotCount = Math.max(1, templateShotCount(template));
     console.log(
-      `[Composite] paperSize=${template.paperSize ?? "(default 4x6-landscape)"}, design=${designSpec.label} ${designSpec.width}×${designSpec.height}, printSheet=${printSheetSpec.label} ${CANVAS_W}×${CANVAS_H}, requiresCut=${requiresCut}`,
+      `[Composite] paperSize=${template.paperSize ?? "(default 4x6-landscape)"}, design=${designSpec.label} ${designSpec.width}×${designSpec.height}, printSheet=${printSheetSpec.label} ${CANVAS_W}×${CANVAS_H}, requiresCut=${requiresCut}, shots=${shotCount}`,
     );
 
     // ── Layout policy ──
@@ -523,7 +524,9 @@ async function createCompositeImage(
 
       for (let i = 0; i < slotCount; i++) {
         const img =
-          loadedImages[cellCaptureIndex(template.cells?.[i], i, count)];
+          loadedImages[
+            cellCaptureIndex(template.cells?.[i], i, shotCount) % count
+          ];
         let cellX: number;
         let cellY: number;
         let cw: number;
@@ -779,7 +782,8 @@ async function createCompositeImage(
               for (let i = 0; i < slotTotal; i++) {
                 const img =
                   loadedImages[
-                    cellCaptureIndex(template.cells?.[i], i, count)
+                    cellCaptureIndex(template.cells?.[i], i, shotCount) %
+                      count
                   ];
                 let cellX: number;
                 let cellY: number;
@@ -915,6 +919,63 @@ async function createCompositeImage(
         !template.frameImageUrl &&
         loadedImages.length > 0
       ) {
+        const dispShotCount = Math.max(1, templateShotCount(template));
+        if (template.cells?.length) {
+          const sheet = getPaperSizePx(template.paperSize);
+          const scale = Math.min(
+            1,
+            1800 / Math.max(sheet.width, sheet.height),
+          );
+          canvas.width = Math.max(2, Math.round(sheet.width * scale));
+          canvas.height = Math.max(2, Math.round(sheet.height * scale));
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          for (let i = 0; i < template.cells.length; i++) {
+            const c = template.cells[i]!;
+            const img =
+              loadedImages[
+                cellCaptureIndex(c, i, dispShotCount) % loadedImages.length
+              ]!;
+            const x = c.x * canvas.width;
+            const y = c.y * canvas.height;
+            const cw = c.w * canvas.width;
+            const ch = c.h * canvas.height;
+            ctx.save();
+            if (c.rotation) {
+              ctx.translate(x + cw / 2, y + ch / 2);
+              ctx.rotate((c.rotation * Math.PI) / 180);
+              ctx.translate(-(x + cw / 2), -(y + ch / 2));
+            }
+            ctx.beginPath();
+            ctx.rect(x, y, cw, ch);
+            ctx.clip();
+            const imgAspect = img.naturalWidth / img.naturalHeight;
+            const cAspect = cw / Math.max(1, ch);
+            let dw: number;
+            let dh: number;
+            if (imgAspect <= cAspect) {
+              dw = cw;
+              dh = cw / imgAspect;
+            } else {
+              dh = ch;
+              dw = ch * imgAspect;
+            }
+            ctx.drawImage(
+              img,
+              x + (cw - dw) / 2,
+              y + (ch - dh) / 2,
+              dw,
+              dh,
+            );
+            ctx.restore();
+          }
+          const dataUrl = canvas.toDataURL("image/png", 0.95);
+          console.log(
+            `[Composite] DISPLAY composite ${canvas.width}×${canvas.height} (editor slots), length=${dataUrl.length}`,
+          );
+          resolve(dataUrl);
+          return;
+        }
         const cols = Math.max(1, Math.floor(grid.cols));
         const rows = Math.max(1, Math.floor(grid.rows));
         const photoW = loadedImages[0].naturalWidth;
@@ -923,15 +984,11 @@ async function createCompositeImage(
         canvas.height = photoH * rows;
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        // Cycle photos to fill every grid cell (handles cases where
-        // the template has more cells than captured photos — rare for
-        // display but keeps the layout intact).
         const cellCount = cols * rows;
-        const shotCount = Math.max(1, template.photoCount ?? loadedImages.length);
         for (let i = 0; i < cellCount; i++) {
           const img =
             loadedImages[
-              cellCaptureIndex(template.cells?.[i], i, shotCount) %
+              cellCaptureIndex(template.cells?.[i], i, dispShotCount) %
                 loadedImages.length
             ];
           const col = i % cols;
@@ -1455,7 +1512,9 @@ async function saveComposite() {
               par: layout?.par,
               rows: grid?.rows,
               cols: grid?.cols,
-              shots: Math.max(1, template?.photoCount ?? captureResults.length),
+              shots: template
+                ? templateShotCount(template)
+                : Math.max(1, captureResults.length),
             },
             updatedAt: Date.now(),
           })

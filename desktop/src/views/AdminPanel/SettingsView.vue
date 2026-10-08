@@ -38,6 +38,8 @@ import {
   layoutFileSlug,
   parsePhotoLayoutDocumentJson,
   serializePhotoLayout,
+  stampCellShots,
+  templateShotCount,
 } from "@/utils/photoLayoutFile";
 import {
   decodeXmpFile,
@@ -1095,12 +1097,21 @@ async function saveLayoutEditor() {
   const t = layoutEditorTemplate.value;
   if (!t) return;
   const name = t.name.trim() || "New layout";
-  const cells = layoutEditorCells.value;
-  const photoCount = Math.max(
-    1,
-    t.photoCount || 1,
-    ...cells.map((c) => c.shot || 0),
+  const cells = stampCellShots(
+    layoutEditorCells.value,
+    templateShotCount({
+      photoCount: t.photoCount,
+      cells: layoutEditorCells.value,
+      frameRows: t.frameRows,
+      frameCols: t.frameCols,
+    }),
   );
+  const photoCount = templateShotCount({
+    photoCount: t.photoCount,
+    cells,
+    frameRows: t.frameRows,
+    frameCols: t.frameCols,
+  });
   const paperSize = t.paperSize || "4x6-portrait";
   const layout: "vertical" | "horizontal" = paperSize.includes("landscape")
     ? "horizontal"
@@ -1183,14 +1194,22 @@ const newTemplateOffsetY = ref<number>(0);
 const clampOffset = (n: number) =>
   Math.max(-50, Math.min(50, Number.isFinite(n) ? n : 0));
 
-/** Shots + copies implied by the current grid and shot count. */
+/**
+ * Shots the guest takes. Comes from the numbers painted on the layout
+ * (the highest slot number). Not typed — a 1–12 sheet is 12 shots.
+ */
 const shotPlan = computed(() => {
   const rows = Math.max(1, Math.min(GRID_AXIS_MAX, newTemplateFrameRows.value || 1));
   const cols = Math.max(1, Math.min(GRID_AXIS_MAX, newTemplateFrameCols.value || 1));
-  const cells = rows * cols;
-  const raw = Number(newTemplateShots.value);
-  const shots = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), cells) : cells;
-  const copies = cells / shots;
+  const gridCells = rows * cols;
+  const placed = newTemplateCells.value.length;
+  const shots = templateShotCount({
+    cells: newTemplateCells.value,
+    frameRows: rows,
+    frameCols: cols,
+  });
+  const cells = placed || gridCells;
+  const copies = shots > 0 ? cells / shots : 1;
   return { cells, shots, copies, even: Number.isInteger(copies) };
 });
 const newTemplatePaperSize = ref<PaperSize>("4x6-portrait");
@@ -1673,12 +1692,22 @@ async function submitAddTemplate() {
   const thumbnailActiveUrl =
     newTemplateThumbnailActiveUrl.value.trim() || undefined;
   const cells = newTemplateCells.value.length
-    ? JSON.parse(JSON.stringify(newTemplateCells.value)) as TemplateCell[]
+    ? stampCellShots(
+        JSON.parse(JSON.stringify(newTemplateCells.value)) as TemplateCell[],
+        photoCount,
+      )
     : undefined;
   const payload = {
     name,
     layout,
-    photoCount,
+    photoCount: cells
+      ? templateShotCount({
+          photoCount,
+          cells,
+          frameRows,
+          frameCols,
+        })
+      : photoCount,
     paperSize: newTemplatePaperSize.value,
     frameImageUrl,
     frameRows,
@@ -3585,16 +3614,13 @@ function templatePriceLabel(id: string): string {
                   <label class="form-label">Grid</label>
                   <p class="form-hint grid-heading__status">
                     <strong>
-                      {{ shotPlan.cells }} cells → {{ shotPlan.shots }} shot{{
+                      {{ shotPlan.shots }} shot{{
                         shotPlan.shots === 1 ? "" : "s"
                       }}
-                      <template v-if="shotPlan.copies > 1">
-                        × {{ shotPlan.copies }} copies
+                      <template v-if="shotPlan.cells > shotPlan.shots">
+                        · {{ shotPlan.cells }} windows
                       </template>
                     </strong>
-                    <span v-if="!shotPlan.even" class="form-error">
-                      — shots must divide evenly into cells
-                    </span>
                   </p>
                 </div>
                 <div class="frame-layout-fields">
@@ -3627,14 +3653,9 @@ function templatePriceLabel(id: string): string {
                   </div>
                   <div class="frame-layout-field">
                     <label class="form-sublabel">Shots</label>
-                    <input
-                      v-model.number="newTemplateShots"
-                      type="number"
-                      class="form-input"
-                      min="1"
-                      :max="shotPlan.cells"
-                      :placeholder="String(shotPlan.cells)"
-                    />
+                    <div class="form-input shots-display" aria-readonly="true">
+                      {{ shotPlan.shots }}
+                    </div>
                   </div>
                   <div class="frame-layout-field">
                     <label class="form-sublabel">Margin (px)</label>
@@ -5273,6 +5294,14 @@ function templatePriceLabel(id: string): string {
 .form-select:focus {
   outline: none;
   border-color: var(--color-brown-dark);
+}
+
+.shots-display {
+  cursor: default;
+  user-select: none;
+  background: var(--color-cream);
+  color: var(--color-brown-dark);
+  font-weight: 600;
 }
 
 .form-input.keyboard-active {

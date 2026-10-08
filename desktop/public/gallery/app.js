@@ -1,4 +1,4 @@
-﻿// Nostalgia Photobooth — public gallery viewer
+// Nostalgia Photobooth — public gallery viewer
 // ---------------------------------------------
 // Vanilla JS, no framework, no build step.
 //
@@ -367,6 +367,39 @@
 
     if (view.kind === "grid") {
       loadingEl.hidden = true; // CSS grid renders instantly; each <img> loads on its own
+      const slots = Array.isArray(layoutSlots)
+        ? layoutSlots.filter((s) => s && s.w > 0 && s.h > 0)
+        : [];
+      if (slots.length) {
+        const wrap = document.createElement("div");
+        wrap.className = "stage-layout";
+        if (printAspect && printAspect.w > 0 && printAspect.h > 0) {
+          stageEl.style.aspectRatio = `${printAspect.w} / ${printAspect.h}`;
+        } else if (gridCols > 0 && gridRows > 0) {
+          const cellAr = printCellAspect();
+          stageEl.style.aspectRatio = `${gridCols * cellAr} / ${gridRows}`;
+        }
+        slots.forEach((s, i) => {
+          const shot =
+            Number.isFinite(s.shot) && s.shot >= 0
+              ? s.shot % view.ids.length
+              : i % Math.max(1, view.ids.length);
+          const img = document.createElement("img");
+          img.alt = `Capture ${shot + 1}`;
+          img.loading = "lazy";
+          img.src = imageUrl(view.ids[shot]);
+          bindR2SrcFallback(img);
+          img.style.left = s.x * 100 + "%";
+          img.style.top = s.y * 100 + "%";
+          img.style.width = s.w * 100 + "%";
+          img.style.height = s.h * 100 + "%";
+          if (s.r) img.style.transform = "rotate(" + s.r + "deg)";
+          wrap.appendChild(img);
+        });
+        stageInner.appendChild(wrap);
+        updateSaveLabel(view);
+        return;
+      }
       const grid = document.createElement("div");
       grid.className = "stage-grid";
       const layout = resolveShotGrid(view.ids.length);
@@ -672,6 +705,24 @@
       }
       return;
     }
+
+    const loadWatch = setTimeout(() => {
+      if (activeKey !== view.key) return;
+      if (loadingEl && !loadingEl.hidden) {
+        loadingEl.hidden = true;
+        if (video.readyState < 2) {
+          errorEl.hidden = false;
+        } else {
+          showPlay();
+        }
+      }
+    }, 8000);
+
+    video.addEventListener(
+      "playing",
+      () => clearTimeout(loadWatch),
+      { once: true },
+    );
 
     const attempt = video.play();
     if (attempt && typeof attempt.then === "function") {
@@ -1482,6 +1533,49 @@
     const imgs = await Promise.all(
       photoIds.map((id) => loadCorsImage(imageUrl(id))),
     );
+    const slots = Array.isArray(layoutSlots)
+      ? layoutSlots.filter((s) => s && s.w > 0 && s.h > 0)
+      : [];
+    if (slots.length && imgs.length) {
+      const ar = printAspect;
+      const W = ar && ar.w > 0 ? Math.min(1800, ar.w) : 1200;
+      const H =
+        ar && ar.w > 0 && ar.h > 0
+          ? Math.max(2, Math.round((W * ar.h) / ar.w))
+          : 1800;
+      const canvas = document.createElement("canvas");
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, W, H);
+      slots.forEach((s, i) => {
+        const shot =
+          Number.isFinite(s.shot) && s.shot >= 0
+            ? s.shot % imgs.length
+            : i % imgs.length;
+        const img = imgs[shot];
+        const x = s.x * W;
+        const y = s.y * H;
+        const w = s.w * W;
+        const h = s.h * H;
+        ctx.save();
+        if (s.r) {
+          ctx.translate(x + w / 2, y + h / 2);
+          ctx.rotate((s.r * Math.PI) / 180);
+          ctx.translate(-(x + w / 2), -(y + h / 2));
+        }
+        drawCoverFit(ctx, img, x, y, w, h);
+        ctx.restore();
+      });
+      return new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (blob) => (blob ? resolve(blob) : reject(new Error("toBlob failed"))),
+          "image/jpeg",
+          0.92,
+        );
+      });
+    }
     const layout = resolveShotGrid(imgs.length);
     const cols = layout.cols;
     const rows = layout.rows;

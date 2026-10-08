@@ -79,6 +79,7 @@ import {
   parseImportedFonts,
   type ImportedFont,
 } from "@/utils/customFonts";
+import { templateShotCount } from "@/utils/photoLayoutFile";
 
 export { DEFAULT_ADJUSTMENTS };
 export type { FilterAdjustments };
@@ -844,23 +845,15 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   /**
    * How many photos the guest actually SHOOTS.
    *
-   * `photoCount` is authoritative — NOT rows x cols. A sheet can hold
-   * more cells than there are shots, in which case the captures repeat
-   * across the sheet: a 4x3 grid with photoCount 4 is "4 shots, 3
-   * copies", which is what the client asked for. The print composite
-   * and the live preview both index cells with `i % shots`.
-   *
-   * This previously returned rows x cols, so that same template
-   * demanded 12 separate captures.
+   * Numbered layout-editor slots win: a 4×3 sheet with shots 1–4 is
+   * four captures (cells repeat those shots). Stale photoCount that
+   * still equals rows×cols must not keep the camera running after
+   * the unique shot numbers are done.
    */
   const requiredPhotos = computed(() => {
-    const t = selectedTemplate.value;
+    const t = sessionTemplate.value ?? selectedTemplate.value;
     if (!t) return 0;
-    if (t.photoCount != null && t.photoCount > 0) return t.photoCount;
-    const rows = t.frameRows;
-    const cols = t.frameCols;
-    if (rows != null && cols != null && rows > 0 && cols > 0) return rows * cols;
-    return 1;
+    return templateShotCount(t);
   });
 
   /** Cells on the sheet (may exceed requiredPhotos → repeated copies). */

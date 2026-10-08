@@ -5,6 +5,7 @@
  */
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { mediaUrlToBytes, objectUrlFromBlob } from "./mediaBytes";
+import { flushEncoder, waitEncoderDrain } from "./videoEncoderGuard";
 
 const FPS = 30;
 const FRAME_MS = 1000 / FPS;
@@ -76,7 +77,7 @@ async function pickAvcCodec(
     "avc1.4D001E",
     "avc1.64001F",
   ];
-  const modes: AvcHwAccel[] = ["prefer-hardware", "prefer-software", "no-preference"];
+  const modes: AvcHwAccel[] = ["prefer-software", "prefer-hardware", "no-preference"];
   for (const hardwareAcceleration of modes) {
     for (const codec of codecs) {
       try {
@@ -161,7 +162,11 @@ export async function encodeCanvasToMp4(
   const limit = Math.min(MAX_MS, Math.max(1000, durationMs));
   while (performance.now() - startedAt < limit) {
     if (encodeError || encoder.state !== "configured") break;
-    while (encoder.encodeQueueSize > 12) await sleep(8);
+    const drained = await waitEncoderDrain(encoder, 12, 2500);
+    if (!drained) {
+      encodeError = encodeError || "encoder queue stuck";
+      break;
+    }
     await paint();
     const ts = Math.max(0, Math.round((performance.now() - startedAt) * 1000));
     if (lastTimestampUs >= 0 && ts - lastTimestampUs < 500) {
@@ -190,7 +195,7 @@ export async function encodeCanvasToMp4(
   }
 
   try {
-    if (encoder.state === "configured") await encoder.flush();
+    if (encoder.state === "configured") await flushEncoder(encoder, 4000);
   } catch (e) {
     console.warn("[GuestMp4] flush failed:", errText(e));
   }

@@ -83,6 +83,41 @@ export function cellCaptureIndex(
   return (cellShotNumber(cell, index, n) - 1) % n;
 }
 
+/**
+ * How many photos the guest actually takes.
+ * Numbered slots win (a 4×3 sheet with shots 1–4 is four captures, not 12).
+ */
+export function templateShotCount(t: {
+  photoCount?: number;
+  cells?: Array<{ shot?: number }>;
+  frameRows?: number;
+  frameCols?: number;
+}): number {
+  const cellShots = (t.cells ?? [])
+    .map((c) =>
+      typeof c.shot === "number" && c.shot > 0 ? Math.floor(c.shot) : 0,
+    )
+    .filter((n) => n > 0);
+  if (cellShots.length > 0) {
+    const maxShot = Math.max(...cellShots);
+    if (
+      t.photoCount != null &&
+      t.photoCount > 0 &&
+      t.photoCount <= maxShot
+    ) {
+      return Math.floor(t.photoCount);
+    }
+    return maxShot;
+  }
+  if (t.photoCount != null && t.photoCount > 0) {
+    return Math.floor(t.photoCount);
+  }
+  const rows = t.frameRows ?? 0;
+  const cols = t.frameCols ?? 0;
+  if (rows > 0 && cols > 0) return rows * cols;
+  return 1;
+}
+
 export function stampCellShots(
   cells: TemplateCell[],
   photoCount: number,

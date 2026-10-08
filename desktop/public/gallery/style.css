@@ -567,6 +567,21 @@ body.hl-lightbox-open {
   pointer-events: none;
 }
 
+/* Template editor slots: same cell positions/shot map as the booth. */
+.stage-layout {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  overflow: hidden;
+}
+.stage-layout img {
+  position: absolute;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+
 /* Grid preview: 2×2 / 3×3 / 4×4 from the session photo count. */
 .stage-grid {
   width: 100%;
