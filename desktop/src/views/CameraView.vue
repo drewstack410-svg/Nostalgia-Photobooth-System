@@ -695,8 +695,8 @@ function armHighlightRecording(countdownSeconds: number) {
         ok = await startHighlightCapture({
           stream: stream.value,
           video: videoRef.value,
-          getStillUrl: () => liveViewFrame.value,
           getStillUrl: () => latestEvfUrl || liveViewFrame.value,
+          getMirror: () => store.mirrorMode,
           applyLook: applyHighlightLook,
           cropBarPercent: cropBarPercent.value,
         });
