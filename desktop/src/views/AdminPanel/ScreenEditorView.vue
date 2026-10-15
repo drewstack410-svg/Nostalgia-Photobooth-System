@@ -206,7 +206,7 @@ function clearTitleBackground() {
     store.setKioskBackgroundFill(kioskId.value, "theme");
     kioskBgTab.value = "theme";
   } else {
-    store.clearTitleBackground();
+  store.clearTitleBackground();
     titleBgMediaChoice.value = "theme";
   }
 }

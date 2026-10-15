@@ -953,15 +953,18 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       const n = parseInt(preview, 10);
       if (!isNaN(n)) shootingPreviewCountdownSeconds.value = clamp(n, 1, 30);
     }
-    // Old default was 10 while first-shot was 15. The freeze-after-shot
-    // is NOT part of the posing countdown — bump the legacy 10 so shot
-    // 2+ still get a full 15s timer unless the operator set something else.
+    // Keep subsequent posing time equal to the first-shot timer so shot
+    // 2+ never looks shorter (old installs often had subsequent=10).
     if (
-      subsequent === "10" &&
-      shootingFirstCountdownSeconds.value === 15
+      shootingSubsequentCountdownSeconds.value !==
+      shootingFirstCountdownSeconds.value
     ) {
-      shootingSubsequentCountdownSeconds.value = 15;
-      localStorage.setItem(STORAGE_KEY_SHOOTING_SUBSEQUENT_COUNTDOWN, "15");
+      shootingSubsequentCountdownSeconds.value =
+        shootingFirstCountdownSeconds.value;
+      localStorage.setItem(
+        STORAGE_KEY_SHOOTING_SUBSEQUENT_COUNTDOWN,
+        String(shootingFirstCountdownSeconds.value),
+      );
     }
     const printing = localStorage.getItem(STORAGE_KEY_PRINTING_COUNTDOWN);
     if (printing !== null) {
@@ -981,6 +984,9 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     const clamped = Math.max(1, Math.min(60, Math.round(seconds)));
     shootingFirstCountdownSeconds.value = clamped;
     localStorage.setItem(STORAGE_KEY_SHOOTING_FIRST_COUNTDOWN, String(clamped));
+    // Keep shot 2+ on the same posing window.
+    shootingSubsequentCountdownSeconds.value = clamped;
+    localStorage.setItem(STORAGE_KEY_SHOOTING_SUBSEQUENT_COUNTDOWN, String(clamped));
   }
   function setShootingSubsequentCountdown(seconds: number) {
     const clamped = Math.max(1, Math.min(60, Math.round(seconds)));

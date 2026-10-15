@@ -63,6 +63,8 @@ const lutCanvasRef = ref<{ pushFrame: (src: string) => void } | null>(null);
 const flpRootRef = ref<HTMLElement | null>(null);
 const FILTER_ID = "filter-studio-preview";
 let shotGen = 0;
+let prepareShotPromise: Promise<void> | null = null;
+let liveViewActive = false;
 
 const adj = computed(() =>
   props.filter ? store.resolvedAdjustments(props.filter) : store.DEFAULT_ADJUSTMENTS,
@@ -199,12 +201,68 @@ async function startCanonPreview(): Promise<boolean> {
       lutCanvasRef.value?.pushFrame(dataUrl);
     });
     usingCanon.value = true;
+    liveViewActive = true;
     console.log("[FilterPreview] Canon live view:", connected.cameraName);
     return true;
   } catch (err) {
     console.warn("[FilterPreview] Canon detection failed:", err);
     return false;
   }
+}
+
+async function stopCanonLiveView(opts?: { keepFrame?: boolean }) {
+  window.electronAPI?.offLiveViewFrame?.();
+  liveViewActive = false;
+  if (!opts?.keepFrame) liveViewFrame.value = "";
+  try {
+    await window.electronAPI?.canonStopLiveView?.();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function restartCanonLiveView() {
+  if (!usingCanon.value || !window.electronAPI?.canonStartLiveView) return;
+  try {
+    const live = await window.electronAPI.canonStartLiveView();
+    if (!live.success) {
+      console.warn("[FilterPreview] Live view restart failed:", live.error);
+      return;
+    }
+    liveViewActive = true;
+    onCanonLiveViewFrames((dataUrl) => {
+      if (!liveViewFrame.value) liveViewFrame.value = dataUrl;
+      paintCanonEvfImages(dataUrl, flpRootRef.value);
+      lutCanvasRef.value?.pushFrame(dataUrl);
+    });
+  } catch (err) {
+    console.warn("[FilterPreview] Live view restart error:", err);
+  }
+}
+
+function beginCanonShotPrep(settleMs: number) {
+  if (prepareShotPromise) return;
+  if (!usingCanon.value || !window.electronAPI?.canonPrepareShot) return;
+  prepareShotPromise = (async () => {
+    if (liveViewActive) await stopCanonLiveView({ keepFrame: true });
+    try {
+      const result = await window.electronAPI!.canonPrepareShot({ settleMs });
+      if (!result?.success) {
+        console.warn("[FilterPreview] Flash prep failed:", result?.error);
+      }
+    } catch (err) {
+      console.warn("[FilterPreview] Flash prep error:", err);
+    }
+  })();
+}
+
+function abortCanonShotPrep() {
+  prepareShotPromise = null;
+  void window.electronAPI?.canonAbortShotPrep?.();
+}
+
+function toggleMirror() {
+  store.setMirror(!store.mirrorMode);
 }
 
 async function startWebcamPreview() {
@@ -233,12 +291,9 @@ async function startPreview() {
   }
 }
 
-const isCapturing = ref(false);
 const testShotBusy = computed(
-  () => isCountingDown.value || isReviewing.value || isCapturing.value,
+  () => isCountingDown.value || isReviewing.value,
 );
-/** Canon flash is armed during the last 2s, same as the shooting screen. */
-let canonPrep: Promise<void> | null = null;
 
 const canTestShot = computed(
   () => !!(stream.value || liveViewFrame.value),
@@ -267,7 +322,29 @@ function lookMediaSource(): CanvasImageSource | null {
   return null;
 }
 
-function bakeLook(src: CanvasImageSource, sw: number, sh: number): string | null {
+async function loadImage(src: string): Promise<HTMLImageElement> {
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("Could not load test capture"));
+    img.src = src;
+  });
+  return img;
+}
+
+async function bakeTestStill(src: CanvasImageSource): Promise<string | null> {
+  let sw = 1280;
+  let sh = 720;
+  if (src instanceof HTMLVideoElement) {
+    sw = src.videoWidth;
+    sh = src.videoHeight;
+  } else if (src instanceof HTMLImageElement) {
+    sw = src.naturalWidth;
+    sh = src.naturalHeight;
+  } else if (src instanceof HTMLCanvasElement) {
+    sw = src.width;
+    sh = src.height;
+  }
   if (sw < 2 || sh < 2) return null;
   const maxEdge = 1600;
   const scale = Math.min(1, maxEdge / Math.max(sw, sh));
@@ -278,6 +355,7 @@ function bakeLook(src: CanvasImageSource, sw: number, sh: number): string | null
   canvas.height = h;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return null;
+  // Same mirror bake as CameraView capture.
   if (store.mirrorMode) {
     ctx.translate(w, 0);
     ctx.scale(-1, 1);
@@ -313,81 +391,29 @@ function bakeLook(src: CanvasImageSource, sw: number, sh: number): string | null
   return canvas.toDataURL("image/jpeg", 0.92);
 }
 
-function grabTestStill(): string | null {
+async function captureTestStill(): Promise<string | null> {
+  // Canon: real shutter + flash path (same as guest shoot).
+  if (usingCanon.value && window.electronAPI?.canonTakePhoto) {
+    if (prepareShotPromise) {
+      try {
+        await prepareShotPromise;
+      } catch {
+        /* continue to shutter */
+      }
+    }
+    const result = await window.electronAPI.canonTakePhoto();
+    prepareShotPromise = null;
+    if (!result.success || !result.imageData) {
+      throw new Error(result.error || "Canon test shot failed");
+    }
+    const img = await loadImage(result.imageData);
+    return bakeTestStill(img);
+  }
+
   const src = captureSource();
   if (!src) return null;
-  let sw = 1280;
-  let sh = 720;
-  if (src instanceof HTMLVideoElement) {
-    sw = src.videoWidth;
-    sh = src.videoHeight;
-  } else if (src instanceof HTMLImageElement) {
-    sw = src.naturalWidth;
-    sh = src.naturalHeight;
-  }
-  return bakeLook(src, sw, sh);
-}
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("Test shot image failed to load"));
-    img.src = src;
-  });
-}
-
-/** Stop EVF and half-press so the Canon flash is charged before countdown 0. */
-function beginCanonTestPrep(settleMs: number) {
-  const api = window.electronAPI;
-  if (!usingCanon.value || !api?.canonPrepareShot || canonPrep) return;
-  canonPrep = (async () => {
-    try {
-      await api.canonStopLiveView?.();
-    } catch {
-      /* prepareCanonShot tears EVF down again */
-    }
-    const result = await api.canonPrepareShot({ settleMs });
-    if (!result?.success) {
-      console.warn("[FilterPreview] Flash prep failed:", result?.error);
-    }
-  })().catch((err) => {
-    console.warn("[FilterPreview] Flash prep error:", err);
-  });
-}
-
-function abortCanonTestPrep() {
-  canonPrep = null;
-  void window.electronAPI?.canonAbortShotPrep?.();
-}
-
-async function restoreCanonPreview() {
-  if (!usingCanon.value) return;
-  const live = await window.electronAPI?.canonStartLiveView?.();
-  if (!live?.success) {
-    console.warn("[FilterPreview] Live view did not restart:", live?.error);
-  }
-}
-
-/** Real shutter at 0 — same full-press the shooting screen uses, so the flash pops. */
-async function captureCanonTestStill(): Promise<string | null> {
-  const api = window.electronAPI;
-  if (!api?.canonTakePhoto) return null;
-  if (canonPrep) {
-    try {
-      await canonPrep;
-    } catch {
-      /* already logged */
-    }
-    canonPrep = null;
-  }
-  const result = await api.canonTakePhoto();
-  if (!result.success || !result.imageData) {
-    console.warn("[FilterPreview] Test shot capture failed:", result.error);
-    return null;
-  }
-  const img = await loadImage(result.imageData);
-  return bakeLook(img, img.naturalWidth, img.naturalHeight);
+  if (src instanceof HTMLVideoElement) src.pause();
+  return bakeTestStill(src);
 }
 
 async function runTestShot() {
@@ -397,44 +423,61 @@ async function runTestShot() {
   stillSrc.value = "";
   isReviewing.value = false;
   isCountingDown.value = true;
-  canonPrep = null;
+  for (let n = poseSeconds; n >= 1; n--) {
+    if (gen !== shotGen) return;
+    countdownValue.value = n;
+    // Same as CameraView: arm flash on the last second only.
+    if (n === 1 && usingCanon.value) {
+      beginCanonShotPrep(500);
+    }
+    await sleepMs(1000);
+  }
+  if (gen !== shotGen) return;
+  isCountingDown.value = false;
+  showFlash.value = true;
+  await sleepMs(150);
+  showFlash.value = false;
+  if (gen !== shotGen) return;
+
+  let shot: string | null = null;
   try {
-    for (let n = poseSeconds; n >= 1; n--) {
-      if (gen !== shotGen) return;
-      countdownValue.value = n;
-      if (n === Math.min(2, poseSeconds) && usingCanon.value) {
-        beginCanonTestPrep(n === 1 ? 500 : 1100);
+    shot = await captureTestStill();
+  } catch (err) {
+    console.warn("[FilterPreview] Test shot failed:", err);
+    cameraError.value =
+      err instanceof Error ? err.message : "Test shot failed";
+    abortCanonShotPrep();
+    if (usingCanon.value) void restartCanonLiveView();
+    else {
+      try {
+        await videoRef.value?.play();
+      } catch {
+        /* ignore */
       }
-      await sleepMs(1000);
     }
+    return;
+  }
+  if (gen !== shotGen) return;
+  if (!shot) return;
+  stillSrc.value = shot;
+  isReviewing.value = true;
+  const previewSeconds = store.shootingPreviewCountdownSeconds;
+  for (let n = previewSeconds; n >= 1; n--) {
     if (gen !== shotGen) return;
-    isCountingDown.value = false;
-    isCapturing.value = true;
-    showFlash.value = true;
-    window.setTimeout(() => {
-      showFlash.value = false;
-    }, 150);
-    const shot = usingCanon.value
-      ? await captureCanonTestStill()
-      : grabTestStill();
-    if (gen !== shotGen) return;
-    if (!shot) return;
-    stillSrc.value = shot;
-    isReviewing.value = true;
-    const previewSeconds = store.shootingPreviewCountdownSeconds;
-    for (let n = previewSeconds; n >= 1; n--) {
-      if (gen !== shotGen) return;
-      freezeCountdown.value = n;
-      await sleepMs(1000);
+    freezeCountdown.value = n;
+    await sleepMs(1000);
+  }
+  if (gen !== shotGen) return;
+  isReviewing.value = false;
+  stillSrc.value = "";
+  if (usingCanon.value) {
+    void restartCanonLiveView();
+  } else {
+    try {
+      await videoRef.value?.play();
+    } catch {
+      /* ignore */
     }
-    if (gen !== shotGen) return;
-    isReviewing.value = false;
-    stillSrc.value = "";
-  } finally {
-    isCountingDown.value = false;
-    isCapturing.value = false;
-    if (gen !== shotGen) abortCanonTestPrep();
-    if (usingCanon.value) void restoreCanonPreview();
   }
 }
 
@@ -444,12 +487,11 @@ onMounted(() => {
 
 onUnmounted(() => {
   shotGen += 1;
-  abortCanonTestPrep();
+  abortCanonShotPrep();
   stopWebcamTracks(stream.value);
   stream.value = null;
   if (usingCanon.value) {
-    window.electronAPI?.offLiveViewFrame?.();
-    void window.electronAPI?.canonStopLiveView?.();
+    void stopCanonLiveView();
   }
 });
 
@@ -580,6 +622,22 @@ defineExpose({
         <p class="flp-preview-cd-label">Preview</p>
         <div class="flp-preview-cd-number">{{ freezeCountdown }}</div>
       </div>
+      <button
+        type="button"
+        class="flp-mirror"
+        :class="{ 'flp-mirror--on': store.mirrorMode }"
+        :disabled="testShotBusy"
+        :aria-pressed="store.mirrorMode"
+        @click="toggleMirror"
+      >
+        <span
+          class="flp-mirror-track"
+          :class="{ 'flp-mirror-track--on': store.mirrorMode }"
+        >
+          <span class="flp-mirror-thumb" />
+        </span>
+        Mirror
+      </button>
     </div>
     <p v-if="chrome" class="flp-hint">
       {{ filter ? filter.name : "Select a filter" }}
@@ -666,6 +724,60 @@ defineExpose({
   height: 1px;
   opacity: 0;
   pointer-events: none;
+}
+
+.flp-mirror {
+  position: absolute;
+  left: 0.65rem;
+  bottom: 0.65rem;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #f4e6c3;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.flp-mirror:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.flp-mirror-track {
+  position: relative;
+  width: 1.7rem;
+  height: 0.95rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  flex-shrink: 0;
+}
+
+.flp-mirror-track--on {
+  background: #c9a227;
+}
+
+.flp-mirror-thumb {
+  position: absolute;
+  top: 0.12rem;
+  left: 0.12rem;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.flp-mirror-track--on .flp-mirror-thumb {
+  transform: translateX(0.72rem);
 }
 
 .flp-placeholder {

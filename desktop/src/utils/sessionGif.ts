@@ -351,7 +351,48 @@ export async function buildSessionGif(
     ctx.clearRect(0, 0, w, h);
     drawCoverFit(ctx, img, w, h);
     frames.push(ctx.getImageData(0, 0, w, h).data);
+    // Yield so live capture UI stays responsive if this runs mid-session.
+    await new Promise<void>((r) => setTimeout(r, 0));
   }
 
-  return encodeFrames(frames, w, h, options);
+  return encodeFramesOffThread(frames, w, h, options);
+}
+
+function encodeFramesOffThread(
+  frames: Uint8ClampedArray[],
+  width: number,
+  height: number,
+  options: SessionGifOptions,
+): Promise<Uint8Array> {
+  if (typeof Worker === "undefined") {
+    return Promise.resolve(encodeFrames(frames, width, height, options));
+  }
+  return new Promise((resolve, reject) => {
+    let worker: Worker | null = null;
+    try {
+      worker = new Worker(
+        new URL("./sessionGif.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+    } catch {
+      resolve(encodeFrames(frames, width, height, options));
+      return;
+    }
+    const transfers = frames.map((f) => f.buffer);
+    worker.onmessage = (event: MessageEvent) => {
+      worker?.terminate();
+      worker = null;
+      const data = event.data as
+        | { ok: true; bytes: ArrayBuffer }
+        | { ok: false; error: string };
+      if (data.ok) resolve(new Uint8Array(data.bytes));
+      else reject(new Error(data.error));
+    };
+    worker.onerror = () => {
+      worker?.terminate();
+      worker = null;
+      reject(new Error("sessionGif worker failed"));
+    };
+    worker.postMessage({ frames, width, height, options }, transfers);
+  });
 }

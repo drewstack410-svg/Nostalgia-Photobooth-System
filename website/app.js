@@ -1,4 +1,4 @@
-﻿// Nostalgia Photobooth — public gallery viewer
+// Nostalgia Photobooth — public gallery viewer
 // ---------------------------------------------
 // Vanilla JS, no framework, no build step.
 //

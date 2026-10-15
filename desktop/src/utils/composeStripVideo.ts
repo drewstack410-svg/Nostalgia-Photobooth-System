@@ -552,6 +552,10 @@ async function encodeWithVideoEncoder(
       }
     }
     await sleep(FRAME_MS);
+    // Yield so printing UI / live paths can breathe during long encodes.
+    if (Math.round((performance.now() - startedAt) / FRAME_MS) % 4 === 0) {
+      await sleep(0);
+    }
   }
 
   try {

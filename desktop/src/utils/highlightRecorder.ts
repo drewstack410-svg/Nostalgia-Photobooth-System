@@ -218,19 +218,20 @@ function requestRecorderFrame() {
 }
 
 async function pumpLoop() {
+  const stepMs = applyLook ? 1000 / 20 : FRAME_MS;
   while (pumping) {
     if (encoder) {
-      const drained = await waitEncoderDrain(encoder, 12, 2500);
+      const drained = await waitEncoderDrain(encoder, 10, 200);
       if (!drained) {
-        encodeError = encodeError || "encoder queue stuck";
-        console.warn("[Highlight] Encoder queue stuck — dropping hardware path");
-        closeEncoder();
+        // Skip one frame instead of blocking the kiosk for seconds.
+        await sleep(stepMs);
+        continue;
       }
     }
     drawLiveOrFreeze();
     await encodeCanvasFrame();
     requestRecorderFrame();
-    await sleep(FRAME_MS);
+    await sleep(stepMs);
   }
 }
 
@@ -432,15 +433,22 @@ async function startCanvasCapture(opts: HighlightCaptureOpts): Promise<boolean> 
   pumping = true;
   drawLiveOrFreeze();
 
-  if (!(await beginMp4Encoder(canvas.width, canvas.height))) {
-    const recStream = canvas.captureStream(FPS);
-    if (!beginRecorder(recStream, `${canvas.width}x${canvas.height}`)) {
-      pumping = false;
-      canvas.remove();
-      canvas = null;
-      ctx = null;
-      return false;
-    }
+  // captureStream(0) + requestFrame after each paint — a fixed FPS rate
+  // often re-encodes the same canvas bitmap on Electron software canvases
+  // (looks like a frozen still in the guest GIF tab).
+  const recStream = canvas.captureStream(0);
+  // MediaRecorder encodes off the main thread — prefer it during live
+  // shooting so filter bake + countdown stay smooth.
+  const recorderOk = beginRecorder(
+    recStream,
+    `${canvas.width}x${canvas.height}`,
+  );
+  if (!recorderOk && !(await beginMp4Encoder(canvas.width, canvas.height))) {
+    pumping = false;
+    canvas.remove();
+    canvas = null;
+    ctx = null;
+    return false;
   }
 
   void pumpLoop();
@@ -473,13 +481,14 @@ export function freezeHighlightCapture() {
   console.log("[Highlight] Freeze locked for 5s tail");
 }
 
-/** Hold live recording until the 10s pre-shutter lead is in the file. */
+/** Optional pad before freeze — must not block the shutter (kiosk UX). */
 export async function waitForHighlightLead(): Promise<void> {
   if (!recording || !startedAt) return;
   const remain = HIGHLIGHT_LEAD_MS - (performance.now() - startedAt);
   if (remain > 50) {
-    console.log(`[Highlight] Finishing live lead ${Math.round(remain)}ms`);
-    await sleep(Math.min(remain, HIGHLIGHT_LEAD_MS));
+    console.log(
+      `[Highlight] Lead ${Math.round(remain)}ms short — capturing now, tail will pad the clip`,
+    );
   }
 }
 
@@ -533,23 +542,30 @@ export async function stopHighlightCapture(): Promise<string | null> {
     abortHighlightCapture();
     return null;
   }
-  recording = false;
+  // Stop the live pump; this function owns the freeze pad + finalize.
   pumping = false;
   if (!freezeCanvas && canvas) {
     freezeHighlightCapture();
   }
   frozen = true;
 
-  while (
-    encoder &&
-    encoder.state === "configured" &&
-    !encodeError &&
-    performance.now() - startedAt < TARGET_MS
-  ) {
-    drawLiveOrFreeze();
-    await encodeCanvasFrame();
-    await sleep(FRAME_MS);
+  // Pad the frozen tail to ~15s total so MediaRecorder clips are not
+  // cut off the moment review starts (that looked like a still image).
+  const padStep = FRAME_MS;
+  while (performance.now() - startedAt < TARGET_MS) {
+    if (encoder && encoder.state === "configured" && !encodeError) {
+      drawLiveOrFreeze();
+      await encodeCanvasFrame();
+    } else if (recorder && recorder.state === "recording") {
+      drawLiveOrFreeze();
+      requestRecorderFrame();
+    } else {
+      break;
+    }
+    await sleep(padStep);
   }
+
+  recording = false;
 
   console.log(
     `[Highlight] Stopping after ${Math.round(performance.now() - startedAt)}ms (${frameIndex} frames)`,

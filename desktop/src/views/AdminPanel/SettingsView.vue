@@ -2757,21 +2757,6 @@ function templatePriceLabel(id: string): string {
         >
           {{ filterPreviewRef?.testShotBusy ? "Testing…" : "Test Shot" }}
         </button>
-        <button
-          type="button"
-          class="filters-mirror"
-          :class="{ 'filters-mirror--on': store.mirrorMode }"
-          :aria-pressed="store.mirrorMode"
-          @click="store.setMirror(!store.mirrorMode)"
-        >
-          <span
-            class="filters-mirror-track"
-            :class="{ 'filters-mirror-track--on': store.mirrorMode }"
-          >
-            <span class="filters-mirror-thumb" />
-          </span>
-          Mirror
-        </button>
         <p class="filters-preview-bar-hint">Edit with controls visible.</p>
       </div>
       <Teleport to="body" :disabled="filterPreviewMode !== 'full'">
@@ -2779,31 +2764,15 @@ function templatePriceLabel(id: string): string {
           class="filters-studio-preview"
           :class="{ 'filters-studio-preview--fullscreen': filterPreviewMode === 'full' }"
         >
-          <div v-if="filterPreviewMode === 'full'" class="filters-fullscreen-tools">
-            <button
-              type="button"
-              class="filters-mirror filters-mirror--fullscreen"
-              :class="{ 'filters-mirror--on': store.mirrorMode }"
-              :aria-pressed="store.mirrorMode"
-              @click="store.setMirror(!store.mirrorMode)"
-            >
-              <span
-                class="filters-mirror-track"
-                :class="{ 'filters-mirror-track--on': store.mirrorMode }"
-              >
-                <span class="filters-mirror-thumb" />
-              </span>
-              Mirror
-            </button>
-            <button
-              type="button"
-              class="filters-test-shot"
-              :disabled="!filterPreviewRef?.canTestShot || filterPreviewRef?.testShotBusy"
-              @click="filterPreviewRef?.runTestShot()"
-            >
-              {{ filterPreviewRef?.testShotBusy ? "Testing…" : "Test Shot" }}
-            </button>
-          </div>
+          <button
+            v-if="filterPreviewMode === 'full'"
+            type="button"
+            class="filters-test-shot filters-test-shot--fullscreen"
+            :disabled="!filterPreviewRef?.canTestShot || filterPreviewRef?.testShotBusy"
+            @click="filterPreviewRef?.runTestShot()"
+          >
+            {{ filterPreviewRef?.testShotBusy ? "Testing…" : "Test Shot" }}
+          </button>
           <button
             v-if="filterPreviewMode === 'full'"
             type="button"
@@ -4646,68 +4615,12 @@ function templatePriceLabel(id: string): string {
   cursor: default;
 }
 
-.filters-fullscreen-tools {
+.filters-test-shot--fullscreen {
   position: absolute;
   top: 1rem;
   right: 4.5rem;
   z-index: 3;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.filters-mirror {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.35rem 0.7rem;
-  border: 2px solid var(--color-brown-light);
-  border-radius: 10px;
-  background: var(--color-cream);
-  color: #3b2a14;
-  cursor: pointer;
-  font-size: 0.88rem;
-  font-family: var(--font-display);
-  font-weight: 700;
-}
-
-.filters-mirror--fullscreen {
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.35);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
-}
-
-.filters-fullscreen-tools .filters-test-shot {
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
-}
-
-.filters-mirror-track {
-  width: 36px;
-  height: 20px;
-  border-radius: 10px;
-  background: #cbb9a3;
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.filters-mirror-track--on {
-  background: #683017;
-}
-
-.filters-mirror-thumb {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #c2822e;
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  transition: transform 0.2s ease;
-}
-
-.filters-mirror-track--on .filters-mirror-thumb {
-  transform: translateX(16px);
 }
 
 .filters-preview-bar-hint {

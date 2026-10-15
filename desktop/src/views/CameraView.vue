@@ -77,6 +77,8 @@ const highlightRecording = ref(false);
 const countdownValue = ref(3);
 /** Last-frame freeze after each shot — also encoded as the last 5s of the highlight. */
 const freezeCountdown = ref(store.shootingPreviewCountdownSeconds);
+/** Same still as the left strip — shown during the post-shot freeze. */
+const reviewStillUrl = ref("");
 const showFlash = ref(false);
 const cameraReady = ref(false);
 const showInactivityWarning = ref(false);
@@ -521,6 +523,9 @@ async function startLiveView() {
       liveViewActive.value = true;
       console.log('[Camera] Live view started');
       onCanonLiveViewFrames((dataUrl) => {
+        // Always refresh the highlight recorder source. liveViewFrame is
+        // only seeded once so Vue doesn't re-render every EVF JPEG.
+        latestEvfUrl = dataUrl;
         if (!liveViewFrame.value) liveViewFrame.value = dataUrl;
         paintCanonEvfImages(dataUrl, cameraScreenRef.value);
       });
@@ -677,8 +682,11 @@ function applyHighlightLook(ctx: CanvasRenderingContext2D) {
             opacity: media.opacity,
           }
         : null,
-    adjustments: f ? store.resolvedAdjustments(f) : null,
+    adjustments: f
+      ? { ...store.resolvedAdjustments(f), grain: 0 }
+      : null,
     lrSpatial: f?.lrSpatial,
+    skipSpatial: true,
   });
 }
 
@@ -798,6 +806,10 @@ async function saveHighlightLocally(clipUrl: string, shot: number) {
 
 /** Hold the last shutter frame on screen, then continue. */
 async function showShotReview() {
+  const last = store.capturedPhotos[store.capturedPhotos.length - 1];
+  // Full 3:2 frame (filter-baked), same framing as live view — not the
+  // print-cropped strip still, which looks zoomed-in when cover-fit here.
+  reviewStillUrl.value = last?.fullDataUrl || last?.dataUrl || "";
   isReviewing.value = true;
   const seconds = store.shootingPreviewCountdownSeconds;
   for (let n = seconds; n >= 1; n--) {
@@ -807,6 +819,7 @@ async function showShotReview() {
   }
   freezeCountdown.value = store.shootingPreviewCountdownSeconds;
   isReviewing.value = false;
+  reviewStillUrl.value = "";
 }
 
 async function runCountdownAndCapture() {
@@ -817,12 +830,9 @@ async function runCountdownAndCapture() {
     return;
   }
 
-  const isFirstShot = store.capturedPhotos.length === 0;
-  // Posing timer only. The freeze after a capture is extra and is
-  // awaited in showShotReview before this function runs again.
-  const seconds = isFirstShot
-    ? store.shootingFirstCountdownSeconds
-    : store.shootingSubsequentCountdownSeconds;
+  // Same posing window for every take (default 15s). The freeze after
+  // a capture is extra and must not shorten this.
+  const seconds = store.shootingFirstCountdownSeconds;
 
   isCountingDown.value = true;
   armHighlightRecording(seconds);
@@ -830,11 +840,10 @@ async function runCountdownAndCapture() {
   for (let n = seconds; n >= 1; n--) {
     if (isUnmounted) return;
     countdownValue.value = n;
-    // Arm flash during the last 2 seconds (or the only second if the
-    // posing timer is 1s) so EVF teardown + charge happen before 0.
-    // At 0 the shutter is only a full-press.
-    if (n === Math.min(2, seconds) && canonCameraConnected.value) {
-      beginCanonShotPrep(n === 1 ? 500 : 1100);
+    // Arm flash on the last second only so live view does not freeze for
+    // ~2s while guests still pose.
+    if (n === 1 && canonCameraConnected.value) {
+      beginCanonShotPrep(500);
     }
     await sleepCountdown(1000);
   }
@@ -854,9 +863,13 @@ async function runCountdownAndCapture() {
   prepareShotPromise = null;
 
   if (success && !isUnmounted) {
+    // Pad/finalize the clip in parallel with the 5s still review so the
+    // next posing countdown still starts on time.
+    const clipDone = finishHighlightClip(shotNumber);
     await showShotReview();
-    await finishHighlightClip(shotNumber);
+    await Promise.race([clipDone, sleepReview(50)]);
     if (!isUnmounted) await unfreezeLivePreview();
+    void clipDone;
   } else {
     cancelHighlightLead();
     abortHighlightCapture();
@@ -1039,6 +1052,10 @@ async function capturePhotoInner(hadLiveView: boolean) {
         if (adj) {
           console.log("[Camera] Baking filter sliders", adj);
         }
+
+        await new Promise<void>((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => r())),
+        );
 
         applyCaptureLook(ctx, {
           effectType: filter?.effectType ?? "original",
@@ -1620,6 +1637,7 @@ onUnmounted(() => {
         <!-- Flash Effect -->
         <div v-if="showFlash" class="flash-overlay"></div>
 
+        <!-- REC indicator — hidden for now
         <div
           v-if="highlightRecording"
           class="rec-indicator"
@@ -1628,9 +1646,23 @@ onUnmounted(() => {
           <span class="rec-dot"></span>
           REC
         </div>
+        -->
 
         <div v-if="isCountingDown" class="countdown-overlay">
           <div class="countdown-number">{{ countdownValue }}</div>
+        </div>
+
+        <div v-if="isReviewing && reviewStillUrl" class="review-still-wrap">
+          <img :src="reviewStillUrl" class="review-still" alt="" />
+          <!-- Same crop bars as live so the lit window matches the shoot. -->
+          <div
+            class="liveview-crop-bars"
+            aria-hidden="true"
+            :style="{ '--crop-bar-w': cropBarPercent + '%' }"
+          >
+            <div class="liveview-crop-bar liveview-crop-bar--left"></div>
+            <div class="liveview-crop-bar liveview-crop-bar--right"></div>
+          </div>
         </div>
 
         <div v-if="isReviewing" class="preview-countdown">
@@ -2287,6 +2319,25 @@ onUnmounted(() => {
     transform: scale(1.1);
     opacity: 0.8;
   }
+}
+
+/* Post-shot still — full 3:2 frame like live view (not print-cropped). */
+.review-still-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: #111;
+  overflow: hidden;
+}
+
+.review-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 /* Last-frame freeze — only while the snapshot is held on screen. */
