@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import { useDashboardStore } from "@/stores/dashboard";
+import { useGalleryEventsStore } from "@/stores/galleryEvents";
 // Guest copies go to Cloudflare R2 via the upload queue (pending + retry).
 import {
   getPaperSizePx,
@@ -1010,10 +1011,10 @@ async function createCompositeImage(
 
 // Save the composite image
 /**
- * Claims this sitting's "<MM-DD-YY>/Session N" folder and drops the
- * printed sheet into it. Returns the folder (or null when the folder
- * could not be created, in which case callers fall back to the old
- * flat filenames rather than losing the customer's photos).
+ * Claims this sitting's session folder and drops the printed sheet into
+ * it. When a gallery event is launched, files go under
+ * Events/<event>/<MM-DD-YY>/Session N. Returns null when the folder
+ * could not be created (callers then fall back to flat filenames).
  */
 async function beginSessionFolder(
   stripDataUrl: string,
@@ -1023,7 +1024,10 @@ async function beginSessionFolder(
 
   let folder: string | null = null;
   try {
-    const r = await api.beginSession();
+    const active = useGalleryEventsStore().activeEvent;
+    const r = await api.beginSession(
+      active?.name ? { eventName: active.name } : undefined,
+    );
     if (r?.success && r.folder) folder = r.folder;
     else console.warn("[Session] could not create folder:", r?.error);
   } catch (e) {

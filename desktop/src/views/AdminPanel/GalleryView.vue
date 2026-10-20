@@ -4,6 +4,8 @@ import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import type { MediaUploadStatus } from "@/stores/photobooth";
 import { useDashboardStore } from "@/stores/dashboard";
+import { useGalleryEventsStore } from "@/stores/galleryEvents";
+import AdminFormModal from "@/components/AdminFormModal.vue";
 import QRCode from "qrcode";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { printCropSiblingPath } from "@/utils/gallerySession";
@@ -51,6 +53,7 @@ interface GalleryPhoto {
 const router = useRouter();
 const store = usePhotoboothStore();
 const dashboardStore = useDashboardStore();
+const eventsStore = useGalleryEventsStore();
 const savedPhotos = ref<GalleryPhoto[]>([]);
 /** Disk session files that never made it into localStorage (quota / R2 retry). */
 const diskSessionPhotos = ref<GalleryPhoto[]>([]);
@@ -59,21 +62,24 @@ const isLoading = ref(false);
 const selectedPhoto = ref<GalleryPhoto | null>(null);
 const viewMode = ref<"session" | "saved">("session");
 /** When set, checkboxes are shown and user can select photos for reprint or delete */
-const selectionMode = ref<"reprint" | "delete" | null>(null);
+const selectionMode = ref<"reprint" | "delete" | "add-to-event" | "remove-from-event" | null>(null);
 const selectedIds = ref<Set<string>>(new Set());
 /** Confirmation modal: 'reprint' | 'delete' | null */
 const confirmAction = ref<"reprint" | "delete" | null>(null);
 /** Number of reprint copies to make (when confirmAction === 'reprint') */
 const reprintCount = ref(1);
 
+const showEventForm = ref(false);
+const editingEventId = ref<string | null>(null);
+const eventFormName = ref("");
+const eventFormDate = ref("");
+const eventFormDescription = ref("");
+const eventFormError = ref("");
+const confirmDeleteEvent = ref(false);
+
 const isElectron = computed(() => !!window.electronAPI);
 const selectedCount = computed(() => selectedIds.value.size);
 const hasSelection = computed(() => selectedCount.value > 0);
-const allSelected = computed(
-  () =>
-    displayPhotos.value.length > 0 &&
-    selectedIds.value.size === displayPhotos.value.length,
-);
 
 function looksLikeOriginalFile(nameOrPath?: string): boolean {
   return /-original\.(jpe?g|png)$/i.test(nameOrPath || "");
@@ -134,7 +140,9 @@ function sessionNumberFromPath(filePath?: string): number | null {
 
 function photoSessionKey(photo: GalleryPhoto): string {
   const folder = sessionFolderOf(photo.path);
-  const folderMatch = folder.match(/(\d{2}-\d{2}-\d{2}\/session \d+)$/i);
+  const folderMatch = folder.match(
+    /((?:events\/[^/]+\/)?\d{2}-\d{2}-\d{2}\/session \d+)$/i,
+  );
   if (folderMatch) return `folder:${folderMatch[1].toLowerCase()}`;
   if (photo.sessionId) return `id:${photo.sessionId}`;
   return `item:${photo.id}`;
@@ -223,7 +231,7 @@ const sessionOptions = computed(() => {
   });
 });
 
-const displayPhotos = computed(() => {
+const catalogPhotos = computed(() => {
   let photos = photosForDate.value;
   if (filterSession.value) {
     photos = photos.filter((p) => photoSessionKey(p) === filterSession.value);
@@ -231,11 +239,168 @@ const displayPhotos = computed(() => {
   return photos;
 });
 
+/** Event photos only — never the full catalog. */
+const displayPhotos = computed(() => {
+  const event = eventsStore.selectedEvent;
+  if (!event) return [];
+  const ids = new Set(event.photoIds);
+  return catalogPhotos.value.filter((p) => ids.has(p.id));
+});
+
+/** Full gallery — only while picking existing shots to add. */
+const addablePhotos = computed(() => {
+  const event = eventsStore.selectedEvent;
+  if (!event) return [];
+  const already = new Set(event.photoIds);
+  return catalogPhotos.value.filter((p) => !already.has(p.id));
+});
+
+const gridPhotos = computed(() =>
+  selectionMode.value === "add-to-event" ? addablePhotos.value : displayPhotos.value,
+);
+
+const isAddingExisting = computed(() => selectionMode.value === "add-to-event");
+
+function focusDefaultEvent() {
+  if (eventsStore.selectedEventId) {
+    if (eventsStore.events.some((e) => e.id === eventsStore.selectedEventId)) {
+      return;
+    }
+  }
+  const preferred =
+    eventsStore.activeEventId &&
+    eventsStore.events.some((e) => e.id === eventsStore.activeEventId)
+      ? eventsStore.activeEventId
+      : eventsStore.sortedEvents[0]?.id ?? null;
+  eventsStore.selectEvent(preferred);
+}
+
+const allSelected = computed(
+  () =>
+    gridPhotos.value.length > 0 &&
+    selectedIds.value.size === gridPhotos.value.length,
+);
+
 const filtersActive = computed(() => !!filterDate.value || !!filterSession.value);
 
 function clearGalleryFilters() {
   filterDate.value = "";
   filterSession.value = "";
+}
+
+function openCreateEvent() {
+  editingEventId.value = null;
+  eventFormName.value = "";
+  eventFormDate.value = localDateKey(new Date());
+  eventFormDescription.value = "";
+  eventFormError.value = "";
+  showEventForm.value = true;
+}
+
+function openEditEvent() {
+  const event = eventsStore.selectedEvent;
+  if (!event) return;
+  editingEventId.value = event.id;
+  eventFormName.value = event.name;
+  eventFormDate.value = event.date || "";
+  eventFormDescription.value = event.description || "";
+  eventFormError.value = "";
+  showEventForm.value = true;
+}
+
+function closeEventForm() {
+  showEventForm.value = false;
+  eventFormError.value = "";
+}
+
+function saveEventForm() {
+  const name = eventFormName.value.trim();
+  if (!name) {
+    eventFormError.value = "Name is required.";
+    return;
+  }
+  try {
+    if (editingEventId.value) {
+      eventsStore.updateEvent(editingEventId.value, {
+        name,
+        date: eventFormDate.value,
+        description: eventFormDescription.value,
+      });
+    } else {
+      eventsStore.createEvent({
+        name,
+        date: eventFormDate.value,
+        description: eventFormDescription.value,
+      });
+    }
+    closeEventForm();
+  } catch (e) {
+    eventFormError.value =
+      e instanceof Error ? e.message : "Could not save event.";
+  }
+}
+
+function askDeleteEvent() {
+  if (!eventsStore.selectedEvent) return;
+  confirmDeleteEvent.value = true;
+}
+
+function confirmDeleteEventAction() {
+  const id = eventsStore.selectedEventId;
+  if (id) eventsStore.deleteEvent(id);
+  confirmDeleteEvent.value = false;
+  cancelSelectionMode();
+  focusDefaultEvent();
+}
+
+function startAddToEvent() {
+  if (!eventsStore.selectedEvent) return;
+  selectedIds.value = new Set();
+  selectionMode.value = "add-to-event";
+  selectedPhoto.value = null;
+  if (viewMode.value === "saved" && !savedPhotos.value.length) {
+    void loadSavedPhotos();
+  }
+}
+
+function startRemoveFromEvent() {
+  if (!eventsStore.selectedEvent) return;
+  selectedIds.value = new Set();
+  selectionMode.value = "remove-from-event";
+  selectedPhoto.value = null;
+}
+
+function applyAddToEvent() {
+  const event = eventsStore.selectedEvent;
+  if (!event || !selectedIds.value.size) return;
+  eventsStore.addPhotos(event.id, [...selectedIds.value]);
+  cancelSelectionMode();
+}
+
+function applyRemoveFromEvent() {
+  const event = eventsStore.selectedEvent;
+  if (!event || !selectedIds.value.size) return;
+  eventsStore.removePhotos(event.id, [...selectedIds.value]);
+  cancelSelectionMode();
+}
+
+function eventCountLabel(eventId: string): number {
+  const event = eventsStore.events.find((e) => e.id === eventId);
+  if (!event) return 0;
+  const ids = new Set(event.photoIds);
+  return catalogPhotos.value.filter((p) => ids.has(p.id)).length;
+}
+
+function launchSelectedEvent() {
+  const event = eventsStore.selectedEvent;
+  if (!event) return;
+  eventsStore.launchEvent(event.id);
+  cancelSelectionMode();
+  router.push("/");
+}
+
+function stopLaunchedEvent() {
+  eventsStore.stopActiveEvent();
 }
 
 watch([filterDate, viewMode, dateOptions, sessionOptions], () => {
@@ -250,7 +415,7 @@ watch([filterDate, viewMode, dateOptions, sessionOptions], () => {
   }
 });
 
-watch(displayPhotos, (photos) => {
+watch(gridPhotos, (photos) => {
   if (!selectedIds.value.size) return;
   const ids = new Set(photos.map((p) => p.id));
   const next = new Set([...selectedIds.value].filter((id) => ids.has(id)));
@@ -475,7 +640,7 @@ function toggleSelectAll() {
   if (allSelected.value) {
     selectedIds.value = new Set();
   } else {
-    selectedIds.value = new Set(displayPhotos.value.map((p) => p.id));
+    selectedIds.value = new Set(gridPhotos.value.map((p) => p.id));
   }
 }
 
@@ -654,16 +819,24 @@ async function confirmReprint() {
 
 async function confirmDelete() {
   const photos = getSelectedPhotos();
+  const removedIds: string[] = [];
   for (const photo of photos) {
     if (photo.isLocal) {
       store.removeRecentStrip(photo.id);
+      removedIds.push(photo.id);
     } else if (window.electronAPI && photo.path) {
       const result = await window.electronAPI.deletePhoto(photo.path);
       if (result.success) {
         savedPhotos.value = savedPhotos.value.filter((p) => p.id !== photo.id);
+        removedIds.push(photo.id);
       }
     }
     if (selectedPhoto.value?.id === photo.id) closePhoto();
+  }
+  for (const event of eventsStore.events) {
+    if (removedIds.some((id) => event.photoIds.includes(id))) {
+      eventsStore.removePhotos(event.id, removedIds);
+    }
   }
   closeConfirmModal();
   cancelSelectionMode();
@@ -764,7 +937,16 @@ function clearRetryNoticeOnOnline() {
   retryNotice.value = "";
 }
 
+watch(
+  () => eventsStore.sortedEvents.map((e) => e.id).join("|"),
+  () => {
+    focusDefaultEvent();
+  },
+);
+
 onMounted(() => {
+  eventsStore.load();
+  focusDefaultEvent();
   stopQueueWatch = onUploadQueueChange(() => {
     queuePending.value = pendingUploadCount();
   });
@@ -783,9 +965,74 @@ onUnmounted(() => {
 
 <template>
   <div class="gallery-view">
+    <aside class="gallery-events" aria-label="Gallery events">
+      <div class="gallery-events__head">
+        <h2 class="gallery-events__title">Events</h2>
+        <button
+          type="button"
+          class="gallery-icon-btn gallery-icon-btn--accent"
+          title="New event"
+          aria-label="New event"
+          @click="openCreateEvent"
+        >
+          <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+      <button
+        v-for="event in eventsStore.sortedEvents"
+        :key="event.id"
+        type="button"
+        class="gallery-event-item"
+        :class="{
+          'gallery-event-item--active': eventsStore.selectedEventId === event.id,
+          'gallery-event-item--launched': eventsStore.activeEventId === event.id,
+        }"
+        @click="eventsStore.selectEvent(event.id); cancelSelectionMode()"
+      >
+        <span class="gallery-event-item__text">
+          <span class="gallery-event-item__name">
+            {{ event.name }}
+            <span
+              v-if="eventsStore.activeEventId === event.id"
+              class="gallery-event-item__live"
+            >Live</span>
+          </span>
+          <span v-if="event.date" class="gallery-event-item__date">
+            {{ formatDateKey(event.date) }}
+          </span>
+        </span>
+        <span class="gallery-event-item__count">{{ eventCountLabel(event.id) }}</span>
+      </button>
+      <p v-if="!eventsStore.sortedEvents.length" class="gallery-events__empty">
+        Create an event to start organizing captures.
+      </p>
+    </aside>
+
+    <div class="gallery-main">
     <div class="gallery-header">
       <div class="gallery-header-left">
-        <div class="view-toggle" v-if="isElectron">
+        <div class="gallery-current">
+          <h2 class="gallery-current__title">
+            <template v-if="isAddingExisting">
+              Add to {{ eventsStore.selectedEvent?.name || "event" }}
+            </template>
+            <template v-else>
+              {{ eventsStore.selectedEvent?.name || "Events" }}
+            </template>
+          </h2>
+          <p v-if="isAddingExisting" class="gallery-current__desc">
+            Choose existing Session or Saved photos to attach.
+          </p>
+          <p
+            v-else-if="eventsStore.selectedEvent?.description"
+            class="gallery-current__desc"
+          >
+            {{ eventsStore.selectedEvent.description }}
+          </p>
+        </div>
+        <div class="view-toggle" v-if="isElectron && isAddingExisting">
           <button
             class="toggle-btn"
             :class="{ active: viewMode === 'session' }"
@@ -804,112 +1051,244 @@ onUnmounted(() => {
             Saved ({{ savedPhotos.length }})
           </button>
         </div>
-        <!-- Gallery date/session filters — hidden for now
-        <div v-if="allPhotos.length > 0" class="gallery-filters">
-          <label class="gallery-filter-label">
-            <span class="gallery-filter-text">Date</span>
-            <select
-              v-model="filterDate"
-              class="gallery-select"
-              aria-label="Filter by date"
-            >
-              <option value="">All dates</option>
-              <option v-for="day in dateOptions" :key="day" :value="day">
-                {{ formatDateKey(day) }}
-              </option>
-            </select>
-          </label>
-          <label class="gallery-filter-label">
-            <span class="gallery-filter-text">Session</span>
-            <select
-              v-model="filterSession"
-              class="gallery-select"
-              aria-label="Filter by session"
-            >
-              <option value="">All sessions</option>
-              <option
-                v-for="session in sessionOptions"
-                :key="session.key"
-                :value="session.key"
-              >
-                {{ session.label }}
-              </option>
-            </select>
-          </label>
-          <button
-            v-if="filtersActive"
-            type="button"
-            class="btn btn-secondary gallery-filter-clear"
-            @click="clearGalleryFilters"
-          >
-            Clear filters
-          </button>
-        </div>
-        -->
       </div>
-      <div class="gallery-header-right" v-if="displayPhotos.length > 0 || canRetryUploads">
+      <div
+        class="gallery-header-right"
+        v-if="
+          gridPhotos.length > 0 ||
+          canRetryUploads ||
+          eventsStore.selectedEvent ||
+          selectionMode
+        "
+      >
         <template v-if="!selectionMode">
+          <template v-if="eventsStore.selectedEvent">
+            <button
+              v-if="eventsStore.activeEventId === eventsStore.selectedEvent.id"
+              type="button"
+              class="gallery-text-btn"
+              title="End launch"
+              @click="stopLaunchedEvent"
+            >
+              <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" />
+              </svg>
+              End
+            </button>
+            <button
+              v-else
+              type="button"
+              class="gallery-text-btn gallery-text-btn--accent"
+              title="Launch event"
+              @click="launchSelectedEvent"
+            >
+              <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M8 5.5v13l11-6.5L8 5.5z" fill="currentColor" />
+              </svg>
+              Launch
+            </button>
+            <button
+              type="button"
+              class="gallery-icon-btn gallery-icon-btn--accent"
+              title="Add existing photos"
+              aria-label="Add existing photos"
+              @click="startAddToEvent"
+            >
+              <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 8h3l1.5-2h7L17 8h3v11H4V8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                <path d="M12 12v5M9.5 14.5H14.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button
+              v-if="displayPhotos.length > 0"
+              type="button"
+              class="gallery-icon-btn"
+              title="Remove from event"
+              aria-label="Remove from event"
+              @click="startRemoveFromEvent"
+            >
+              <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 8h3l1.5-2h7L17 8h3v11H4V8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                <path d="M9.5 14.5H14.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="gallery-icon-btn"
+              title="Edit event"
+              aria-label="Edit event"
+              @click="openEditEvent"
+            >
+              <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 20h4l10.5-10.5-4-4L4 16v4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                <path d="M12.5 7.5l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="gallery-icon-btn gallery-icon-btn--danger"
+              title="Delete event"
+              aria-label="Delete event"
+              @click="askDeleteEvent"
+            >
+              <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 7h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" stroke-width="2" />
+                <path d="M8 7l.8 12h6.4L16 7" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                <path d="M10 4h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                <circle cx="18.5" cy="5.5" r="3.2" fill="#f8e8e8" stroke="currentColor" stroke-width="1.6" />
+                <path d="M17.3 5.5h2.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+            </button>
+          </template>
           <button
             type="button"
-            class="btn btn-reprint"
+            class="gallery-icon-btn gallery-icon-btn--accent"
+            title="Retry upload"
+            aria-label="Retry upload"
             :disabled="retryBusy || !canRetryUploads"
             @click="retryUploads()"
           >
-            {{ retryBusy ? "Uploading…" : "Retry Upload" }}
+            <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M20 12a8 8 0 1 1-2.2-5.5M20 5v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
           </button>
           <button
             v-if="displayPhotos.length > 0"
             type="button"
-            class="btn btn-reprint"
+            class="gallery-icon-btn gallery-icon-btn--accent"
+            title="Reprint"
+            aria-label="Reprint"
             @click="startSelectionMode('reprint')"
           >
-            Reprint
+            <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M7 8V4h10v4M7 16H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+              <rect x="7" y="14" width="10" height="6" rx="1" stroke="currentColor" stroke-width="2" />
+            </svg>
           </button>
           <button
             v-if="displayPhotos.length > 0"
             type="button"
-            class="btn btn-danger"
+            class="gallery-icon-btn gallery-icon-btn--danger"
+            title="Delete photos"
+            aria-label="Delete photos"
             @click="startSelectionMode('delete')"
           >
-            Delete
+            <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 8h3l1.5-2h7L17 8h3v11H4V8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+              <circle cx="12" cy="13.5" r="2.6" stroke="currentColor" stroke-width="2" />
+              <path d="M7 18l10-10" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+            </svg>
           </button>
         </template>
         <template v-else>
           <button
             type="button"
-            class="btn btn-secondary"
+            class="gallery-icon-btn"
+            title="Cancel"
+            aria-label="Cancel"
             @click="cancelSelectionMode"
           >
-            Cancel
+            <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+            </svg>
           </button>
           <button
             type="button"
-            class="btn btn-secondary"
+            class="gallery-icon-btn"
+            :title="allSelected ? 'Deselect all' : 'Select all'"
+            :aria-label="allSelected ? 'Deselect all' : 'Select all'"
             @click="toggleSelectAll"
           >
-            {{ allSelected ? "Deselect all" : "Select all" }}
+            <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" stroke-width="2" />
+              <path
+                v-if="allSelected"
+                d="M8 12l3 3 5-5"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
           </button>
           <button
             v-if="selectionMode === 'reprint'"
             type="button"
-            class="btn btn-reprint"
+            class="gallery-icon-btn gallery-icon-btn--accent"
             :disabled="!hasSelection"
+            :title="`Reprint ${selectedCount} selected`"
+            :aria-label="`Reprint ${selectedCount} selected`"
             @click="openConfirmModal('reprint')"
           >
-            Reprint {{ selectedCount }} selected
+            <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M7 8V4h10v4M7 16H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+              <rect x="7" y="14" width="10" height="6" rx="1" stroke="currentColor" stroke-width="2" />
+            </svg>
+            <span v-if="hasSelection" class="gallery-icon-btn__badge">{{ selectedCount }}</span>
+          </button>
+          <button
+            v-else-if="selectionMode === 'delete'"
+            type="button"
+            class="gallery-icon-btn gallery-icon-btn--danger"
+            :disabled="!hasSelection"
+            :title="`Delete ${selectedCount} selected`"
+            :aria-label="`Delete ${selectedCount} selected`"
+            @click="openConfirmModal('delete')"
+          >
+            <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 8h3l1.5-2h7L17 8h3v11H4V8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+              <circle cx="12" cy="13.5" r="2.6" stroke="currentColor" stroke-width="2" />
+              <path d="M7 18l10-10" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+            </svg>
+            <span v-if="hasSelection" class="gallery-icon-btn__badge">{{ selectedCount }}</span>
+          </button>
+          <button
+            v-else-if="selectionMode === 'add-to-event'"
+            type="button"
+            class="gallery-icon-btn gallery-icon-btn--accent"
+            :disabled="!hasSelection"
+            :title="`Add ${selectedCount} to event`"
+            :aria-label="`Add ${selectedCount} to event`"
+            @click="applyAddToEvent"
+          >
+            <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+            </svg>
+            <span v-if="hasSelection" class="gallery-icon-btn__badge">{{ selectedCount }}</span>
           </button>
           <button
             v-else
             type="button"
-            class="btn btn-danger"
+            class="gallery-icon-btn"
             :disabled="!hasSelection"
-            @click="openConfirmModal('delete')"
+            :title="`Remove ${selectedCount} from event`"
+            :aria-label="`Remove ${selectedCount} from event`"
+            @click="applyRemoveFromEvent"
           >
-            Delete {{ selectedCount }} selected
+            <svg class="gallery-icon-btn__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+            </svg>
+            <span v-if="hasSelection" class="gallery-icon-btn__badge">{{ selectedCount }}</span>
           </button>
         </template>
       </div>
     </div>
+    <p
+      v-if="selectionMode === 'add-to-event'"
+      class="gallery-selection-hint"
+      role="status"
+    >
+      Pick existing gallery photos to add to
+      {{ eventsStore.selectedEvent?.name || "this event" }}.
+    </p>
+    <p
+      v-else-if="selectionMode === 'remove-from-event'"
+      class="gallery-selection-hint"
+      role="status"
+    >
+      Select photos to unlink from this event. Files stay on disk.
+    </p>
     <p
       v-if="retryNotice"
       class="gallery-retry-notice"
@@ -918,33 +1297,58 @@ onUnmounted(() => {
       {{ retryNotice }}
     </p>
 
-    <!-- Loading State -->
-    <div v-if="viewMode === 'saved' && isLoading" class="loading-state">
+    <!-- Loading State (only while browsing the full catalog to add) -->
+    <div
+      v-if="isAddingExisting && viewMode === 'saved' && isLoading"
+      class="loading-state"
+    >
       <div class="spinner"></div>
       <p>Loading photos...</p>
     </div>
 
-    <!-- Empty State -->
-    <div v-else-if="allPhotos.length === 0" class="empty-state">
-      <h2>No Photos Yet</h2>
-      <p v-if="viewMode === 'session'">Take some photos to see them here!</p>
-      <p v-else>Photos you save will appear here.</p>
-      <RouterLink to="/camera" class="btn btn-primary">
-        Start Camera
-      </RouterLink>
+    <div v-else-if="!eventsStore.selectedEvent" class="empty-state">
+      <h2>No event selected</h2>
+      <p>Create an event to collect captures for a shoot night.</p>
+      <button type="button" class="btn btn-reprint" @click="openCreateEvent">
+        New event
+      </button>
     </div>
-    <div v-else-if="displayPhotos.length === 0" class="empty-state">
-      <h2>No photos match</h2>
-      <p>Try another date or session, or clear the filters.</p>
-      <button type="button" class="btn btn-secondary" @click="clearGalleryFilters">
-        Clear filters
+    <div
+      v-else-if="isAddingExisting && catalogPhotos.length === 0"
+      class="empty-state"
+    >
+      <h2>No Photos Yet</h2>
+      <p v-if="viewMode === 'session'">Take some photos first, then add them here.</p>
+      <p v-else>Saved photos will appear here to attach.</p>
+      <button type="button" class="btn btn-secondary" @click="cancelSelectionMode">
+        Back to event
+      </button>
+    </div>
+    <div
+      v-else-if="isAddingExisting && addablePhotos.length === 0"
+      class="empty-state"
+    >
+      <h2>No more photos to add</h2>
+      <p>Every photo in this tab is already in the event.</p>
+      <button type="button" class="btn btn-secondary" @click="cancelSelectionMode">
+        Done
+      </button>
+    </div>
+    <div v-else-if="gridPhotos.length === 0" class="empty-state">
+      <h2>No photos in this event</h2>
+      <p>
+        Launch the booth to capture into this event, or add existing pictures
+        from Session / Saved.
+      </p>
+      <button type="button" class="btn btn-reprint" @click="startAddToEvent">
+        Add photos
       </button>
     </div>
 
     <!-- Photo Grid -->
     <div v-else class="photo-grid">
       <div
-        v-for="photo in displayPhotos"
+        v-for="photo in gridPhotos"
         :key="photo.id"
         class="photo-card"
         :class="{
@@ -1160,17 +1564,452 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
+    <AdminFormModal
+      v-model:open="showEventForm"
+      :title="editingEventId ? 'Edit event' : 'New event'"
+      description="Captures from Launch go here. You can also attach existing Session or Saved photos."
+    >
+      <div class="event-form">
+        <label class="event-form__label">
+          Name
+          <input
+            v-model="eventFormName"
+            type="text"
+            class="event-form__input"
+            maxlength="80"
+            placeholder="e.g. Wedding — May"
+            @keydown.enter.prevent="saveEventForm"
+          />
+        </label>
+        <label class="event-form__label">
+          Date
+          <input v-model="eventFormDate" type="date" class="event-form__input" />
+        </label>
+        <label class="event-form__label">
+          Description
+          <textarea
+            v-model="eventFormDescription"
+            class="event-form__input event-form__textarea"
+            rows="3"
+            maxlength="240"
+            placeholder="Optional notes"
+          />
+        </label>
+        <p v-if="eventFormError" class="event-form__error">{{ eventFormError }}</p>
+        <div class="event-form__actions">
+          <button type="button" class="btn btn-secondary" @click="closeEventForm">
+            Cancel
+          </button>
+          <button type="button" class="btn btn-reprint" @click="saveEventForm">
+            {{ editingEventId ? "Save" : "Create" }}
+          </button>
+        </div>
+      </div>
+    </AdminFormModal>
+
+    <div
+      v-if="confirmDeleteEvent"
+      class="photo-modal confirm-modal"
+      @click="confirmDeleteEvent = false"
+    >
+      <div class="modal-content confirm-content" @click.stop>
+        <h2 class="confirm-title">Delete event?</h2>
+        <p class="confirm-message">
+          Remove “{{ eventsStore.selectedEvent?.name }}”? Photos are not deleted
+          from disk — only this event grouping is removed.
+        </p>
+        <div class="confirm-actions">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            @click="confirmDeleteEvent = false"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="btn btn-danger"
+            @click="confirmDeleteEventAction"
+          >
+            Delete event
+          </button>
+        </div>
+      </div>
+    </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* Beat AdminPanel's `.admin-main > * { flex-direction: column }` so
+   events stay on the left and the photo grid stays on the right. */
 .gallery-view {
   height: 100%;
+  width: 100%;
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  background: transparent;
+  padding: 0;
+  overflow: hidden;
+  gap: 0;
+}
+
+.gallery-events {
+  --evt-bg: #f7efe3;
+  --evt-bg-soft: #fffaf2;
+  --evt-line: #dcc9ad;
+  --evt-text: #3b2a14;
+  --evt-muted: #8a6f4f;
+  --evt-gold: #e0b45a;
+  --evt-gold-deep: #c2822e;
+  flex: 0 0 300px;
+  width: 300px;
+  max-width: 300px;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
-  background: transparent;
-  padding: 1.5rem;
+  gap: 0.35rem;
+  padding: 1.25rem 1rem;
+  border-right: 2px solid var(--evt-line);
+  background: linear-gradient(180deg, #fffaf2 0%, var(--evt-bg) 100%);
+  overflow-x: hidden;
   overflow-y: auto;
+  color: var(--evt-text);
+}
+
+.gallery-events__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.gallery-events__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--evt-text);
+  letter-spacing: 0.04em;
+}
+
+.gallery-text-btn {
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0 0.85rem 0 0.7rem;
+  border: 2px solid var(--color-brown-light);
+  border-radius: 10px;
+  background: var(--color-cream);
+  color: var(--color-brown-dark);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.gallery-text-btn:hover:not(:disabled) {
+  border-color: var(--color-brown);
+  background: #fff8ea;
+}
+
+.gallery-text-btn--accent {
+  background: #e8c56b;
+  border-color: #d4ae4f;
+  color: #3b2a14;
+}
+
+.gallery-text-btn--accent:hover:not(:disabled) {
+  background: #f0d27a;
+  border-color: #c2822e;
+}
+
+.gallery-icon-btn {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-brown-light);
+  border-radius: 10px;
+  background: var(--color-cream);
+  color: var(--color-brown-dark);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.gallery-icon-btn:hover:not(:disabled) {
+  border-color: var(--color-brown);
+  background: #fff8ea;
+}
+
+.gallery-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.gallery-icon-btn--accent {
+  background: #e8c56b;
+  border-color: #d4ae4f;
+  color: #3b2a14;
+}
+
+.gallery-icon-btn--accent:hover:not(:disabled) {
+  background: #f0d27a;
+  border-color: #c2822e;
+}
+
+.gallery-icon-btn--danger {
+  color: #8a2b2b;
+  border-color: #d4a0a0;
+  background: #f8e8e8;
+}
+
+.gallery-icon-btn--danger:hover:not(:disabled) {
+  background: #f3d4d4;
+  border-color: #8a2b2b;
+}
+
+.gallery-icon-btn__svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  display: block;
+}
+
+.gallery-icon-btn__badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.28rem;
+  border-radius: 999px;
+  background: #683017;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.15rem;
+  text-align: center;
+}
+
+.gallery-event-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #e0d0b8;
+  border-radius: 10px;
+  background: #e8d7c0;
+  color: #5c4033;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-body);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.gallery-event-item:hover {
+  background: #5c4033;
+  border-color: #3b2a14;
+  color: #f7efe3;
+}
+
+.gallery-event-item--active,
+.gallery-event-item--active:hover {
+  background: #3b2a14;
+  border-color: #2a1d12;
+  color: #f7efe3;
+  box-shadow: inset 3px 0 0 var(--evt-gold-deep);
+}
+
+.gallery-event-item--launched:not(.gallery-event-item--active) {
+  border-color: var(--evt-gold-deep);
+}
+
+.gallery-event-item__live {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: var(--evt-gold-deep);
+  color: #fff8ea;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.gallery-event-item__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.gallery-event-item__name {
+  font-weight: 700;
+  font-size: 0.92rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+
+.gallery-event-item__date {
+  font-size: 0.75rem;
+  color: #8a6f4f;
+}
+
+.gallery-event-item:hover .gallery-event-item__date,
+.gallery-event-item--active .gallery-event-item__date {
+  color: #e0d0b8;
+}
+
+.gallery-event-item__count {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #3b2a14;
+  background: rgba(255, 250, 242, 0.65);
+  border-radius: 999px;
+  padding: 0.15rem 0.45rem;
+}
+
+.gallery-event-item:hover .gallery-event-item__count,
+.gallery-event-item--active .gallery-event-item__count {
+  color: #3b2a14;
+  background: var(--evt-gold);
+}
+
+.gallery-events__empty {
+  margin: 0.75rem 0.25rem 0;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--evt-muted);
+}
+
+.gallery-events .gallery-icon-btn {
+  background: #fffaf2;
+  border-color: var(--evt-line);
+  color: var(--evt-text);
+}
+
+.gallery-events .gallery-icon-btn:hover:not(:disabled) {
+  background: #fff;
+  border-color: var(--evt-gold-deep);
+}
+
+.gallery-events .gallery-icon-btn--accent {
+  background: var(--evt-gold);
+  border-color: var(--evt-gold-deep);
+  color: #3b2a14;
+}
+
+.gallery-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.gallery-current {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.gallery-current__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--color-brown-dark);
+}
+
+.gallery-current__desc {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-brown);
+  max-width: 28rem;
+}
+
+.gallery-selection-hint {
+  margin: 0 0 1rem;
+  color: var(--color-brown-dark);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.event-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.event-form__label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-brown-dark);
+}
+
+.event-form__input {
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-brown-light);
+  border-radius: 8px;
+  background: var(--color-cream);
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--color-brown-dark);
+}
+
+.event-form__textarea {
+  resize: vertical;
+  min-height: 4.5rem;
+}
+
+.event-form__error {
+  margin: 0;
+  color: #8a2b2b;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.event-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 0.35rem;
 }
 
 .gallery-header {

@@ -131,11 +131,20 @@ interface BoothConfig extends Partial<BoothConfigValues> {
 
 interface SessionFolderResult {
   success: boolean;
-  /** Relative to the photos folder, e.g. "08-06-26/Session 3". */
+  /**
+   * Relative to the photos folder.
+   * With a launched event: "Events/Wedding May/08-06-26/Session 3".
+   * Otherwise: "08-06-26/Session 3".
+   */
   folder: string | null;
   /** Absolute path, for logging. */
   path?: string;
   error?: string;
+}
+
+interface BeginSessionOptions {
+  /** Active gallery event name — nests the session under Events/<name>/. */
+  eventName?: string;
 }
 
 interface PrintPhotoResult {
@@ -192,20 +201,18 @@ interface ElectronAPI {
   getBoothConfig: () => Promise<BoothConfig>;
   setBoothConfig: (patch: Partial<BoothConfigValues>) => Promise<BoothConfig>;
   /**
-   * Claims the next "<MM-DD-YY>/Session N" folder under the photos
-   * directory and returns its RELATIVE path. Use it as a filename prefix
-   * for savePhoto/saveSessionBytes so one sitting's strip, captures and
-   * GIF are filed together. Main owns the numbering so a restart
-   * mid-event continues rather than overwriting Session 1.
-   */
-  /**
    * Templates live in userData/templates.json rather than localStorage —
    * imported artwork is base64 and overruns the ~5MB origin quota, after
    * which saves throw and layouts are lost on restart.
    */
   loadTemplates: () => Promise<TemplateLoadResult>;
   saveTemplates: (data: TemplateStoreData) => Promise<SaveResult>;
-  beginSession: () => Promise<SessionFolderResult>;
+  /**
+   * Claims the next session folder under Pictures/NostalgiaPhotobooth.
+   * Pass eventName when a gallery event is launched so files land in
+   * Events/<name>/<MM-DD-YY>/Session N.
+   */
+  beginSession: (opts?: BeginSessionOptions) => Promise<SessionFolderResult>;
   /**
    * Write raw bytes (the session GIF) relative to the photos directory.
    * Avoids the ~33% base64 tax of routing a binary through savePhoto.

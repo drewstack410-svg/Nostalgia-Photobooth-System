@@ -1461,14 +1461,15 @@ ipcMain.handle("templates:save", async (event, data) => {
 });
 
 // ── Session folders ─────────────────────────────────────────────────────────
-// Captures used to land in one flat pile in Pictures/NostalgiaPhotobooth. The
-// client wants them filed by day and by session instead:
+// Captures are filed by day and sitting. When a gallery event is launched,
+// they nest under that event so staff can browse by night:
 //
 //   NostalgiaPhotobooth/
-//     08-06-26/
-//       Session 1/   strip.png · photo-1.jpg · photo-1-print.jpg · photo-1-original.jpg · session.gif
-//       Session 2/
-//     08-07-26/
+//     Events/
+//       Wedding May/
+//         08-06-26/
+//           Session 1/   strip.png · photo-1.jpg · …
+//     08-06-26/          ← no launched event (legacy / open booth)
 //       Session 1/
 //
 // Numbering lives in MAIN rather than the renderer: this is the only process
@@ -1479,20 +1480,37 @@ function sessionDateFolder(d = new Date()) {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getFullYear() % 100)}`;
 }
 
-ipcMain.handle("session:begin", async () => {
+function sanitizeEventFolderName(name) {
+  const cleaned = String(name || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[. ]+$/g, "")
+    .slice(0, 60);
+  return cleaned || "Event";
+}
+
+ipcMain.handle("session:begin", async (_event, opts = {}) => {
   try {
     const photosDir = path.join(app.getPath("pictures"), "NostalgiaPhotobooth");
     const dateRel = sessionDateFolder();
-    const dateDir = path.join(photosDir, dateRel);
-    fs.mkdirSync(dateDir, { recursive: true });
+    const eventName = sanitizeEventFolderName(opts?.eventName || "");
+    const useEvent = !!(opts?.eventName && String(opts.eventName).trim());
+    const parentRel = useEvent
+      ? path.join("Events", eventName, dateRel)
+      : dateRel;
+    const parentDir = path.join(photosDir, parentRel);
+    fs.mkdirSync(parentDir, { recursive: true });
 
     let highest = 0;
-    for (const name of fs.readdirSync(dateDir)) {
+    for (const name of fs.readdirSync(parentDir)) {
       const m = /^Session (\d+)$/.exec(name);
       if (m) highest = Math.max(highest, parseInt(m[1], 10));
     }
 
-    const folder = `${dateRel}/Session ${highest + 1}`;
+    const folder = path
+      .join(parentRel, `Session ${highest + 1}`)
+      .replace(/\\/g, "/");
     fs.mkdirSync(path.join(photosDir, folder), { recursive: true });
     console.log("[Session] Started:", folder);
     return { success: true, folder, path: path.join(photosDir, folder) };

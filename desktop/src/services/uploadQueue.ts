@@ -495,7 +495,10 @@ export async function retryPendingUploads(): Promise<UploadRetryResult> {
 function sessionFolderFromPath(filePath?: string): string | null {
   if (!filePath) return null;
   const norm = filePath.replace(/\\/g, "/");
-  const m = norm.match(/(\d{2}-\d{2}-\d{2}\/Session \d+)/i);
+  // Events/<name>/<MM-DD-YY>/Session N  or  <MM-DD-YY>/Session N
+  const m = norm.match(
+    /((?:Events\/[^/]+\/)?\d{2}-\d{2}-\d{2}\/Session \d+)/i,
+  );
   return m ? m[1] : null;
 }
 

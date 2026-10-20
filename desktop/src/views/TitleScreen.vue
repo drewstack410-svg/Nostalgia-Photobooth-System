@@ -2,10 +2,16 @@
 import { onMounted, ref, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
+import { useGalleryEventsStore } from "@/stores/galleryEvents";
 import WelcomeStage from "@/components/WelcomeStage.vue";
 
 const router = useRouter();
 const store = usePhotoboothStore();
+const eventsStore = useGalleryEventsStore();
+
+function endLaunchedEvent() {
+  eventsStore.stopActiveEvent();
+}
 
 const badgeClickCount = ref(0);
 const badgeClickTimeout = ref<ReturnType<typeof setTimeout> | null>(null);
@@ -142,6 +148,25 @@ onUnmounted(() => {
   <div class="title-screen">
     <WelcomeStage @start="startPhotobooth" />
 
+    <div
+      v-if="eventsStore.activeEvent"
+      class="event-launch-banner"
+      role="status"
+    >
+      <span class="event-launch-banner__text">
+        Live event:
+        <strong>{{ eventsStore.activeEvent.name }}</strong>
+        — new shots go here
+      </span>
+      <button
+        type="button"
+        class="event-launch-banner__end"
+        @click="endLaunchedEvent"
+      >
+        End
+      </button>
+    </div>
+
     <!-- Hidden admin tap zone (Top Right) — no visible icon at all, just an
          invisible 3-tap target that opens the PIN pad. -->
     <div
@@ -193,6 +218,50 @@ onUnmounted(() => {
   width: 100%;
   position: relative;
   overflow: hidden;
+}
+
+.event-launch-banner {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: min(92vw, 36rem);
+  padding: 0.55rem 0.75rem 0.55rem 1rem;
+  border-radius: 999px;
+  background: rgba(59, 42, 20, 0.92);
+  color: #f4e6c3;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+}
+
+.event-launch-banner__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-launch-banner__text strong {
+  font-weight: 700;
+  color: #fee2a0;
+}
+
+.event-launch-banner__end {
+  flex: 0 0 auto;
+  padding: 0.3rem 0.75rem;
+  border: none;
+  border-radius: 999px;
+  background: #c2822e;
+  color: #3b2a14;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
 }
 
 .admin-badge {

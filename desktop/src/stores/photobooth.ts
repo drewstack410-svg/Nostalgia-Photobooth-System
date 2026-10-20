@@ -17,6 +17,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { makePreviewDataUrl } from "@/utils/imagePreview";
 import { revokeMediaUrl } from "@/utils/mediaBytes";
+import { useGalleryEventsStore } from "@/stores/galleryEvents";
 import {
   deleteFilterLut,
   getFilterLut,
@@ -3184,6 +3185,12 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       recentStrips.value = recentStrips.value.slice(0, MAX_RECENT_ENTRIES);
     }
     persistRecentStrips();
+    // Launched event mode: every new strip belongs only to that event.
+    try {
+      useGalleryEventsStore().attachToActiveEvent([strip.id]);
+    } catch (e) {
+      console.warn("[RecentStrips] Could not attach to active event:", e);
+    }
   }
 
   function patchRecentStripSession(

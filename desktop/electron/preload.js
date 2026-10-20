@@ -57,12 +57,11 @@ try {
       return ipcRenderer.invoke('templates:save', data);
     },
 
-    // Claims the next "<MM-DD-YY>/Session N" folder and returns its path
-    // relative to the photos folder. Pass that as a prefix to savePhoto /
-    // saveSessionBytes to file everything from one sitting together.
-    beginSession: () => {
-      console.log('[Preload] beginSession called');
-      return ipcRenderer.invoke('session:begin');
+    // Claims the next session folder under the photos dir. When opts.eventName
+    // is set: Events/<event>/<MM-DD-YY>/Session N. Otherwise: <MM-DD-YY>/Session N.
+    beginSession: (opts) => {
+      console.log('[Preload] beginSession called', opts?.eventName || '(no event)');
+      return ipcRenderer.invoke('session:begin', opts || {});
     },
 
     // Raw-bytes save (used for the session GIF), relative to the photos folder.
