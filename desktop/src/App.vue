@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, computed, ref } from "vue";
+import { onMounted, onUnmounted, computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import { applyBoothConfig } from "@/lib/boothConfig";
@@ -121,7 +121,44 @@ router.beforeEach((to, from) => {
 
 useCustomFonts();
 
+function isTypingTarget(el: EventTarget | null) {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    el.isContentEditable
+  );
+}
+
+/** Debounce so keydown + main-process IPC don't toggle twice. */
+let lastFToggleAt = 0;
+function toggleWindowedFromHotkey() {
+  if (isTypingTarget(document.activeElement)) return;
+  const now = Date.now();
+  if (now - lastFToggleAt < 250) return;
+  lastFToggleAt = now;
+  void window.electronAPI?.toggleWindowed?.();
+}
+
+/**
+ * F shows the Windows title-bar controls (exit kiosk / fullscreen).
+ * Main also forwards F via IPC when kiosk swallows the key.
+ */
+function onGlobalHotkey(e: KeyboardEvent) {
+  if (isTypingTarget(e.target)) return;
+  if (e.key === "f" || e.key === "F") {
+    e.preventDefault();
+    toggleWindowedFromHotkey();
+  }
+}
+
+let unsubscribeFHotkey: (() => void) | null = null;
+
 onMounted(async () => {
+  window.addEventListener("keydown", onGlobalHotkey);
+  unsubscribeFHotkey = window.electronAPI?.onFHotkey?.(toggleWindowedFromHotkey) ?? null;
   // Booth identity first, before anything reads or writes PocketBase — this
   // machine's kiosk id and the shared server address are per-machine runtime
   // settings, not values baked into the build.
@@ -142,6 +179,12 @@ onMounted(async () => {
   }
   await store.loadFilterOverlayMediaFromDisk();
   await store.loadFilterLuts();
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", onGlobalHotkey);
+  unsubscribeFHotkey?.();
+  unsubscribeFHotkey = null;
 });
 </script>
 

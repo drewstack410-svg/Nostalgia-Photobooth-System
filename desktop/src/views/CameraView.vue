@@ -589,6 +589,7 @@ function startCapture() {
   )
     return;
   // Suspend the inactivity clock for the WHOLE multi-shot run.
+  shootCancelled = false;
   sequenceActive = true;
   resetInactivityTimer();
   void runCountdownAndCapture();
@@ -601,10 +602,17 @@ function endSequence() {
 }
 
 let countdownSleepTimer: ReturnType<typeof setTimeout> | null = null;
+let countdownSleepResolve: (() => void) | null = null;
+let reviewSleepResolve: (() => void) | null = null;
+/** Esc abort — stops the auto-shoot chain without navigating away. */
+let shootCancelled = false;
+/** Locked while a countdown / shutter / freeze chain is running. */
+let sequenceActive = false;
 /** True when EVF was torn down during countdown "2"/"1" and must come back after the shot. */
 let restoreLiveViewAfterShot = false;
 let isUnmounted = false;
 let prepareShotPromise: Promise<void> | null = null;
+let unsubscribeEscapeHotkey: (() => void) | null = null;
 
 function beginCanonShotPrep(settleMs: number) {
   if (prepareShotPromise) return;
@@ -630,8 +638,10 @@ function abortCanonShotPrep() {
 
 function sleepCountdown(ms: number): Promise<void> {
   return new Promise((resolve) => {
+    countdownSleepResolve = resolve;
     countdownSleepTimer = setTimeout(() => {
       countdownSleepTimer = null;
+      countdownSleepResolve = null;
       resolve();
     }, ms);
   });
@@ -641,6 +651,11 @@ function cancelCountdownSleep() {
   if (countdownSleepTimer) {
     clearTimeout(countdownSleepTimer);
     countdownSleepTimer = null;
+  }
+  if (countdownSleepResolve) {
+    const resolve = countdownSleepResolve;
+    countdownSleepResolve = null;
+    resolve();
   }
 }
 
@@ -725,11 +740,83 @@ function armHighlightRecording(countdownSeconds: number) {
 
 function sleepReview(ms: number): Promise<void> {
   return new Promise((resolve) => {
+    reviewSleepResolve = resolve;
     reviewSleepTimer = setTimeout(() => {
       reviewSleepTimer = null;
+      reviewSleepResolve = null;
       resolve();
     }, ms);
   });
+}
+
+function cancelReviewSleep() {
+  if (reviewSleepTimer) {
+    clearTimeout(reviewSleepTimer);
+    reviewSleepTimer = null;
+  }
+  if (reviewSleepResolve) {
+    const resolve = reviewSleepResolve;
+    reviewSleepResolve = null;
+    resolve();
+  }
+}
+
+function isShootInProgress() {
+  return (
+    sequenceActive ||
+    isCountingDown.value ||
+    isCapturing.value ||
+    isReviewing.value
+  );
+}
+
+/** Esc during countdown / shutter / freeze — abort the shoot chain. */
+function cancelShoot() {
+  if (!isShootInProgress()) return;
+  console.log("[Camera] Shoot cancelled (Esc)");
+  shootCancelled = true;
+  abortCanonShotPrep();
+  cancelCountdownSleep();
+  cancelReviewSleep();
+  cancelHighlightLead();
+  abortHighlightCapture();
+  highlightRecording.value = false;
+  isCountingDown.value = false;
+  isCapturing.value = false;
+  isReviewing.value = false;
+  reviewStillUrl.value = "";
+  countdownValue.value = 0;
+  endSequence();
+  void unfreezeLivePreview();
+}
+
+function onShootHotkey(e: KeyboardEvent) {
+  const el = e.target as HTMLElement | null;
+  if (
+    el &&
+    (el.tagName === "INPUT" ||
+      el.tagName === "TEXTAREA" ||
+      el.tagName === "SELECT" ||
+      el.isContentEditable)
+  ) {
+    return;
+  }
+  if (e.key !== "Escape" && e.code !== "Escape") return;
+  if (showBackWarning.value) {
+    e.preventDefault();
+    cancelGoBack();
+    return;
+  }
+  if (showInactivityWarning.value) {
+    e.preventDefault();
+    cancelInactivityWarning();
+    return;
+  }
+  if (showCameraError.value) return;
+  if (!isShootInProgress()) return;
+  e.preventDefault();
+  e.stopPropagation();
+  cancelShoot();
 }
 
 function freezeLivePreview() {
@@ -813,7 +900,7 @@ async function showShotReview() {
   isReviewing.value = true;
   const seconds = store.shootingPreviewCountdownSeconds;
   for (let n = seconds; n >= 1; n--) {
-    if (isUnmounted) return;
+    if (isUnmounted || shootCancelled) return;
     freezeCountdown.value = n;
     await sleepReview(1000);
   }
@@ -823,7 +910,7 @@ async function showShotReview() {
 }
 
 async function runCountdownAndCapture() {
-  if (isUnmounted) return;
+  if (isUnmounted || shootCancelled) return;
   if (store.hasAllPhotos) {
     endSequence();
     router.push("/printing");
@@ -838,7 +925,7 @@ async function runCountdownAndCapture() {
   armHighlightRecording(seconds);
 
   for (let n = seconds; n >= 1; n--) {
-    if (isUnmounted) return;
+    if (isUnmounted || shootCancelled) return;
     countdownValue.value = n;
     // Arm flash on the last second only so live view does not freeze for
     // ~2s while guests still pose.
@@ -848,25 +935,38 @@ async function runCountdownAndCapture() {
     await sleepCountdown(1000);
   }
 
-  if (isUnmounted) return;
+  if (isUnmounted || shootCancelled) return;
+  // Drop the countdown overlay BEFORE shutter work — otherwise a big
+  // "0" sits on screen for the whole Canon capture (~few seconds) and
+  // feels like the preview is stuck.
+  isCountingDown.value = false;
+  countdownValue.value = 0;
   if (isHighlightRecording()) {
     await waitForHighlightLead();
     freezeLivePreview();
   }
-  if (isUnmounted) return;
-  countdownValue.value = 0;
+  if (isUnmounted || shootCancelled) return;
   isCapturing.value = true;
   const shotNumber = store.capturedPhotos.length + 1;
   const success = await capturePhoto();
-  isCountingDown.value = false;
   isCapturing.value = false;
   prepareShotPromise = null;
 
-  if (success && !isUnmounted) {
+  if (shootCancelled || isUnmounted) {
+    if (!isUnmounted) await unfreezeLivePreview();
+    return;
+  }
+
+  if (success) {
     // Pad/finalize the clip in parallel with the 5s still review so the
     // next posing countdown still starts on time.
     const clipDone = finishHighlightClip(shotNumber);
     await showShotReview();
+    if (shootCancelled || isUnmounted) {
+      void clipDone;
+      if (!isUnmounted) await unfreezeLivePreview();
+      return;
+    }
     await Promise.race([clipDone, sleepReview(50)]);
     if (!isUnmounted) await unfreezeLivePreview();
     void clipDone;
@@ -877,7 +977,7 @@ async function runCountdownAndCapture() {
     if (!isUnmounted) await unfreezeLivePreview();
   }
 
-  if (isUnmounted) return;
+  if (isUnmounted || shootCancelled) return;
   if (success && !store.hasAllPhotos) {
     // Live feed is already unfrozen. Next posing countdown is a full
     // 15s (or whatever admin set) — the freeze is not subtracted.
@@ -1162,13 +1262,6 @@ function stopCameraStream() {
   }
 }
 
-// True from the moment Start is pressed until the last shot is stored.
-// The guest deliberately does NOT touch the screen during a shoot (they
-// are posing), so an inactivity timer must not run at all — relying on
-// resetInactivityTimer() being called from inside the countdown tick
-// left gaps during the shutter, the image processing and the live-view
-// restart, any of which could exceed the timeout on a slow capture.
-let sequenceActive = false;
 // The 100ms hand-off between the warning appearing and its countdown
 // starting was untracked, so it could fire after teardown.
 let warningStartTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1277,6 +1370,22 @@ onMounted(() => {
     router.push("/templates");
     return;
   }
+  // Capture phase so Esc wins over overlays; main process also forwards
+  // Esc via IPC when kiosk mode swallows the key.
+  window.addEventListener("keydown", onShootHotkey, true);
+  unsubscribeEscapeHotkey =
+    window.electronAPI?.onEscapeHotkey?.(() => {
+      if (showBackWarning.value) {
+        cancelGoBack();
+        return;
+      }
+      if (showInactivityWarning.value) {
+        cancelInactivityWarning();
+        return;
+      }
+      if (showCameraError.value) return;
+      cancelShoot();
+    }) ?? null;
   initCamera();
   resetInactivityTimer();
 });
@@ -1285,17 +1394,18 @@ onUnmounted(() => {
   // Stop the capture chain dead: without this, a mid-countdown unmount
   // leaves an interval that keeps firing and re-arming the sequence on a
   // component that no longer exists.
+  window.removeEventListener("keydown", onShootHotkey, true);
+  unsubscribeEscapeHotkey?.();
+  unsubscribeEscapeHotkey = null;
   isUnmounted = true;
+  shootCancelled = true;
   sequenceActive = false;
   abortCanonShotPrep();
   cancelCountdownSleep();
+  cancelReviewSleep();
   cancelHighlightLead();
   abortHighlightCapture();
   highlightRecording.value = false;
-  if (reviewSleepTimer) {
-    clearTimeout(reviewSleepTimer);
-    reviewSleepTimer = null;
-  }
   clearInactivityTimers();
   stopLiveView();
   window.electronAPI?.offLiveViewFrame?.();
@@ -1648,7 +1758,10 @@ onUnmounted(() => {
         </div>
         -->
 
-        <div v-if="isCountingDown" class="countdown-overlay">
+        <div
+          v-if="isCountingDown && countdownValue > 0"
+          class="countdown-overlay"
+        >
           <div class="countdown-number">{{ countdownValue }}</div>
         </div>
 

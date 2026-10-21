@@ -305,7 +305,10 @@ function createWindow() {
     width: 1920,
     height: 1080,
     fullscreen: true, // Always start fullscreen for kiosk
-    frame: false, // Frameless for kiosk mode
+    // Keep a native frame so F can drop out of kiosk and show the
+    // Windows min / max / close buttons. Hidden while fullscreen/kiosk.
+    frame: true,
+    autoHideMenuBar: true,
     kiosk: !isDev, // Kiosk mode in production
     title: APP_NAME,
     webPreferences: {
@@ -325,6 +328,21 @@ function createWindow() {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
     console.log('[Main] DevTools opened in detached mode');
   }
+
+  // Kiosk / fullscreen can swallow keys before the renderer sees them.
+  // Forward Esc + F; the renderer applies focus checks and debouncing.
+  mainWindow.webContents.on("before-input-event", (_event, input) => {
+    if (input.type !== "keyDown" || input.control || input.alt || input.meta) {
+      return;
+    }
+    if (input.key === "Escape") {
+      mainWindow.webContents.send("hotkey:escape");
+      return;
+    }
+    if (input.key === "f" || input.key === "F") {
+      mainWindow.webContents.send("hotkey:f");
+    }
+  });
 
   // Grant camera and microphone permissions (required for getUserMedia)
   mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
@@ -2020,20 +2038,29 @@ ipcMain.handle('open-printer-properties', async (_event, printerName) => {
     return { success: false, error: 'No printer selected or available.' };
   }
 
-  // `printui.dll,PrintUIEntry /p /n "printer"` opens Printer properties.
-  // From there the operator reaches Printing Defaults → Advanced →
-  // Printer Features → 2inch cut.
+  // `/e` opens Printing Preferences — Advanced… shows the DS-RX1 Advanced
+  // Options tree (Paper Size, 2inch cut, Overcoat, …). `/p` is fallback.
   const safe = target.replace(/"/g, '\\"');
-  const cmd = `rundll32 printui.dll,PrintUIEntry /p /n "${safe}"`;
-  console.log(`[Main] Opening printer properties: ${cmd}`);
+  const cmdPrefs = `rundll32 printui.dll,PrintUIEntry /e /n "${safe}"`;
+  const cmdProps = `rundll32 printui.dll,PrintUIEntry /p /n "${safe}"`;
+  console.log(`[Main] Opening printer preferences: ${cmdPrefs}`);
 
   return new Promise((resolve) => {
-    exec(cmd, { timeout: 10000 }, (err) => {
-      if (err) {
-        console.error('[Main] Failed to open printer properties:', err.message);
-        return resolve({ success: false, error: err.message });
+    exec(cmdPrefs, { timeout: 10000 }, (err) => {
+      if (!err) {
+        return resolve({ success: true, printerName: target });
       }
-      resolve({ success: true, printerName: target });
+      console.warn(
+        '[Main] Printing preferences failed, trying properties:',
+        err.message,
+      );
+      exec(cmdProps, { timeout: 10000 }, (err2) => {
+        if (err2) {
+          console.error('[Main] Failed to open printer dialog:', err2.message);
+          return resolve({ success: false, error: err2.message });
+        }
+        resolve({ success: true, printerName: target });
+      });
     });
   });
 });
@@ -2045,6 +2072,33 @@ ipcMain.handle("toggle-fullscreen", async () => {
   }
   return false;
 });
+
+/**
+ * F hotkey: leave kiosk/fullscreen so the native title-bar controls
+ * (minimize / maximize / close) appear, or go back into booth mode.
+ */
+function toggleWindowedMode() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  const inBoothMode = mainWindow.isKiosk() || mainWindow.isFullScreen();
+  if (inBoothMode) {
+    if (mainWindow.isKiosk()) mainWindow.setKiosk(false);
+    if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
+    mainWindow.setMenuBarVisibility(false);
+    if (!mainWindow.isMaximized()) mainWindow.maximize();
+    return true; // now windowed (chrome visible)
+  }
+  if (!isDev) {
+    mainWindow.setKiosk(true);
+  } else {
+    mainWindow.setFullScreen(true);
+  }
+  return false; // back in booth mode
+}
+
+ipcMain.handle("toggle-windowed", async () => toggleWindowedMode());
+
+// Kept for older preload callers — same as toggle-windowed (show chrome).
+ipcMain.handle("minimize-window", async () => toggleWindowedMode());
 
 ipcMain.handle("quit-app", async () => {
   app.quit();

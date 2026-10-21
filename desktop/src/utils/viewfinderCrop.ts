@@ -5,7 +5,7 @@
  */
 
 import {
-  getPaperSizePx,
+  resolveTemplatePaper,
   occupancyFill,
   type TemplateLayoutSpec,
 } from "./printLayout";
@@ -84,7 +84,7 @@ export function cropBarPercentForTemplate(
   t: TemplateLayoutSpec | null | undefined,
 ): number {
   if (!t) return 16.6667;
-  const sheet = getPaperSizePx(t.paperSize);
+  const sheet = resolveTemplatePaper(t);
   let cellW: number;
   let cellH: number;
   if (t.cells?.[0]) {

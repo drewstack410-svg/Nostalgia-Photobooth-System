@@ -7,6 +7,7 @@ import { useGalleryEventsStore } from "@/stores/galleryEvents";
 // Guest copies go to Cloudflare R2 via the upload queue (pending + retry).
 import {
   getPaperSizePx,
+  resolveTemplatePaper,
   getTemplateCellRects,
   occupancyFill,
   getTemplateGrid,
@@ -96,33 +97,22 @@ async function printSavedPhoto(filePath: string, copiesOverride?: number) {
   // The composite step set printOrientation when it ran.
   const paperLayout = printOrientation.value;
 
-  // Cut mode is template-driven: 2×6 strip templates produce a
-  // 4×6 portrait sheet with the strip composited side-by-side and
-  // ask the driver to physically cut at the midpoint (yielding two
-  // 2×6 strips). All other templates print as a single uncut 4×6.
-  //
-  // Operator setup required for the cut to actually fire:
-  //   1. Load standard 4×6 ribbon (NOT 2S center-perforated media).
-  //   2. Windows → Devices and Printers → DS-RX1 → Printing
-  //      Preferences → Advanced → Printer Features → "2 inch cut:
-  //      Enable". This is a driver-level toggle that persists.
-  //   3. PowerShell selects `PR (4x6)` paper for cut jobs — only
-  //      that paper variant honours the cut feature.
-  const driverCutMode =
-    store.selectedTemplate?.paperSize === "2x6-portrait"
-      ? "dnp-2-inch-cut"
-      : "standard";
-
+  // Cut / paper prefs live on the Windows queue (Configure printer).
+  // 2×6 strip templates still ask the print script for the PR paper
+  // form so a queue with "2inch cut: Enable" can fire the physical cut.
   try {
+    const printTpl = store.sessionTemplate || store.selectedTemplate;
+    const driverCutMode =
+      printTpl?.paperSize === "2x6-portrait" ? "dnp-2-inch-cut" : "standard";
     const result = await window.electronAPI.printPhoto({
       filePath,
-      printerName: store.selectedPrinterName || "",
+      printerName: store.resolvePrinterName(printTpl?.printerSlot, printTpl),
       copies: copiesOverride ?? store.printCopies ?? 1,
       paperLayout,
       cutMode: driverCutMode,
       // The media family the driver must select. Without this the print
       // script always forced a 4x6 form, so 6x8 templates printed at 4x6.
-      paperSize: store.selectedTemplate?.paperSize ?? "",
+      paperSize: printTpl?.paperSize ?? "",
     });
 
     if (result.success) {
@@ -180,7 +170,7 @@ type GallerySlot = {
 async function galleryLayoutParam(): Promise<{ slots: string; par: string } | null> {
   const t = store.sessionTemplate ?? store.selectedTemplate;
   if (!t) return null;
-  const sheet = getPaperSizePx(t.paperSize);
+  const sheet = resolveTemplatePaper(t);
   const par = `${Math.round(sheet.width)}x${Math.round(sheet.height)}`;
   const shotCount = templateShotCount(t);
   let rects: GallerySlot[] = [];
@@ -367,7 +357,7 @@ async function createCompositeImage(
   //
   //    DISPLAY composites never duplicate; they get the design size
   //    only so the home page / Cloudinary upload shows just one strip.
-  const designSpec = getPaperSizePx(template.paperSize);
+  const designSpec = resolveTemplatePaper(template);
   const requiresCut =
     purpose === "print" && template.paperSize === "2x6-portrait";
   const printSheetSpec = requiresCut
@@ -922,7 +912,7 @@ async function createCompositeImage(
       ) {
         const dispShotCount = Math.max(1, templateShotCount(template));
         if (template.cells?.length) {
-          const sheet = getPaperSizePx(template.paperSize);
+          const sheet = resolveTemplatePaper(template);
           const scale = Math.min(
             1,
             1800 / Math.max(sheet.width, sheet.height),

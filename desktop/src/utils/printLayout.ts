@@ -40,7 +40,23 @@ export type PaperSize =
   | "4x6-portrait" //  (4x6) printed portrait
   | "2x6-portrait" //  PR(4x6) cut to 2×6 strip, or designed-for-strip
   | "6x8-portrait" //  6×8 native portrait (DS620-class media)
-  | "6x8-landscape"; // 6×8 printed landscape (8×6)
+  | "6x8-landscape" // 6×8 printed landscape (8×6)
+  | "8x4-portrait" //  4×8 tall (8×4 media, portrait)
+  | "8x4-landscape" // 8×4 wide
+  | "3.96x2.64-portrait"
+  | "3.96x2.64-landscape"
+  | "custom";
+
+/** Preset families shown in the template size picker (not orientation). */
+export type PaperFamily =
+  | "4x6"
+  | "6x8"
+  | "8x4"
+  | "3.96x2.64"
+  | "2x6"
+  | "custom";
+
+export type PaperOrientation = "portrait" | "landscape";
 
 export interface PaperSizeSpec extends Size {
   /** Logical inch dimensions for diagnostics / driver paper-size mapping. */
@@ -57,7 +73,27 @@ export interface PaperSizeSpec extends Size {
   driverLayout: "landscape" | "portrait";
 }
 
-export const PAPER_SIZES: Record<PaperSize, PaperSizeSpec> = {
+/** Nominal design DPI for sizes without a measured DNP imageable area. */
+export const PAPER_DESIGN_DPI = 300;
+
+function inchesToPxSpec(
+  inchesWide: number,
+  inchesTall: number,
+  label: string,
+): PaperSizeSpec {
+  const w = Math.max(0.5, Math.min(24, inchesWide));
+  const h = Math.max(0.5, Math.min(24, inchesTall));
+  return {
+    width: Math.round(w * PAPER_DESIGN_DPI),
+    height: Math.round(h * PAPER_DESIGN_DPI),
+    inchesWide: w,
+    inchesTall: h,
+    label,
+    driverLayout: w >= h ? "landscape" : "portrait",
+  };
+}
+
+export const PAPER_SIZES: Record<Exclude<PaperSize, "custom">, PaperSizeSpec> = {
   // Dimensions are the DS-RX1's TRUE imageable area: 1844×1240 for a
   // 4×6 at 300 DPI (confirmed against both the DNP Print Area table
   // and the upstream PhotoboothProject pipeline, which renders to the
@@ -113,19 +149,102 @@ export const PAPER_SIZES: Record<PaperSize, PaperSizeSpec> = {
     label: "8×6 landscape",
     driverLayout: "landscape",
   },
+  "8x4-portrait": inchesToPxSpec(4, 8, "4×8 portrait"),
+  "8x4-landscape": inchesToPxSpec(8, 4, "8×4 landscape"),
+  "3.96x2.64-portrait": inchesToPxSpec(2.64, 3.96, "2.64×3.96 portrait"),
+  "3.96x2.64-landscape": inchesToPxSpec(3.96, 2.64, "3.96×2.64 landscape"),
 };
+
+/** UI chips for the template size editor. */
+export const PAPER_FAMILY_OPTIONS: Array<{
+  value: PaperFamily;
+  label: string;
+  /** Short hint under the chip. */
+  hint?: string;
+}> = [
+  { value: "4x6", label: "4×6" },
+  { value: "6x8", label: "6×8" },
+  { value: "8x4", label: "8×4" },
+  { value: "3.96x2.64", label: "3.96×2.64" },
+  { value: "2x6", label: "2×6", hint: "Strip" },
+  { value: "custom", label: "Custom" },
+];
+
+export function paperSizeFromFamily(
+  family: PaperFamily,
+  orientation: PaperOrientation,
+): PaperSize {
+  if (family === "custom") return "custom";
+  if (family === "2x6") return "2x6-portrait";
+  return `${family}-${orientation}` as PaperSize;
+}
+
+export function paperFamilyOf(paperSize?: PaperSize): PaperFamily {
+  if (!paperSize || paperSize === "custom") return paperSize === "custom" ? "custom" : "4x6";
+  if (paperSize.startsWith("4x6")) return "4x6";
+  if (paperSize.startsWith("6x8")) return "6x8";
+  if (paperSize.startsWith("8x4")) return "8x4";
+  if (paperSize.startsWith("3.96x2.64")) return "3.96x2.64";
+  if (paperSize.startsWith("2x6")) return "2x6";
+  return "4x6";
+}
+
+export function paperOrientationOf(
+  paperSize?: PaperSize,
+  widthIn?: number,
+  heightIn?: number,
+): PaperOrientation {
+  if (paperSize === "custom") {
+    const w = widthIn ?? 4;
+    const h = heightIn ?? 6;
+    return w >= h ? "landscape" : "portrait";
+  }
+  if (!paperSize) return "portrait";
+  return paperSize.includes("landscape") ? "landscape" : "portrait";
+}
+
+export interface PaperSource {
+  paperSize?: PaperSize;
+  /** Custom sheet width in inches (used when paperSize is `"custom"`). */
+  paperWidthIn?: number;
+  /** Custom sheet height in inches (used when paperSize is `"custom"`). */
+  paperHeightIn?: number;
+}
 
 /**
  * Look up a paper size's pixel canvas. Returns 4×6-landscape as a
  * safe default if the spec is missing — same behaviour as the old
  * `getPrintCanvasSize()` it replaces.
  */
-export function getPaperSizePx(paperSize?: PaperSize): PaperSizeSpec {
-  return PAPER_SIZES[paperSize ?? "4x6-landscape"] ?? PAPER_SIZES["4x6-landscape"];
+export function getPaperSizePx(
+  paperSize?: PaperSize,
+  customInches?: { widthIn?: number; heightIn?: number },
+): PaperSizeSpec {
+  if (paperSize === "custom") {
+    return inchesToPxSpec(
+      customInches?.widthIn ?? 4,
+      customInches?.heightIn ?? 6,
+      "Custom",
+    );
+  }
+  return (
+    PAPER_SIZES[(paperSize ?? "4x6-landscape") as Exclude<PaperSize, "custom">] ??
+    PAPER_SIZES["4x6-landscape"]
+  );
+}
+
+/** Resolve sheet pixels from a template (or draft) that may be custom-sized. */
+export function resolveTemplatePaper(t?: PaperSource | null): PaperSizeSpec {
+  return getPaperSizePx(t?.paperSize, {
+    widthIn: t?.paperWidthIn,
+    heightIn: t?.paperHeightIn,
+  });
 }
 
 export function isPaperSize(value: unknown): value is PaperSize {
-  return typeof value === "string" && value in PAPER_SIZES;
+  if (typeof value !== "string") return false;
+  if (value === "custom") return true;
+  return value in PAPER_SIZES;
 }
 
 /**
@@ -150,6 +269,8 @@ export function getPrintCanvasSize(_mode: PrintCutMode): Size {
  */
 export interface TemplateLayoutSpec {
   paperSize?: PaperSize;
+  paperWidthIn?: number;
+  paperHeightIn?: number;
   photoCount?: number;
   frameRows?: number;
   frameCols?: number;
@@ -219,7 +340,7 @@ export function getTemplateGrid(t: TemplateLayoutSpec): Grid {
  * customer walks away with.
  */
 export function getTemplateCellRects(t: TemplateLayoutSpec): Rect[] {
-  const sheet = getPaperSizePx(t.paperSize);
+  const sheet = resolveTemplatePaper(t);
   const { rows, cols } = getTemplateGrid(t);
   const dflt = t.frameImageUrl ? 24 : 0;
   const margin = t.cellMargin ?? dflt;

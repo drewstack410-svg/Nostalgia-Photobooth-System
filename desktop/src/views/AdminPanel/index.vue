@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { defineAsyncComponent, h, ref, onMounted } from "vue";
-import { useRouter } from "vue-router";
+import { defineAsyncComponent, h, ref, onMounted, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { applyBoothConfig } from "@/lib/boothConfig";
 import { useDashboardStore } from "@/stores/dashboard";
 import { usePhotoboothStore } from "@/stores/photobooth";
@@ -17,14 +17,40 @@ function lazyTab(loader: () => Promise<unknown>) {
   });
 }
 
+type AdminTab = "settings" | "dashboard" | "gallery" | "screens";
+
 const SettingsView = lazyTab(() => import("./SettingsView.vue"));
 const DashboardView = lazyTab(() => import("./DashboardView.vue"));
 const GalleryView = lazyTab(() => import("./GalleryView.vue"));
 const ScreenEditorView = lazyTab(() => import("./ScreenEditorView.vue"));
 
+const route = useRoute();
 const router = useRouter();
 const dashboardStore = useDashboardStore();
-const activeTab = ref<"settings" | "dashboard" | "gallery" | "screens">("dashboard");
+
+function tabFromQuery(raw: unknown): AdminTab {
+  const t = String(raw || "");
+  if (t === "settings" || t === "dashboard" || t === "gallery" || t === "screens") {
+    return t;
+  }
+  return "dashboard";
+}
+
+const activeTab = ref<AdminTab>(tabFromQuery(route.query.tab));
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    activeTab.value = tabFromQuery(tab);
+  },
+);
+
+function setTab(tab: AdminTab) {
+  activeTab.value = tab;
+  if (route.query.tab !== tab) {
+    void router.replace({ query: { ...route.query, tab } });
+  }
+}
 
 function goBack() {
   router.push("/");
@@ -34,6 +60,7 @@ onMounted(async () => {
   usePhotoboothStore();
   await applyBoothConfig();
   void dashboardStore.initFromPocketBase();
+  activeTab.value = tabFromQuery(route.query.tab);
 });
 </script>
 
@@ -65,7 +92,7 @@ onMounted(async () => {
           type="button"
           class="admin-sidebar__item"
           :class="{ active: activeTab === 'dashboard' }"
-          @click="activeTab = 'dashboard'"
+          @click="setTab('dashboard')"
         >
           Dashboard
         </button>
@@ -73,7 +100,7 @@ onMounted(async () => {
           type="button"
           class="admin-sidebar__item"
           :class="{ active: activeTab === 'gallery' }"
-          @click="activeTab = 'gallery'"
+          @click="setTab('gallery')"
         >
           Gallery
         </button>
@@ -81,7 +108,7 @@ onMounted(async () => {
           type="button"
           class="admin-sidebar__item"
           :class="{ active: activeTab === 'screens' }"
-          @click="activeTab = 'screens'"
+          @click="setTab('screens')"
         >
           Screen Editor
         </button>
@@ -89,7 +116,7 @@ onMounted(async () => {
           type="button"
           class="admin-sidebar__item"
           :class="{ active: activeTab === 'settings' }"
-          @click="activeTab = 'settings'"
+          @click="setTab('settings')"
         >
           Settings
         </button>

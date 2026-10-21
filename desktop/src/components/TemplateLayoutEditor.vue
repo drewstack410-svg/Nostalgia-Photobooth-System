@@ -26,7 +26,7 @@ import { onCanonLiveViewFrames } from "@/utils/liveViewFrames";
 import { getFrameWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
 import {
-  getPaperSizePx,
+  resolveTemplatePaper,
   getTemplateCellRects,
   PAPER_SIZES,
   type PaperSize,
@@ -51,6 +51,8 @@ const props = withDefaults(
     photoCount: number;
     frameImageUrl?: string;
     paperSize?: PaperSize;
+    paperWidthIn?: number;
+    paperHeightIn?: number;
     /** Grid used to seed slots when the frame has no detectable windows. */
     frameRows?: number;
     frameCols?: number;
@@ -85,6 +87,8 @@ const emit = defineEmits<{
   (e: "update:modelValue", cells: TemplateCell[]): void;
   (e: "update:frameImageUrl", url: string): void;
   (e: "update:paperSize", size: PaperSize): void;
+  (e: "update:paperWidthIn", inches: number): void;
+  (e: "update:paperHeightIn", inches: number): void;
   (e: "update:photoCount", count: number): void;
   (e: "update:layoutName", name: string): void;
 }>();
@@ -103,7 +107,11 @@ const canUndo = computed(() => undoStack.value.length > 0);
 const canRedo = computed(() => redoStack.value.length > 0);
 
 const paperAspect = computed(() => {
-  const spec = getPaperSizePx(props.paperSize);
+  const spec = resolveTemplatePaper({
+    paperSize: props.paperSize,
+    paperWidthIn: props.paperWidthIn,
+    paperHeightIn: props.paperHeightIn,
+  });
   return spec.width / spec.height;
 });
 
@@ -171,9 +179,15 @@ function gridSeed(count: number): TemplateCell[] {
     props.frameRows || Math.ceil(count / cols),
     Math.ceil(count / cols),
   );
-  const spec = getPaperSizePx(props.paperSize);
+  const spec = resolveTemplatePaper({
+    paperSize: props.paperSize,
+    paperWidthIn: props.paperWidthIn,
+    paperHeightIn: props.paperHeightIn,
+  });
   const rects = getTemplateCellRects({
     paperSize: props.paperSize,
+    paperWidthIn: props.paperWidthIn,
+    paperHeightIn: props.paperHeightIn,
     photoCount: count,
     frameRows: rows,
     frameCols: cols,
@@ -273,22 +287,32 @@ function orderForShots(windows: WindowRect[], shots: number): WindowRect[] {
   return cols.flat();
 }
 
+/** How many photo boxes this template is supposed to have on the sheet. */
+function expectedSlotCount() {
+  const grid =
+    Math.max(1, props.frameRows || 0) * Math.max(1, props.frameCols || 0);
+  return Math.max(1, props.photoCount || 0, grid);
+}
+
 /**
  * Seed the editor so the operator starts from the placement the app is
  * ALREADY using, not a blank grid — otherwise opening the editor and
  * saving would silently move every photo.
  */
 async function seed() {
-  const count = Math.max(1, props.photoCount);
+  const count = expectedSlotCount();
   if (props.frameImageUrl) {
     try {
-      // Deliberately WITHOUT an expected count. Frame artwork may hold more
-      // windows than the template has shots (three columns of four hearts,
-      // four captures); demanding an exact match made the detector return
-      // null and dropped the operator onto a flat grid instead.
-      const detected = await getFrameWindows(props.frameImageUrl);
-      const windows = detected && orderForShots(detected, count);
-      if (windows && windows.length) {
+      // Prefer an exact match to the grid/shot count. Transparent gutters
+      // in artwork (e.g. 2×2 Layout) often flood-fill into ONE tall blob
+      // per column — accepting that produced the asymmetrical "2 strips
+      // on a 2×2" editor. Still allow MORE windows than shots (strip
+      // repeats) so those templates keep column-major ordering.
+      const detected = await getFrameWindows(props.frameImageUrl, count);
+      const loose =
+        detected ?? (await getFrameWindows(props.frameImageUrl));
+      const windows = loose && orderForShots(loose, Math.max(1, props.photoCount));
+      if (windows && windows.length >= count) {
         const { w: fw, h: fh } = await imageSize(props.frameImageUrl);
         cells.value = stampCellShots(
           windows.map((r) => ({
@@ -298,7 +322,7 @@ async function seed() {
             h: r.height / fh,
             rotation: 0,
           })),
-          count,
+          Math.max(1, props.photoCount),
         );
         seedNote.value = `Started from the ${windows.length} window(s) detected in the frame artwork.`;
         commit();
@@ -309,7 +333,8 @@ async function seed() {
     }
   }
   cells.value = gridSeed(count);
-  seedNote.value = "No windows detected in the artwork — started from an even grid.";
+  seedNote.value =
+    "No matching windows in the artwork — started from an even grid.";
   commit();
 }
 
@@ -878,10 +903,13 @@ const CORNERS: { key: string; sx: -1 | 1; sy: -1 | 1 }[] = [
 ];
 
 onMounted(async () => {
-  if (props.modelValue?.length) {
+  const need = expectedSlotCount();
+  if (props.modelValue?.length >= need) {
     cells.value = JSON.parse(JSON.stringify(props.modelValue));
     seedNote.value = "";
   } else {
+    // Fewer slots than the grid/shots (common after frame detection
+    // merged a column into one tall window) — rebuild a balanced layout.
     await seed();
   }
   if (!placeholderShotUrl.value) placeholderShotUrl.value = makePlaceholderShot();
@@ -904,6 +932,19 @@ watch(
   },
 );
 
+// If the sheet size changes while we still have too few slots (e.g. the
+// old merged-column detection), rebuild. Leave a complete hand-tuned
+// layout alone — fractions already track the new aspect.
+watch(
+  () =>
+    [props.paperSize, props.paperWidthIn, props.paperHeightIn] as const,
+  () => {
+    if (cells.value.length >= expectedSlotCount()) return;
+    snapshot();
+    applyGridFromForm();
+  },
+);
+
 // Raising the shot count after the editor is open should add the missing
 // slots. It must NOT trim: any slot beyond `photoCount` is a deliberate
 // duplicate, and truncating here would silently throw the operator's
@@ -911,7 +952,7 @@ watch(
 watch(
   () => props.photoCount,
   (n) => {
-    const count = Math.max(1, n);
+    const count = Math.max(1, n, expectedSlotCount());
     if (cells.value.length >= count) return;
     const extra = gridSeed(count).slice(cells.value.length);
     cells.value = [...cells.value, ...extra];

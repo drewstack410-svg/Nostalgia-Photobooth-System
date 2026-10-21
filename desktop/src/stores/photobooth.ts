@@ -163,8 +163,13 @@ export interface Template {
    * src/utils/printLayout.ts → PAPER_SIZES) so the output matches
    * the paper aspect with no stretch and no letterbox. If absent
    * the renderer falls back to 4×6 landscape for back-compat.
+   * Use `"custom"` with `paperWidthIn` / `paperHeightIn` for free size.
    */
   paperSize?: import("@/utils/printLayout").PaperSize;
+  /** Custom sheet width in inches when `paperSize` is `"custom"`. */
+  paperWidthIn?: number;
+  /** Custom sheet height in inches when `paperSize` is `"custom"`. */
+  paperHeightIn?: number;
   /**
    * Each photo CELL's width:height aspect. Lets a template trade
    * crop for white-margin without changing paperSize: 1.5 = native
@@ -225,6 +230,11 @@ export interface Template {
   thumbnailActiveUrl?: string;
   frameRows?: number;
   frameCols?: number;
+  /**
+   * Which booth printer prints this template. Resolved against the
+   * primary/secondary names in Printer settings. Defaults to primary.
+   */
+  printerSlot?: TemplatePrinterSlot;
 }
 
 export interface CapturedPhoto {
@@ -321,6 +331,8 @@ export type FilterEffectType =
 
 export type CameraFrameStyle = "wooden" | "blur" | "color" | "svg" | "none";
 export type PrintCutMode = "standard" | "dnp-2-inch-cut";
+/** Which configured booth printer a template sends jobs to. */
+export type TemplatePrinterSlot = "primary" | "secondary";
 
 /**
  * Photoshop-style blend modes for the overlay layer.
@@ -470,8 +482,12 @@ const STORAGE_KEY_CAMERA_FRAME_STYLE = "nostalgia-camera-frame-style";
 const STORAGE_KEY_CAMERA_FRAME_COLOR = "nostalgia-camera-frame-color";
 const STORAGE_KEY_CAMERA_FRAME_SVG = "nostalgia-camera-frame-svg";
 const STORAGE_KEY_PRINTER_NAME = "nostalgia-printer-name";
+const STORAGE_KEY_PRIMARY_PRINTER = "nostalgia-printer-primary";
+const STORAGE_KEY_SECONDARY_PRINTER = "nostalgia-printer-secondary";
 const STORAGE_KEY_PRINT_COPIES = "nostalgia-print-copies";
 const STORAGE_KEY_PRINT_CUT_MODE = "nostalgia-print-cut-mode";
+const STORAGE_KEY_PRIMARY_CUT_MODE = "nostalgia-printer-primary-cut";
+const STORAGE_KEY_SECONDARY_CUT_MODE = "nostalgia-printer-secondary-cut";
 const STORAGE_KEY_ADMIN_PIN = "nostalgia-admin-pin";
 const STORAGE_KEY_BUILTIN_TEMPLATE_OVERRIDES = "nostalgia-builtin-template-overrides";
 const STORAGE_KEY_SHOOTING_FIRST_COUNTDOWN = "nostalgia-shooting-first-countdown";
@@ -577,6 +593,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       cells?: TemplateCell[];
       name?: string;
       photoCount?: number;
+      printerSlot?: TemplatePrinterSlot;
     }
   >;
   const builtinTemplateOverrides = ref<BuiltinOverrideMap>({});
@@ -1841,9 +1858,21 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   const cameraFrameStyle = ref<CameraFrameStyle>("wooden");
   const cameraFrameColor = ref<string>("#8B7355");
   const cameraFrameSvgUrl = ref<string | null>(null);
+  /** @deprecated Prefer primaryPrinterName — kept as an alias for older UI. */
   const selectedPrinterName = ref<string>("");
+  const primaryPrinterName = ref<string>("");
+  const secondaryPrinterName = ref<string>("");
   const printCopies = ref<number>(1);
+  /** @deprecated Prefer primaryPrintCutMode. */
   const printCutMode = ref<PrintCutMode>("standard");
+  /** Cut config for the primary slot (e.g. 2-inch cut). */
+  const primaryPrintCutMode = ref<PrintCutMode>("standard");
+  /** Cut config for the secondary slot — can reuse the same printer with no cut. */
+  const secondaryPrintCutMode = ref<PrintCutMode>("standard");
+
+  function normalizeCutMode(mode: unknown): PrintCutMode {
+    return mode === "dnp-2-inch-cut" ? "dnp-2-inch-cut" : "standard";
+  }
 
   const activeFilters = computed(() =>
     filters.value
@@ -1927,16 +1956,30 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       if (frameColor) cameraFrameColor.value = frameColor;
       const frameSvg = localStorage.getItem(STORAGE_KEY_CAMERA_FRAME_SVG);
       if (frameSvg) cameraFrameSvgUrl.value = frameSvg;
-      const printerName = localStorage.getItem(STORAGE_KEY_PRINTER_NAME);
-      if (printerName !== null) selectedPrinterName.value = printerName;
+      const primary =
+        localStorage.getItem(STORAGE_KEY_PRIMARY_PRINTER) ??
+        localStorage.getItem(STORAGE_KEY_PRINTER_NAME);
+      if (primary !== null) {
+        primaryPrinterName.value = primary;
+        selectedPrinterName.value = primary;
+      }
+      const secondary = localStorage.getItem(STORAGE_KEY_SECONDARY_PRINTER);
+      if (secondary !== null) secondaryPrinterName.value = secondary;
       const copies = localStorage.getItem(STORAGE_KEY_PRINT_COPIES);
       if (copies !== null) {
         const n = parseInt(copies, 10);
         if (!isNaN(n) && n >= 1 && n <= 10) printCopies.value = n;
       }
-      const cutMode = localStorage.getItem(STORAGE_KEY_PRINT_CUT_MODE);
-      if (cutMode === "standard" || cutMode === "dnp-2-inch-cut") {
-        printCutMode.value = cutMode;
+      const legacyCut = localStorage.getItem(STORAGE_KEY_PRINT_CUT_MODE);
+      const primaryCut =
+        localStorage.getItem(STORAGE_KEY_PRIMARY_CUT_MODE) ?? legacyCut;
+      if (primaryCut === "standard" || primaryCut === "dnp-2-inch-cut") {
+        primaryPrintCutMode.value = primaryCut;
+        printCutMode.value = primaryCut;
+      }
+      const secondaryCut = localStorage.getItem(STORAGE_KEY_SECONDARY_CUT_MODE);
+      if (secondaryCut === "standard" || secondaryCut === "dnp-2-inch-cut") {
+        secondaryPrintCutMode.value = secondaryCut;
       }
     } catch (e) {
       console.error("Failed to load customize settings:", e);
@@ -1944,8 +1987,55 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   function setSelectedPrinter(name: string) {
+    setPrimaryPrinter(name);
+  }
+
+  function setPrimaryPrinter(name: string) {
+    primaryPrinterName.value = name;
     selectedPrinterName.value = name;
+    localStorage.setItem(STORAGE_KEY_PRIMARY_PRINTER, name);
     localStorage.setItem(STORAGE_KEY_PRINTER_NAME, name);
+  }
+
+  function setSecondaryPrinter(name: string) {
+    secondaryPrinterName.value = name;
+    localStorage.setItem(STORAGE_KEY_SECONDARY_PRINTER, name);
+  }
+
+  function resolvePrinterSlot(
+    slot?: TemplatePrinterSlot | null,
+    template?: Template | null,
+  ): TemplatePrinterSlot {
+    return slot || template?.printerSlot || "primary";
+  }
+
+  /** Resolve the OS printer name for a template's primary/secondary slot. */
+  function resolvePrinterName(
+    slot?: TemplatePrinterSlot | null,
+    template?: Template | null,
+  ): string {
+    const chosen = resolvePrinterSlot(slot, template);
+    if (chosen === "secondary") {
+      return (
+        secondaryPrinterName.value ||
+        primaryPrinterName.value ||
+        selectedPrinterName.value ||
+        ""
+      );
+    }
+    return primaryPrinterName.value || selectedPrinterName.value || "";
+  }
+
+  /** Cut mode for that slot — same device can be primary=2inch cut, secondary=no cut. */
+  function resolvePrintCutMode(
+    slot?: TemplatePrinterSlot | null,
+    template?: Template | null,
+  ): PrintCutMode {
+    const chosen = resolvePrinterSlot(slot, template);
+    if (chosen === "secondary") {
+      return secondaryPrintCutMode.value;
+    }
+    return primaryPrintCutMode.value || printCutMode.value;
   }
 
   function setPrintCopies(n: number) {
@@ -1955,10 +2045,21 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   }
 
   function setPrintCutMode(mode: PrintCutMode) {
-    const next: PrintCutMode =
-      mode === "dnp-2-inch-cut" ? "dnp-2-inch-cut" : "standard";
+    setPrimaryPrintCutMode(mode);
+  }
+
+  function setPrimaryPrintCutMode(mode: PrintCutMode) {
+    const next = normalizeCutMode(mode);
+    primaryPrintCutMode.value = next;
     printCutMode.value = next;
+    localStorage.setItem(STORAGE_KEY_PRIMARY_CUT_MODE, next);
     localStorage.setItem(STORAGE_KEY_PRINT_CUT_MODE, next);
+  }
+
+  function setSecondaryPrintCutMode(mode: PrintCutMode) {
+    const next = normalizeCutMode(mode);
+    secondaryPrintCutMode.value = next;
+    localStorage.setItem(STORAGE_KEY_SECONDARY_CUT_MODE, next);
   }
 
   function setCameraFrameStyle(style: CameraFrameStyle) {
@@ -2935,6 +3036,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       | "name"
       | "photoCount"
       | "paperSize"
+      | "paperWidthIn"
+      | "paperHeightIn"
       | "frameImageUrl"
       | "cells"
       | "layout"
@@ -2948,6 +3051,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       | "cellOffsetY"
       | "thumbnailDefaultUrl"
       | "thumbnailActiveUrl"
+      | "printerSlot"
     >
   >;
 
@@ -2965,6 +3069,9 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
           ? { photoCount: patch.photoCount }
           : {}),
         ...(patch.cells !== undefined ? { cells: patch.cells } : {}),
+        ...(patch.printerSlot !== undefined
+          ? { printerSlot: patch.printerSlot }
+          : {}),
       };
       builtinTemplateOverrides.value = next;
       await saveBuiltinTemplateOverrides();
@@ -3533,10 +3640,20 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // Printer Settings
     // -----------------------------
     selectedPrinterName,
+    primaryPrinterName,
+    secondaryPrinterName,
     printCopies,
     printCutMode,
+    primaryPrintCutMode,
+    secondaryPrintCutMode,
     setSelectedPrinter,
+    setPrimaryPrinter,
+    setSecondaryPrinter,
+    resolvePrinterName,
+    resolvePrintCutMode,
     setPrintCopies,
     setPrintCutMode,
+    setPrimaryPrintCutMode,
+    setSecondaryPrintCutMode,
   };
 });

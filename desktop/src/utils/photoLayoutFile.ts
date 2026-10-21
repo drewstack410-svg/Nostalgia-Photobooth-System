@@ -20,6 +20,8 @@ export type PhotoLayoutFile = {
   name?: string;
   photoCount?: number;
   paperSize?: PaperSize;
+  paperWidthIn?: number;
+  paperHeightIn?: number;
   cells: TemplateCell[];
   /** Overlay artwork as a data URL so the package is self-contained. */
   frameImage?: string;
@@ -163,6 +165,8 @@ export function serializePhotoLayout(input: {
   name?: string;
   photoCount?: number;
   paperSize?: PaperSize;
+  paperWidthIn?: number;
+  paperHeightIn?: number;
   cells: TemplateCell[];
   frameImage?: string;
   layout?: "vertical" | "horizontal";
@@ -185,6 +189,12 @@ export function serializePhotoLayout(input: {
       ? { photoCount: input.photoCount }
       : {}),
     ...(input.paperSize ? { paperSize: input.paperSize } : {}),
+    ...(input.paperSize === "custom" && input.paperWidthIn
+      ? { paperWidthIn: input.paperWidthIn }
+      : {}),
+    ...(input.paperSize === "custom" && input.paperHeightIn
+      ? { paperHeightIn: input.paperHeightIn }
+      : {}),
     ...(isImageDataUrl(input.frameImage)
       ? { frameImage: input.frameImage }
       : {}),
@@ -238,6 +248,8 @@ export type PhotoLayoutDocument = {
   photoCount?: number;
   name?: string;
   paperSize?: PaperSize;
+  paperWidthIn?: number;
+  paperHeightIn?: number;
   frameImage?: string;
   layout?: "vertical" | "horizontal";
   frameRows?: number;
@@ -262,6 +274,8 @@ export function parsePhotoLayoutDocument(raw: unknown): PhotoLayoutDocument {
   let photoCount: number | undefined;
   let name: string | undefined;
   let paperSize: PaperSize | undefined;
+  let paperWidthIn: number | undefined;
+  let paperHeightIn: number | undefined;
   let frameImage: string | undefined;
   let layout: "vertical" | "horizontal" | undefined;
   let frameRows: number | undefined;
@@ -291,6 +305,10 @@ export function parsePhotoLayoutDocument(raw: unknown): PhotoLayoutDocument {
     if (Number.isFinite(n) && n >= 1) photoCount = Math.floor(n);
     if (typeof o.name === "string" && o.name.trim()) name = o.name.trim();
     if (isPaperSize(o.paperSize)) paperSize = o.paperSize;
+    const widthIn = parseOptionalNumber(o.paperWidthIn);
+    if (widthIn !== undefined && widthIn > 0) paperWidthIn = widthIn;
+    const heightIn = parseOptionalNumber(o.paperHeightIn);
+    if (heightIn !== undefined && heightIn > 0) paperHeightIn = heightIn;
     if (isImageDataUrl(o.frameImage)) frameImage = o.frameImage;
     else if (isImageDataUrl(o.frameImageUrl)) frameImage = o.frameImageUrl;
     if (o.layout === "vertical" || o.layout === "horizontal") layout = o.layout;
@@ -334,6 +352,8 @@ export function parsePhotoLayoutDocument(raw: unknown): PhotoLayoutDocument {
     photoCount: count,
     name,
     paperSize,
+    paperWidthIn,
+    paperHeightIn,
     frameImage,
     layout,
     frameRows,

@@ -13,7 +13,7 @@
  */
 import { computed, ref, watch } from "vue";
 import type { Template } from "@/stores/photobooth";
-import { getPaperSizePx, getTemplateCellRects, occupancyFill } from "@/utils/printLayout";
+import { resolveTemplatePaper, getTemplateCellRects, occupancyFill } from "@/utils/printLayout";
 import { getFrameWindows } from "@/utils/frameWindows";
 import type { WindowRect } from "@/utils/frameWindows";
 import { prepareFrameDataUrl } from "@/utils/pngAlpha";
@@ -41,7 +41,7 @@ const props = withDefaults(
   { photos: () => [], activeIndex: -1, maxWidth: 420, maxHeight: 620, fluid: false },
 );
 
-const sheet = computed(() => getPaperSizePx(props.template.paperSize));
+const sheet = computed(() => resolveTemplatePaper(props.template));
 
 // Contain-fit the native sheet into the allowed box so every paper size
 // keeps its true aspect instead of being forced into one hardcoded

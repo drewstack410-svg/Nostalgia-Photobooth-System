@@ -50,6 +50,16 @@ interface GalleryPhoto {
   uploadStatus?: MediaUploadStatus;
 }
 
+/** One card in the browse grid — cover thumb + all shots in the session. */
+interface GallerySessionCard {
+  key: string;
+  label: string;
+  timestamp: Date;
+  photos: GalleryPhoto[];
+  thumb: GalleryPhoto;
+  count: number;
+}
+
 const router = useRouter();
 const store = usePhotoboothStore();
 const dashboardStore = useDashboardStore();
@@ -60,6 +70,8 @@ const diskSessionPhotos = ref<GalleryPhoto[]>([]);
 const localPreviewByPath = ref<Record<string, string>>({});
 const isLoading = ref(false);
 const selectedPhoto = ref<GalleryPhoto | null>(null);
+/** Browse mode: open session dialog (photos listed inside). */
+const selectedSession = ref<GallerySessionCard | null>(null);
 const viewMode = ref<"session" | "saved">("session");
 /** When set, checkboxes are shown and user can select photos for reprint or delete */
 const selectionMode = ref<"reprint" | "delete" | "add-to-event" | "remove-from-event" | null>(null);
@@ -259,6 +271,55 @@ const gridPhotos = computed(() =>
   selectionMode.value === "add-to-event" ? addablePhotos.value : displayPhotos.value,
 );
 
+function orderPhotosInSession(photos: GalleryPhoto[]): GalleryPhoto[] {
+  return [...photos].sort((a, b) => {
+    if (a.isComposite !== b.isComposite) return a.isComposite ? -1 : 1;
+    if (a.isOriginal !== b.isOriginal) return a.isOriginal ? 1 : -1;
+    const ai = a.sessionIndex ?? 0;
+    const bi = b.sessionIndex ?? 0;
+    if (ai !== bi) return ai - bi;
+    return (
+      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+  });
+}
+
+function pickSessionThumb(photos: GalleryPhoto[]): GalleryPhoto {
+  return (
+    photos.find((p) => p.isComposite && p.src) ||
+    photos.find((p) => !p.isOriginal && p.src) ||
+    photos.find((p) => p.src) ||
+    photos[0]!
+  );
+}
+
+/** Browse grid: one card per session (not every individual file). */
+const gridSessions = computed((): GallerySessionCard[] => {
+  const map = new Map<string, GalleryPhoto[]>();
+  for (const photo of gridPhotos.value) {
+    const key = photoSessionKey(photo);
+    const list = map.get(key);
+    if (list) list.push(photo);
+    else map.set(key, [photo]);
+  }
+  const cards: GallerySessionCard[] = [];
+  for (const [key, photos] of map) {
+    const ordered = orderPhotosInSession(photos);
+    const thumb = pickSessionThumb(ordered);
+    cards.push({
+      key,
+      label: photoSessionLabel(ordered[0]!, !filterDate.value),
+      timestamp: new Date(thumb.timestamp),
+      photos: ordered,
+      thumb,
+      count: ordered.length,
+    });
+  }
+  return cards.sort(
+    (a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
+  );
+});
+
 const isAddingExisting = computed(() => selectionMode.value === "add-to-event");
 
 function focusDefaultEvent() {
@@ -358,6 +419,7 @@ function startAddToEvent() {
   selectedIds.value = new Set();
   selectionMode.value = "add-to-event";
   selectedPhoto.value = null;
+  selectedSession.value = null;
   if (viewMode.value === "saved" && !savedPhotos.value.length) {
     void loadSavedPhotos();
   }
@@ -368,6 +430,7 @@ function startRemoveFromEvent() {
   selectedIds.value = new Set();
   selectionMode.value = "remove-from-event";
   selectedPhoto.value = null;
+  selectedSession.value = null;
 }
 
 function applyAddToEvent() {
@@ -470,6 +533,17 @@ async function loadSavedPhotos() {
   } finally {
     isLoading.value = false;
   }
+}
+
+function openSession(session: GallerySessionCard) {
+  if (selectionMode.value) return;
+  selectedSession.value = session;
+  selectedPhoto.value = null;
+}
+
+function closeSession() {
+  selectedSession.value = null;
+  selectedPhoto.value = null;
 }
 
 function openPhoto(photo: GalleryPhoto) {
@@ -615,11 +689,15 @@ function closeQr() {
 function startSelectionMode(mode: "reprint" | "delete") {
   selectionMode.value = mode;
   selectedIds.value = new Set();
+  selectedSession.value = null;
+  selectedPhoto.value = null;
 }
 
 function cancelSelectionMode() {
   selectionMode.value = null;
   selectedIds.value = new Set();
+  selectedSession.value = null;
+  selectedPhoto.value = null;
 }
 
 function toggleSelected(photo: GalleryPhoto, e?: Event) {
@@ -989,7 +1067,11 @@ onUnmounted(() => {
           'gallery-event-item--active': eventsStore.selectedEventId === event.id,
           'gallery-event-item--launched': eventsStore.activeEventId === event.id,
         }"
-        @click="eventsStore.selectEvent(event.id); cancelSelectionMode()"
+        @click="
+          eventsStore.selectEvent(event.id);
+          closeSession();
+          cancelSelectionMode();
+        "
       >
         <span class="gallery-event-item__text">
           <span class="gallery-event-item__name">
@@ -1055,6 +1137,7 @@ onUnmounted(() => {
       <div
         class="gallery-header-right"
         v-if="
+          gridSessions.length > 0 ||
           gridPhotos.length > 0 ||
           canRetryUploads ||
           eventsStore.selectedEvent ||
@@ -1334,7 +1417,13 @@ onUnmounted(() => {
         Done
       </button>
     </div>
-    <div v-else-if="gridPhotos.length === 0" class="empty-state">
+    <div
+      v-else-if="
+        (!selectionMode && gridSessions.length === 0) ||
+        (selectionMode && gridPhotos.length === 0)
+      "
+      class="empty-state"
+    >
       <h2>No photos in this event</h2>
       <p>
         Launch the booth to capture into this event, or add existing pictures
@@ -1345,7 +1434,27 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <!-- Photo Grid -->
+    <!-- Browse: one thumbnail per session -->
+    <div v-else-if="!selectionMode" class="photo-grid">
+      <div
+        v-for="session in gridSessions"
+        :key="session.key"
+        class="photo-card session-card"
+        @click="openSession(session)"
+      >
+        <img
+          :src="session.thumb.src"
+          :alt="session.label"
+          class="photo-thumb"
+        />
+        <span class="photo-badge">{{ session.count }} photo{{ session.count === 1 ? "" : "s" }}</span>
+        <div class="photo-overlay photo-overlay--always">
+          <span class="photo-date">{{ session.label }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Selection modes: individual photos (add / remove / reprint / delete) -->
     <div v-else class="photo-grid">
       <div
         v-for="photo in gridPhotos"
@@ -1355,12 +1464,9 @@ onUnmounted(() => {
           'photo-card--selected': isSelected(photo),
           'photo-card--selection-mode': selectionMode,
         }"
-        @click="
-          selectionMode ? toggleSelected(photo, $event) : openPhoto(photo)
-        "
+        @click="toggleSelected(photo, $event)"
       >
         <input
-          v-if="selectionMode"
           type="checkbox"
           class="photo-card-checkbox"
           :checked="isSelected(photo)"
@@ -1383,8 +1489,46 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Photo Viewer Modal -->
-    <div v-if="selectedPhoto" class="photo-modal" @click="closePhoto">
+    <!-- Session dialog: all photos in that session -->
+    <div
+      v-if="selectedSession"
+      class="photo-modal session-modal"
+      @click="closeSession"
+    >
+      <div class="modal-content session-modal-content" @click.stop>
+        <button type="button" class="close-btn" @click="closeSession">✕</button>
+        <h2 class="session-modal-title">{{ selectedSession.label }}</h2>
+        <p class="session-modal-meta">
+          {{ selectedSession.count }} photo{{
+            selectedSession.count === 1 ? "" : "s"
+          }}
+          · {{ formatDate(selectedSession.timestamp) }}
+        </p>
+        <div class="session-photo-grid">
+          <button
+            v-for="photo in selectedSession.photos"
+            :key="photo.id"
+            type="button"
+            class="session-photo-tile"
+            @click="openPhoto(photo)"
+          >
+            <img :src="photo.src" :alt="photo.name" />
+            <span
+              v-if="photo.isComposite"
+              class="photo-badge"
+            >Printed</span>
+            <span
+              v-else-if="photo.isOriginal"
+              class="photo-badge photo-badge--original"
+            >Original</span>
+            <span class="session-photo-tile__name">{{ photo.name }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Photo Viewer Modal (from session dialog) -->
+    <div v-if="selectedPhoto" class="photo-modal photo-modal--nested" @click="closePhoto">
       <div class="modal-content" @click.stop>
         <button class="close-btn" @click="closePhoto">✕</button>
 
@@ -1420,8 +1564,6 @@ onUnmounted(() => {
           >
             Reprint
           </button>
-          <!-- Re-show the digital-copies QR. Tap-reachable rather than
-               hover-only, since this runs on a touchscreen. -->
           <button
             v-if="!selectedPhoto.isOriginal"
             type="button"
@@ -2276,10 +2418,92 @@ onUnmounted(() => {
   opacity: 1;
 }
 
+.photo-overlay--always {
+  opacity: 1;
+}
+
 .photo-date {
   color: var(--color-cream);
   font-size: 0.8rem;
   font-family: var(--font-body);
+}
+
+.session-modal-content {
+  align-items: stretch;
+  width: min(960px, 94vw);
+  max-height: 90vh;
+  overflow: hidden;
+}
+
+.session-modal-title {
+  margin: 0 2.5rem 0.25rem 0;
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  color: var(--color-brown-dark);
+}
+
+.session-modal-meta {
+  margin: 0 0 1rem;
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  color: var(--color-brown);
+}
+
+.session-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.75rem;
+  overflow-y: auto;
+  padding: 0.15rem 0.15rem 0.5rem;
+  max-height: min(68vh, 720px);
+}
+
+.session-photo-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--color-brown-light);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--color-cream-dark);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.session-photo-tile:hover {
+  border-color: var(--color-brown-dark);
+  transform: translateY(-1px);
+}
+
+.session-photo-tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  object-position: center;
+}
+
+.session-photo-tile__name {
+  display: block;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-brown-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.photo-modal--nested {
+  z-index: 110;
 }
 
 /* "Printed" badge on the templated-composite card */

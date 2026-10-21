@@ -175,6 +175,42 @@ try {
       console.log('[Preload] toggleFullscreen called');
       return ipcRenderer.invoke('toggle-fullscreen');
     },
+
+    /** F: show / hide the Windows title-bar controls (exit kiosk). */
+    toggleWindowed: () => {
+      console.log('[Preload] toggleWindowed called');
+      return ipcRenderer.invoke('toggle-windowed');
+    },
+
+    minimizeWindow: () => {
+      console.log('[Preload] minimizeWindow called');
+      return ipcRenderer.invoke('toggle-windowed');
+    },
+
+    /** Esc / F from main (kiosk-safe). Returns an unsubscribe function. */
+    onEscapeHotkey: (callback) => {
+      const handler = () => {
+        try {
+          callback();
+        } catch (err) {
+          console.warn('[Preload] onEscapeHotkey callback error:', err);
+        }
+      };
+      ipcRenderer.on('hotkey:escape', handler);
+      return () => ipcRenderer.removeListener('hotkey:escape', handler);
+    },
+
+    onFHotkey: (callback) => {
+      const handler = () => {
+        try {
+          callback();
+        } catch (err) {
+          console.warn('[Preload] onFHotkey callback error:', err);
+        }
+      };
+      ipcRenderer.on('hotkey:f', handler);
+      return () => ipcRenderer.removeListener('hotkey:f', handler);
+    },
     
     quitApp: () => {
       console.log('[Preload] quitApp called');

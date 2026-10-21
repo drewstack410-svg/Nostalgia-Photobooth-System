@@ -5,6 +5,9 @@ import { usePhotoboothStore } from "@/stores/photobooth";
 import { useGalleryEventsStore } from "@/stores/galleryEvents";
 import WelcomeStage from "@/components/WelcomeStage.vue";
 
+/** Once per app launch — send operator to Gallery to Launch an event. */
+const BOOT_EVENT_REDIRECT_KEY = "nostalgia-boot-event-redirected";
+
 const router = useRouter();
 const store = usePhotoboothStore();
 const eventsStore = useGalleryEventsStore();
@@ -132,8 +135,27 @@ function handleBadgeClick() {
   }, 2000);
 }
 
+function redirectToEventPageOnBoot() {
+  let already = false;
+  try {
+    already = sessionStorage.getItem(BOOT_EVENT_REDIRECT_KEY) === "1";
+  } catch {
+    already = false;
+  }
+  if (already) return;
+  try {
+    sessionStorage.setItem(BOOT_EVENT_REDIRECT_KEY, "1");
+  } catch {
+    /* ignore */
+  }
+  // Operator picks an event and taps Launch on the gallery page.
+  void router.replace({ path: "/admin", query: { tab: "gallery" } });
+}
+
 onMounted(() => {
   window.addEventListener("keydown", onAdminHotkey);
+  eventsStore.load();
+  redirectToEventPageOnBoot();
 });
 
 onUnmounted(() => {
@@ -164,6 +186,15 @@ onUnmounted(() => {
         @click="endLaunchedEvent"
       >
         End
+      </button>
+      <button
+        type="button"
+        class="event-launch-banner__close"
+        aria-label="End live event"
+        title="End live event"
+        @click="endLaunchedEvent"
+      >
+        ×
       </button>
     </div>
 
@@ -262,6 +293,29 @@ onUnmounted(() => {
   font-weight: 700;
   font-size: 0.85rem;
   cursor: pointer;
+}
+
+.event-launch-banner__close {
+  flex: 0 0 auto;
+  width: 1.85rem;
+  height: 1.85rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(244, 230, 195, 0.18);
+  color: #f4e6c3;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.event-launch-banner__close:hover {
+  background: rgba(244, 230, 195, 0.32);
 }
 
 .admin-badge {

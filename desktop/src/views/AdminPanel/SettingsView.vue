@@ -7,7 +7,7 @@ import type {
   Template,
   TemplateCell,
   CameraFrameStyle,
-  PrintCutMode,
+  TemplatePrinterSlot,
   CameraFilter,
   FilterOverlay,
   FilterMediaOverlay,
@@ -16,8 +16,20 @@ import type {
 } from "@/stores/photobooth";
 import { BLEND_MODES } from "@/stores/photobooth";
 import { applyBoothConfig, saveBoothConfig } from "@/lib/boothConfig";
-import { getPaperSizePx, isPaperSize } from "@/utils/printLayout";
-import type { PaperSize } from "@/utils/printLayout";
+import {
+  getPaperSizePx,
+  resolveTemplatePaper,
+  isPaperSize,
+  paperFamilyOf,
+  paperOrientationOf,
+  paperSizeFromFamily,
+  PAPER_FAMILY_OPTIONS,
+} from "@/utils/printLayout";
+import type {
+  PaperSize,
+  PaperFamily,
+  PaperOrientation,
+} from "@/utils/printLayout";
 import { prepareFrameCanvas } from "@/utils/pngAlpha";
 import TemplatePreview from "@/components/TemplatePreview.vue";
 import TemplateLayoutEditor from "@/components/TemplateLayoutEditor.vue";
@@ -294,8 +306,17 @@ function openPrinterModal() {
   loadPrinters();
 }
 
+function selectPrimaryPrinter(name: string) {
+  store.setPrimaryPrinter(name);
+}
+
+function selectSecondaryPrinter(name: string) {
+  store.setSecondaryPrinter(name);
+}
+
+/** @deprecated — use selectPrimaryPrinter */
 function selectPrinter(name: string) {
-  store.setSelectedPrinter(name);
+  selectPrimaryPrinter(name);
 }
 
 function updateCopies(e: Event) {
@@ -303,35 +324,42 @@ function updateCopies(e: Event) {
   if (!isNaN(val)) store.setPrintCopies(val);
 }
 
-function selectPrintCutMode(mode: PrintCutMode) {
-  store.setPrintCutMode(mode);
+function onPrimaryPrinterChange(e: Event) {
+  selectPrimaryPrinter((e.target as HTMLSelectElement).value);
 }
 
-// One-click shortcut to the DNP printer's Properties dialog. The "2inch
-// cut" flag is a vendor driver feature and can't be toggled directly from
-// JS/PowerShell without the DNP SDK, so we surface the dialog here instead.
-const openingPrinterProps = ref(false);
+function onSecondaryPrinterChange(e: Event) {
+  selectSecondaryPrinter((e.target as HTMLSelectElement).value);
+}
+
+// Opens Windows Printing Preferences for the chosen slot's printer.
+const openingPrinterProps = ref<"primary" | "secondary" | null>(null);
 const openPrinterError = ref("");
-async function openPrinterProperties() {
+async function configurePrinterSlot(slot: "primary" | "secondary") {
   if (!window.electronAPI?.openPrinterProperties) {
-    openPrinterError.value = "Printer properties not supported in this build.";
+    openPrinterError.value = "Printer preferences not supported in this build.";
     return;
   }
-  openingPrinterProps.value = true;
+  const name =
+    slot === "secondary"
+      ? store.secondaryPrinterName ||
+        store.primaryPrinterName ||
+        store.selectedPrinterName ||
+        ""
+      : store.primaryPrinterName || store.selectedPrinterName || "";
+  openingPrinterProps.value = slot;
   openPrinterError.value = "";
   try {
-    const res = await window.electronAPI.openPrinterProperties(
-      store.selectedPrinterName || "",
-    );
+    const res = await window.electronAPI.openPrinterProperties(name);
     if (!res.success) {
       openPrinterError.value =
-        res.error || "Could not open printer properties dialog.";
+        res.error || "Could not open printer preferences.";
     }
   } catch (e) {
     openPrinterError.value =
-      e instanceof Error ? e.message : "Error opening printer properties.";
+      e instanceof Error ? e.message : "Error opening printer preferences.";
   } finally {
-    openingPrinterProps.value = false;
+    openingPrinterProps.value = null;
   }
 }
 
@@ -703,6 +731,28 @@ function updateAdjustment(key: keyof FilterAdjustments, value: number) {
   store.setFilterAdjustments(f.id, { [key]: value });
 }
 
+/** Clamp a typed number into the slider range (NaN → leave unchanged). */
+function updateAdjustmentFromInput(
+  key: keyof FilterAdjustments,
+  raw: string,
+  min: number,
+  max: number,
+) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return;
+  const clamped = Math.min(max, Math.max(min, n));
+  updateAdjustment(key, clamped);
+}
+
+function updateMediaOpacityFromInput(raw: string) {
+  const f = editingFilter.value;
+  if (!f) return;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return;
+  const pct = Math.min(100, Math.max(0, Math.round(n)));
+  updateMediaOverlay(f, { opacity: pct / 100 });
+}
+
 function adjPct(value: number, min: number, max: number) {
   return `${((value - min) / (max - min)) * 100}%`;
 }
@@ -873,6 +923,8 @@ function cloneTemplate(t: Template): Template {
 function fillAddTemplateForm(partial: {
   name?: string;
   paperSize?: PaperSize;
+  paperWidthIn?: number;
+  paperHeightIn?: number;
   price?: number;
   frameImageUrl?: string;
   frameRows?: number;
@@ -887,9 +939,26 @@ function fillAddTemplateForm(partial: {
   thumbnailDefaultUrl?: string;
   thumbnailActiveUrl?: string;
   cells?: TemplateCell[];
+  printerSlot?: TemplatePrinterSlot;
 }) {
   if (partial.name !== undefined) newTemplateName.value = partial.name;
-  if (partial.paperSize) newTemplatePaperSize.value = partial.paperSize;
+  if (partial.paperSize) {
+    applyPaperSizeToForm(
+      partial.paperSize,
+      partial.paperWidthIn,
+      partial.paperHeightIn,
+    );
+  } else if (
+    partial.paperWidthIn !== undefined ||
+    partial.paperHeightIn !== undefined
+  ) {
+    if (partial.paperWidthIn !== undefined) {
+      newTemplatePaperWidthIn.value = partial.paperWidthIn;
+    }
+    if (partial.paperHeightIn !== undefined) {
+      newTemplatePaperHeightIn.value = partial.paperHeightIn;
+    }
+  }
   if (partial.price !== undefined) newTemplatePrice.value = partial.price;
   if (partial.frameImageUrl !== undefined) {
     newTemplateFrameImageUrl.value = partial.frameImageUrl;
@@ -910,6 +979,11 @@ function fillAddTemplateForm(partial: {
     newTemplateThumbnailActiveUrl.value = partial.thumbnailActiveUrl;
   }
   if (partial.cells) newTemplateCells.value = JSON.parse(JSON.stringify(partial.cells));
+  if (partial.printerSlot === "secondary") {
+    newTemplatePrinterSlot.value = "secondary";
+  } else if (partial.printerSlot !== undefined) {
+    newTemplatePrinterSlot.value = "primary";
+  }
 }
 
 function openLayoutEditor(t: Template) {
@@ -918,6 +992,8 @@ function openLayoutEditor(t: Template) {
   fillAddTemplateForm({
     name: t.name,
     paperSize: t.paperSize || "4x6-portrait",
+    paperWidthIn: t.paperWidthIn,
+    paperHeightIn: t.paperHeightIn,
     price: dashboardStore.priceByTemplateId[t.id] ?? 0,
     frameImageUrl: t.frameImageUrl || "",
     frameRows: t.frameRows || 2,
@@ -932,6 +1008,7 @@ function openLayoutEditor(t: Template) {
     thumbnailDefaultUrl: t.thumbnailDefaultUrl || "",
     thumbnailActiveUrl: t.thumbnailActiveUrl || "",
     cells: t.cells || [],
+    printerSlot: t.printerSlot === "secondary" ? "secondary" : "primary",
   });
 }
 
@@ -974,6 +1051,8 @@ async function exportTemplatePackage(t: Template) {
     name: t.name,
     photoCount: t.photoCount,
     paperSize: t.paperSize,
+    paperWidthIn: t.paperWidthIn,
+    paperHeightIn: t.paperHeightIn,
     cells,
     // frameImage,
     layout: t.layout,
@@ -1023,6 +1102,8 @@ async function onTemplatePackageImport(event: Event) {
     fillAddTemplateForm({
       name,
       paperSize,
+      paperWidthIn: imported.paperWidthIn,
+      paperHeightIn: imported.paperHeightIn,
       // Including PNG on import — hidden for now
       // frameImageUrl: imported.frameImage || "",
       frameImageUrl: "",
@@ -1113,15 +1194,19 @@ async function saveLayoutEditor() {
     frameCols: t.frameCols,
   });
   const paperSize = t.paperSize || "4x6-portrait";
-  const layout: "vertical" | "horizontal" = paperSize.includes("landscape")
-    ? "horizontal"
-    : "vertical";
+  const layout: "vertical" | "horizontal" =
+    paperOrientationOf(paperSize, t.paperWidthIn, t.paperHeightIn) ===
+    "landscape"
+      ? "horizontal"
+      : "vertical";
   if (layoutEditorIsNew.value || !t.id) {
     const added = store.addTemplate({
       name,
       layout,
       photoCount,
       paperSize,
+      paperWidthIn: paperSize === "custom" ? t.paperWidthIn : undefined,
+      paperHeightIn: paperSize === "custom" ? t.paperHeightIn : undefined,
       frameImageUrl: t.frameImageUrl,
       cells: cells.length ? cells : undefined,
       fitMode: t.fitMode || "contain",
@@ -1143,6 +1228,8 @@ async function saveLayoutEditor() {
       name,
       photoCount,
       paperSize,
+      paperWidthIn: paperSize === "custom" ? t.paperWidthIn : undefined,
+      paperHeightIn: paperSize === "custom" ? t.paperHeightIn : undefined,
       frameImageUrl: t.frameImageUrl,
       cells: cells.length ? cells : undefined,
       layout,
@@ -1213,6 +1300,92 @@ const shotPlan = computed(() => {
   return { cells, shots, copies, even: Number.isInteger(copies) };
 });
 const newTemplatePaperSize = ref<PaperSize>("4x6-portrait");
+const newTemplatePaperFamily = ref<PaperFamily>("4x6");
+const newTemplatePaperOrientation = ref<PaperOrientation>("portrait");
+const newTemplatePaperWidthIn = ref(4);
+const newTemplatePaperHeightIn = ref(6);
+const newTemplatePrinterSlot = ref<TemplatePrinterSlot>("primary");
+
+function applyPaperSizeToForm(
+  size: PaperSize,
+  widthIn?: number,
+  heightIn?: number,
+) {
+  newTemplatePaperSize.value = size;
+  newTemplatePaperFamily.value = paperFamilyOf(size);
+  newTemplatePaperOrientation.value = paperOrientationOf(
+    size,
+    widthIn,
+    heightIn,
+  );
+  if (size === "custom") {
+    newTemplatePaperWidthIn.value = widthIn ?? 4;
+    newTemplatePaperHeightIn.value = heightIn ?? 6;
+  } else {
+    const spec = getPaperSizePx(size);
+    newTemplatePaperWidthIn.value = spec.inchesWide;
+    newTemplatePaperHeightIn.value = spec.inchesTall;
+  }
+}
+
+function selectPaperFamily(family: PaperFamily) {
+  newTemplatePaperFamily.value = family;
+  if (family === "2x6") {
+    newTemplatePaperOrientation.value = "portrait";
+  }
+  if (family === "custom") {
+    newTemplatePaperSize.value = "custom";
+    return;
+  }
+  const size = paperSizeFromFamily(family, newTemplatePaperOrientation.value);
+  applyPaperSizeToForm(size);
+}
+
+function selectPaperOrientation(orientation: PaperOrientation) {
+  if (newTemplatePaperFamily.value === "2x6") return;
+  newTemplatePaperOrientation.value = orientation;
+  if (newTemplatePaperFamily.value === "custom") {
+    const w = newTemplatePaperWidthIn.value;
+    const h = newTemplatePaperHeightIn.value;
+    const isLandscape = w >= h;
+    if (orientation === "landscape" && !isLandscape) {
+      newTemplatePaperWidthIn.value = h;
+      newTemplatePaperHeightIn.value = w;
+    } else if (orientation === "portrait" && isLandscape) {
+      newTemplatePaperWidthIn.value = h;
+      newTemplatePaperHeightIn.value = w;
+    }
+    newTemplatePaperSize.value = "custom";
+    return;
+  }
+  const size = paperSizeFromFamily(
+    newTemplatePaperFamily.value,
+    orientation,
+  );
+  applyPaperSizeToForm(size);
+}
+
+function onCustomSizeInput() {
+  newTemplatePaperFamily.value = "custom";
+  newTemplatePaperSize.value = "custom";
+  const w = Number(newTemplatePaperWidthIn.value);
+  const h = Number(newTemplatePaperHeightIn.value);
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+  newTemplatePaperWidthIn.value = Math.min(24, Math.max(0.5, w));
+  newTemplatePaperHeightIn.value = Math.min(24, Math.max(0.5, h));
+  newTemplatePaperOrientation.value =
+    newTemplatePaperWidthIn.value >= newTemplatePaperHeightIn.value
+      ? "landscape"
+      : "portrait";
+}
+
+const currentTemplatePaperSpec = computed(() =>
+  resolveTemplatePaper({
+    paperSize: newTemplatePaperSize.value,
+    paperWidthIn: newTemplatePaperWidthIn.value,
+    paperHeightIn: newTemplatePaperHeightIn.value,
+  }),
+);
 const newTemplateCellMargin = ref<number>(24);
 const newTemplateCellGap = ref<number>(24);
 const newTemplateCellZoom = ref<number>(1);
@@ -1326,7 +1499,7 @@ async function redrawTemplatePreview() {
   if (myToken !== previewRedrawToken) return;
   if (!templatePreviewCanvasRef.value) return;
 
-  const sheet = getPaperSizePx(newTemplatePaperSize.value);
+  const sheet = currentTemplatePaperSpec.value;
   canvas.width = sheet.width;
   canvas.height = sheet.height;
   const ctx = canvas.getContext("2d");
@@ -1385,6 +1558,8 @@ watch(
     newTemplateCellMargin,
     newTemplateCellGap,
     newTemplatePaperSize,
+    newTemplatePaperWidthIn,
+    newTemplatePaperHeightIn,
     newTemplateCellZoom,
     newTemplateFitMode,
     newTemplateOffsetX,
@@ -1432,14 +1607,6 @@ function triggerPreviewPhotoInput() {
   previewPhotoInputRef.value?.click();
 }
 
-const PAPER_SIZE_OPTIONS: Array<{ value: PaperSize; label: string }> = [
-  { value: "4x6-portrait", label: "4×6 — Portrait (full sheet)" },
-  { value: "4x6-landscape", label: "4×6 — Landscape (full sheet)" },
-  { value: "2x6-portrait", label: "2×6 — Strip (prints twice, cut in half)" },
-  { value: "6x8-portrait", label: "6×8 — Portrait (full sheet)" },
-  { value: "6x8-landscape", label: "8×6 — Landscape (full sheet)" },
-];
-
 // Rows/cols are only clamped enough to keep the print math from
 // collapsing (see cellPreview below for the REAL, quality-based
 // ceiling) — 8×8 is already far past anything usable, just a safety
@@ -1451,7 +1618,7 @@ const GRID_AXIS_MAX = 8;
 // (sheet size − margins − gaps, divided across the grid), so this
 // reflects the true printed size, not a guess.
 const cellPreview = computed(() => {
-  const sheet = getPaperSizePx(newTemplatePaperSize.value);
+  const sheet = currentTemplatePaperSpec.value;
   const rows = Math.max(1, Math.min(GRID_AXIS_MAX, newTemplateFrameRows.value || 1));
   const cols = Math.max(1, Math.min(GRID_AXIS_MAX, newTemplateFrameCols.value || 1));
   const margin = Math.max(0, newTemplateCellMargin.value || 0);
@@ -1509,6 +1676,14 @@ function openPhotoLayoutFromAddForm() {
     photoCount,
     layout,
     paperSize: newTemplatePaperSize.value,
+    paperWidthIn:
+      newTemplatePaperSize.value === "custom"
+        ? newTemplatePaperWidthIn.value
+        : undefined,
+    paperHeightIn:
+      newTemplatePaperSize.value === "custom"
+        ? newTemplatePaperHeightIn.value
+        : undefined,
     frameImageUrl: newTemplateFrameImageUrl.value.trim() || undefined,
     frameRows,
     frameCols,
@@ -1536,7 +1711,8 @@ function openAddTemplateModal() {
   newTemplateOffsetY.value = 0;
   newTemplateFrameRows.value = 2;
   newTemplateFrameCols.value = 2;
-  newTemplatePaperSize.value = "4x6-portrait";
+  applyPaperSizeToForm("4x6-portrait");
+  newTemplatePrinterSlot.value = "primary";
   newTemplateCellMargin.value = 24;
   newTemplateCellGap.value = 24;
   newTemplateCellZoom.value = 1;
@@ -1709,6 +1885,14 @@ async function submitAddTemplate() {
         })
       : photoCount,
     paperSize: newTemplatePaperSize.value,
+    paperWidthIn:
+      newTemplatePaperSize.value === "custom"
+        ? newTemplatePaperWidthIn.value
+        : undefined,
+    paperHeightIn:
+      newTemplatePaperSize.value === "custom"
+        ? newTemplatePaperHeightIn.value
+        : undefined,
     frameImageUrl,
     frameRows,
     frameCols,
@@ -1721,6 +1905,7 @@ async function submitAddTemplate() {
     thumbnailDefaultUrl,
     thumbnailActiveUrl,
     cells,
+    printerSlot: newTemplatePrinterSlot.value,
   };
   const price = Number(newTemplatePrice.value);
   if (addTemplateEditId.value) {
@@ -2123,15 +2308,15 @@ function templatePriceLabel(id: string): string {
         >
           <h3 class="subsection-title">Printer settings</h3>
           <p class="section-desc">
-            Select which printer to use and how many copies to print per session.
-            <span v-if="store.selectedPrinterName" class="current-setting">
-              Current: <strong>{{ store.selectedPrinterName }}</strong>
-              &nbsp;·&nbsp; {{ store.printCopies }} {{ store.printCopies === 1 ? 'copy' : 'copies' }}
-              &nbsp;·&nbsp; {{ store.printCutMode === 'dnp-2-inch-cut' ? '2-inch cut' : 'standard 4x6' }}
-            </span>
-            <span v-else class="current-setting">
-              Using system default printer.
-              {{ store.printCutMode === 'dnp-2-inch-cut' ? '2-inch cut mode enabled.' : '' }}
+            Primary and secondary printers. Use Configure printer for driver
+            options. Templates pick which slot.
+            <span class="current-setting">
+              Primary:
+              <strong>{{ store.primaryPrinterName || "System default" }}</strong>
+              &nbsp;·&nbsp; Secondary:
+              <strong>{{ store.secondaryPrinterName || "Same as primary" }}</strong>
+              &nbsp;·&nbsp; {{ store.printCopies }}
+              {{ store.printCopies === 1 ? "copy" : "copies" }}
             </span>
           </p>
         </button>
@@ -3122,9 +3307,17 @@ function templatePriceLabel(id: string): string {
                 aria-label="Media overlay opacity"
                 @input="updateMediaOverlay(editingFilter, { opacity: Number(($event.target as HTMLInputElement).value) / 100 })"
               />
-              <span class="filter-adjust-value">
-                {{ Math.round(editingFilter.mediaOverlay.opacity * 100) }}%
-              </span>
+              <input
+                type="number"
+                class="filter-adjust-value-input"
+                min="0"
+                max="100"
+                step="1"
+                :value="Math.round(editingFilter.mediaOverlay.opacity * 100)"
+                aria-label="Media overlay opacity value"
+                @change="updateMediaOpacityFromInput(($event.target as HTMLInputElement).value)"
+                @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+              />
             </label>
           </template>
         </div>
@@ -3141,7 +3334,17 @@ function templatePriceLabel(id: string): string {
               :style="{ '--range-pct': adjPct(editingAdj.grain, 0, 100) }"
               @input="updateAdjustment('grain', Number(($event.target as HTMLInputElement).value))"
             />
-            <span class="filter-adjust-value">{{ editingAdj.grain }}</span>
+            <input
+              type="number"
+              class="filter-adjust-value-input"
+              min="0"
+              max="100"
+              step="1"
+              :value="editingAdj.grain"
+              aria-label="Grain value"
+              @change="updateAdjustmentFromInput('grain', ($event.target as HTMLInputElement).value, 0, 100)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
           </label>
           <label class="filter-adjust-row">
             <span>Exposure</span>
@@ -3154,7 +3357,17 @@ function templatePriceLabel(id: string): string {
               :style="{ '--range-pct': adjPct(editingAdj.exposure, -4, 4) }"
               @input="updateAdjustment('exposure', Number(($event.target as HTMLInputElement).value))"
             />
-            <span class="filter-adjust-value">{{ editingAdj.exposure.toFixed(2) }}</span>
+            <input
+              type="number"
+              class="filter-adjust-value-input"
+              min="-4"
+              max="4"
+              step="0.05"
+              :value="editingAdj.exposure"
+              aria-label="Exposure value"
+              @change="updateAdjustmentFromInput('exposure', ($event.target as HTMLInputElement).value, -4, 4)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
           </label>
           <label class="filter-adjust-row">
             <span>Levels</span>
@@ -3167,7 +3380,17 @@ function templatePriceLabel(id: string): string {
               :style="{ '--range-pct': adjPct(editingAdj.levels, -100, 100) }"
               @input="updateAdjustment('levels', Number(($event.target as HTMLInputElement).value))"
             />
-            <span class="filter-adjust-value">{{ editingAdj.levels }}</span>
+            <input
+              type="number"
+              class="filter-adjust-value-input"
+              min="-100"
+              max="100"
+              step="1"
+              :value="editingAdj.levels"
+              aria-label="Levels value"
+              @change="updateAdjustmentFromInput('levels', ($event.target as HTMLInputElement).value, -100, 100)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
           </label>
           <label class="filter-adjust-row">
             <span>Contrast</span>
@@ -3180,7 +3403,17 @@ function templatePriceLabel(id: string): string {
               :style="{ '--range-pct': adjPct(editingAdj.contrast, -100, 100) }"
               @input="updateAdjustment('contrast', Number(($event.target as HTMLInputElement).value))"
             />
-            <span class="filter-adjust-value">{{ editingAdj.contrast }}</span>
+            <input
+              type="number"
+              class="filter-adjust-value-input"
+              min="-100"
+              max="100"
+              step="1"
+              :value="editingAdj.contrast"
+              aria-label="Contrast value"
+              @change="updateAdjustmentFromInput('contrast', ($event.target as HTMLInputElement).value, -100, 100)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
           </label>
           <label class="filter-adjust-row">
             <span>Shadows</span>
@@ -3193,7 +3426,17 @@ function templatePriceLabel(id: string): string {
               :style="{ '--range-pct': adjPct(editingAdj.shadows, -100, 100) }"
               @input="updateAdjustment('shadows', Number(($event.target as HTMLInputElement).value))"
             />
-            <span class="filter-adjust-value">{{ editingAdj.shadows }}</span>
+            <input
+              type="number"
+              class="filter-adjust-value-input"
+              min="-100"
+              max="100"
+              step="1"
+              :value="editingAdj.shadows"
+              aria-label="Shadows value"
+              @change="updateAdjustmentFromInput('shadows', ($event.target as HTMLInputElement).value, -100, 100)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
           </label>
           <label class="filter-adjust-row">
             <span>Saturation</span>
@@ -3206,7 +3449,17 @@ function templatePriceLabel(id: string): string {
               :style="{ '--range-pct': adjPct(editingAdj.saturation, -100, 100) }"
               @input="updateAdjustment('saturation', Number(($event.target as HTMLInputElement).value))"
             />
-            <span class="filter-adjust-value">{{ editingAdj.saturation }}</span>
+            <input
+              type="number"
+              class="filter-adjust-value-input"
+              min="-100"
+              max="100"
+              step="1"
+              :value="editingAdj.saturation"
+              aria-label="Saturation value"
+              @change="updateAdjustmentFromInput('saturation', ($event.target as HTMLInputElement).value, -100, 100)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
           </label>
           <label class="filter-adjust-row">
             <span>Vignette</span>
@@ -3219,7 +3472,17 @@ function templatePriceLabel(id: string): string {
               :style="{ '--range-pct': adjPct(editingAdj.vignette, -100, 100) }"
               @input="updateAdjustment('vignette', Number(($event.target as HTMLInputElement).value))"
             />
-            <span class="filter-adjust-value">{{ editingAdj.vignette }}</span>
+            <input
+              type="number"
+              class="filter-adjust-value-input"
+              min="-100"
+              max="100"
+              step="1"
+              :value="editingAdj.vignette"
+              aria-label="Vignette value"
+              @change="updateAdjustmentFromInput('vignette', ($event.target as HTMLInputElement).value, -100, 100)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
           </label>
           <label class="filter-adjust-row">
             <span>Glow</span>
@@ -3232,7 +3495,17 @@ function templatePriceLabel(id: string): string {
               :style="{ '--range-pct': adjPct(editingAdj.glow, 0, 100) }"
               @input="updateAdjustment('glow', Number(($event.target as HTMLInputElement).value))"
             />
-            <span class="filter-adjust-value">{{ editingAdj.glow }}</span>
+            <input
+              type="number"
+              class="filter-adjust-value-input"
+              min="0"
+              max="100"
+              step="1"
+              :value="editingAdj.glow"
+              aria-label="Glow value"
+              @change="updateAdjustmentFromInput('glow', ($event.target as HTMLInputElement).value, 0, 100)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
           </label>
         </div>
       </aside>
@@ -3368,11 +3641,11 @@ function templatePriceLabel(id: string): string {
     <AdminFormModal
       v-model:open="showPrinterModal"
       title="Printer settings"
-      description="Select the printer and number of copies. The composite photo will be sent automatically after each session."
+      description="Pick primary and secondary printers. Use Configure printer to open Windows printing preferences for each slot."
+      size="large"
     >
       <div class="printer-settings">
-        <!-- Copies -->
-        <div class="form-row">
+        <div class="form-row printer-settings__copies">
           <label class="form-label">Copies per session</label>
           <input
             type="number"
@@ -3384,117 +3657,104 @@ function templatePriceLabel(id: string): string {
           />
         </div>
 
-        <div class="form-row">
-          <label class="form-label">Cut mode</label>
-          <div class="printer-list">
-            <label
-              class="printer-option"
-              :class="{ 'printer-option--active': store.printCutMode === 'standard' }"
-            >
-              <input
-                type="radio"
-                name="print-cut-mode"
-                value="standard"
-                :checked="store.printCutMode === 'standard'"
-                @change="selectPrintCutMode('standard')"
-              />
-              <span class="printer-name">Standard 4x6 print</span>
-            </label>
-            <label
-              class="printer-option"
-              :class="{ 'printer-option--active': store.printCutMode === 'dnp-2-inch-cut' }"
-            >
-              <input
-                type="radio"
-                name="print-cut-mode"
-                value="dnp-2-inch-cut"
-                :checked="store.printCutMode === 'dnp-2-inch-cut'"
-                @change="selectPrintCutMode('dnp-2-inch-cut')"
-              />
-              <span class="printer-name">
-                DNP 2-inch cut
-                <span class="printer-default-badge">2x6 x2</span>
-              </span>
-            </label>
+        <div v-if="printerLoading" class="printer-loading">Loading printers…</div>
+        <div v-else-if="printerError" class="printer-error">{{ printerError }}</div>
+        <template v-else>
+          <div class="printer-slots-grid">
+            <!-- Primary slot -->
+            <div class="printer-slot-card">
+              <h4 class="printer-slot-card__title">Primary</h4>
+              <p class="form-hint form-hint-block">
+                Default slot for templates. Can be the same device as Secondary.
+              </p>
+              <label class="form-sublabel">Printer</label>
+              <select
+                class="form-select printer-slot-select"
+                :value="store.primaryPrinterName"
+                @change="onPrimaryPrinterChange"
+              >
+                <option value="">System default printer</option>
+                <option
+                  v-for="p in availablePrinters"
+                  :key="'primary-' + p.name"
+                  :value="p.name"
+                >
+                  {{ p.displayName || p.name }}{{ p.isDefault ? " (default)" : "" }}
+                </option>
+              </select>
+
+              <div class="printer-configure-row">
+                <button
+                  type="button"
+                  class="open-printer-props-btn"
+                  :disabled="openingPrinterProps !== null"
+                  @click="configurePrinterSlot('primary')"
+                >
+                  {{
+                    openingPrinterProps === "primary"
+                      ? "Opening…"
+                      : "Configure printer"
+                  }}
+                </button>
+              <p class="form-hint form-hint-block">
+                Opens Windows printing preferences for this printer.
+              </p>
+            </div>
           </div>
-          <p class="form-hint form-hint-block">
-            The app sends one 4x6 sheet with two duplicate 6x2 strips stacked
-            top and bottom. The DNP printer physically cuts the sheet in half,
-            producing two 2x6 photo strips per print.
-          </p>
-          <div
-            v-if="store.printCutMode === 'dnp-2-inch-cut'"
-            class="cut-mode-driver-setup"
-          >
-            <button
-              type="button"
-              class="open-printer-props-btn"
-              :disabled="openingPrinterProps"
-              @click="openPrinterProperties"
-            >
-              {{ openingPrinterProps ? "Opening…" : "Open printer settings" }}
-            </button>
-            <p class="form-hint form-hint-block">
-              The DNP "2inch cut" toggle is a vendor driver feature — it
-              has to be enabled inside the Windows printer dialog. Click the
-              button above to open it, then go to
-              <strong>Advanced</strong> tab →
-              <strong>Printing Defaults…</strong> →
-              <strong>Advanced…</strong> →
-              <strong>Printer Features</strong> →
-              set <strong>2inch cut: Enable</strong> → OK. Paper Size stays
-              <strong>(6x4)</strong>. This only has to be done once.
-            </p>
-            <p v-if="openPrinterError" class="printer-error">
-              {{ openPrinterError }}
-            </p>
+
+            <!-- Secondary slot -->
+            <div class="printer-slot-card">
+              <h4 class="printer-slot-card__title">Secondary</h4>
+              <p class="form-hint form-hint-block">
+                Same printer as Primary is fine, or another device / queue with
+                different preferences.
+              </p>
+              <label class="form-sublabel">Printer</label>
+              <select
+                class="form-select printer-slot-select"
+                :value="store.secondaryPrinterName"
+                @change="onSecondaryPrinterChange"
+              >
+                <option value="">Same as primary</option>
+                <option
+                  v-for="p in availablePrinters"
+                  :key="'secondary-' + p.name"
+                  :value="p.name"
+                >
+                  {{ p.displayName || p.name }}{{ p.isDefault ? " (default)" : "" }}
+                </option>
+              </select>
+
+              <div class="printer-configure-row">
+                <button
+                  type="button"
+                  class="open-printer-props-btn"
+                  :disabled="openingPrinterProps !== null"
+                  @click="configurePrinterSlot('secondary')"
+                >
+                  {{
+                    openingPrinterProps === "secondary"
+                      ? "Opening…"
+                      : "Configure printer"
+                  }}
+                </button>
+                <p class="form-hint form-hint-block">
+                  Opens Windows printing preferences for this printer.
+                </p>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <!-- Printer list -->
-        <div class="form-row">
-          <label class="form-label">Printer</label>
-          <div v-if="printerLoading" class="printer-loading">Loading printers…</div>
-          <div v-else-if="printerError" class="printer-error">{{ printerError }}</div>
-          <div v-else class="printer-list">
-            <!-- Default option -->
-            <label class="printer-option" :class="{ 'printer-option--active': !store.selectedPrinterName }">
-              <input
-                type="radio"
-                name="printer"
-                value=""
-                :checked="!store.selectedPrinterName"
-                @change="selectPrinter('')"
-              />
-              <span class="printer-name">System default printer</span>
-            </label>
-
-            <label
-              v-for="p in availablePrinters"
-              :key="p.name"
-              class="printer-option"
-              :class="{ 'printer-option--active': store.selectedPrinterName === p.name }"
-            >
-              <input
-                type="radio"
-                name="printer"
-                :value="p.name"
-                :checked="store.selectedPrinterName === p.name"
-                @change="selectPrinter(p.name)"
-              />
-              <span class="printer-name">
-                {{ p.displayName || p.name }}
-                <span v-if="p.isDefault" class="printer-default-badge">default</span>
-              </span>
-            </label>
-
+          <div class="printer-settings__footer">
+            <p v-if="openPrinterError" class="printer-error">{{ openPrinterError }}</p>
             <p v-if="availablePrinters.length === 0" class="printer-empty">
               No printers found. Make sure a printer is installed on this machine.
             </p>
-
-            <button type="button" class="btn-refresh" @click="loadPrinters">↻ Refresh</button>
+            <button type="button" class="btn-refresh" @click="loadPrinters">
+              ↻ Refresh
+            </button>
           </div>
-        </div>
+        </template>
       </div>
     </AdminFormModal>
 
@@ -3585,18 +3845,6 @@ function templatePriceLabel(id: string): string {
                       @keydown="handleTemplateNameKeyDown"
                     />
                   </div>
-                  <div class="form-row-field">
-                    <label class="form-label">Paper size</label>
-                    <select v-model="newTemplatePaperSize" class="form-select">
-                      <option
-                        v-for="opt in PAPER_SIZE_OPTIONS"
-                        :key="opt.value"
-                        :value="opt.value"
-                      >
-                        {{ opt.label }}
-                      </option>
-                    </select>
-                  </div>
                   <div class="form-row-field form-row-field--price">
                     <label class="form-label">Price (₱)</label>
                     <input
@@ -3608,6 +3856,106 @@ function templatePriceLabel(id: string): string {
                       placeholder="0"
                     />
                   </div>
+                </div>
+
+                <div class="form-row paper-size-editor">
+                  <label class="form-label">Template size</label>
+                  <div class="paper-size-row">
+                    <label class="paper-size-row__field paper-size-row__field--grow">
+                      <span class="form-sublabel">Default size</span>
+                      <select
+                        class="form-select"
+                        :value="newTemplatePaperFamily"
+                        aria-label="Default template size"
+                        @change="
+                          selectPaperFamily(
+                            ($event.target as HTMLSelectElement)
+                              .value as PaperFamily,
+                          )
+                        "
+                      >
+                        <option
+                          v-for="opt in PAPER_FAMILY_OPTIONS"
+                          :key="opt.value"
+                          :value="opt.value"
+                        >
+                          {{
+                            opt.hint ? `${opt.label} — ${opt.hint}` : opt.label
+                          }}
+                        </option>
+                      </select>
+                    </label>
+                    <label class="paper-size-row__field paper-size-row__field--orient">
+                      <span class="form-sublabel">Orientation</span>
+                      <select
+                        class="form-select"
+                        :value="newTemplatePaperOrientation"
+                        :disabled="newTemplatePaperFamily === '2x6'"
+                        aria-label="Template orientation"
+                        @change="
+                          selectPaperOrientation(
+                            ($event.target as HTMLSelectElement)
+                              .value as PaperOrientation,
+                          )
+                        "
+                      >
+                        <option value="portrait">Portrait</option>
+                        <option value="landscape">Landscape</option>
+                      </select>
+                    </label>
+                    <label class="paper-size-row__field paper-size-row__field--inch">
+                      <span class="form-sublabel">Width (in)</span>
+                      <input
+                        v-model.number="newTemplatePaperWidthIn"
+                        type="number"
+                        class="form-input"
+                        min="0.5"
+                        max="24"
+                        step="0.01"
+                        aria-label="Template width in inches"
+                        @change="onCustomSizeInput"
+                      />
+                    </label>
+                    <span class="paper-size-row__x" aria-hidden="true">×</span>
+                    <label class="paper-size-row__field paper-size-row__field--inch">
+                      <span class="form-sublabel">Height (in)</span>
+                      <input
+                        v-model.number="newTemplatePaperHeightIn"
+                        type="number"
+                        class="form-input"
+                        min="0.5"
+                        max="24"
+                        step="0.01"
+                        aria-label="Template height in inches"
+                        @change="onCustomSizeInput"
+                      />
+                    </label>
+                    <label class="paper-size-row__field paper-size-row__field--printer">
+                      <span class="form-sublabel">Print on</span>
+                      <select
+                        v-model="newTemplatePrinterSlot"
+                        class="form-select"
+                        aria-label="Printer for this template"
+                      >
+                        <option value="primary">
+                          Primary —
+                          {{ store.primaryPrinterName || "System default" }}
+                        </option>
+                        <option value="secondary">
+                          Secondary —
+                          {{
+                            store.secondaryPrinterName || "Falls back to primary"
+                          }}
+                        </option>
+                      </select>
+                    </label>
+                  </div>
+                  <p class="form-hint paper-size-row__meta">
+                    {{ currentTemplatePaperSpec.width }}×{{
+                      currentTemplatePaperSpec.height
+                    }}px
+                    · {{ currentTemplatePaperSpec.label }}
+                  </p>
                 </div>
 
                 <div class="grid-heading">
@@ -3844,6 +4192,8 @@ function templatePriceLabel(id: string): string {
                   :photo-count="shotPlan.shots"
                   :frame-image-url="newTemplateFrameImageUrl || undefined"
                   :paper-size="newTemplatePaperSize"
+                  :paper-width-in="newTemplatePaperWidthIn"
+                  :paper-height-in="newTemplatePaperHeightIn"
                   :frame-rows="newTemplateFrameRows"
                   :frame-cols="newTemplateFrameCols"
                   :layout-name="newTemplateName"
@@ -3855,7 +4205,7 @@ function templatePriceLabel(id: string): string {
                   :fit-mode="newTemplateFitMode"
                   embedded
                   @update:frame-image-url="(url) => { newTemplateFrameImageUrl = url; }"
-                  @update:paper-size="(size) => { newTemplatePaperSize = size; }"
+                  @update:paper-size="(size) => { applyPaperSizeToForm(size); }"
                   @update:photo-count="(n) => { newTemplateShots = n; }"
                   @update:layout-name="(n) => { if (n) newTemplateName = n; }"
                 />
@@ -4669,7 +5019,7 @@ function templatePriceLabel(id: string): string {
 
 .filter-adjust-row {
   display: grid;
-  grid-template-columns: 5.6rem 1fr 2.8rem;
+  grid-template-columns: 5.6rem 1fr 3.6rem;
   align-items: center;
   gap: 0.35rem;
   font-size: 0.75rem;
@@ -4693,6 +5043,33 @@ function templatePriceLabel(id: string): string {
   font-variant-numeric: tabular-nums;
   text-align: right;
   font-weight: 600;
+}
+
+.filter-adjust-value-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0.2rem 0.25rem;
+  border: 1px solid color-mix(in srgb, var(--color-brown) 35%, transparent);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--color-brown-dark);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: right;
+  -moz-appearance: textfield;
+}
+
+.filter-adjust-value-input::-webkit-outer-spin-button,
+.filter-adjust-value-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.filter-adjust-value-input:focus {
+  outline: 2px solid color-mix(in srgb, var(--color-brown) 45%, transparent);
+  outline-offset: 1px;
 }
 
 @media (max-width: 860px) {
@@ -5259,6 +5636,59 @@ function templatePriceLabel(id: string): string {
   flex: 0.55 1 88px;
 }
 
+.paper-size-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.paper-size-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.55rem;
+  width: 100%;
+}
+
+.paper-size-row__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.paper-size-row__field--grow {
+  flex: 1.15 1 0;
+  min-width: 5.5rem;
+}
+
+.paper-size-row__field--orient {
+  flex: 0.9 1 0;
+  max-width: 8.5rem;
+}
+
+.paper-size-row__field--inch {
+  flex: 0.65 1 0;
+  max-width: 5.75rem;
+}
+
+.paper-size-row__field--printer {
+  flex: 1.35 1 0;
+  min-width: 7rem;
+}
+
+.paper-size-row__x {
+  flex: 0 0 auto;
+  padding-bottom: 0.55rem;
+  font-weight: 700;
+  color: var(--color-brown);
+  line-height: 1;
+}
+
+.paper-size-row__meta {
+  margin: 0;
+}
+
 .grid-heading {
   display: flex;
   align-items: baseline;
@@ -5711,6 +6141,116 @@ function templatePriceLabel(id: string): string {
 }
 
 /* Printer settings */
+.printer-slot-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+}
+
+.printer-slot-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.7rem 0.85rem;
+  border: 2px solid var(--color-brown-light);
+  border-radius: 10px;
+  background: var(--color-cream);
+  cursor: pointer;
+  color: var(--color-brown-dark);
+}
+
+.printer-slot-option input {
+  margin-top: 0.2rem;
+}
+
+.printer-slot-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+
+.printer-slot-option small {
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 0.75rem;
+  color: var(--color-brown);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12rem;
+}
+
+.printer-slot-option--active {
+  border-color: var(--color-brown-dark);
+  background: #fff8ea;
+  box-shadow: inset 3px 0 0 #c2822e;
+}
+
+.printer-slots-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.printer-slot-card {
+  margin: 0;
+  padding: 1rem;
+  border: 2px solid var(--color-brown-light);
+  border-radius: 12px;
+  background: #fffaf2;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.printer-settings__footer {
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+@media (max-width: 720px) {
+  .printer-slots-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.printer-slot-card__title {
+  margin: 0 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--color-brown-dark);
+}
+
+.printer-slot-card .form-sublabel {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-brown);
+}
+
+.printer-slot-select {
+  width: 100%;
+  max-width: 100%;
+}
+
+.printer-configure-row {
+  margin-top: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+
 .printer-settings {
   display: flex;
   flex-direction: column;

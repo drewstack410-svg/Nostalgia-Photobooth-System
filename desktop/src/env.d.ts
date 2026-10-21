@@ -329,6 +329,12 @@ interface ElectronAPI {
     printerName: string,
   ) => Promise<{ success: boolean; error?: string; printerName?: string }>;
   toggleFullscreen: () => Promise<boolean>;
+  /** F — leave kiosk so Windows min/max/close show; F again returns to booth. */
+  toggleWindowed: () => Promise<boolean>;
+  minimizeWindow: () => Promise<boolean>;
+  /** Esc / F forwarded from the main process (works under kiosk). */
+  onEscapeHotkey: (callback: () => void) => () => void;
+  onFHotkey: (callback: () => void) => () => void;
   quitApp: () => Promise<void>;
   // Canon EDSDK API
   canonCheckAvailable: () => Promise<CanonAvailableResult>;
