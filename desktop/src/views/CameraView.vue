@@ -770,10 +770,10 @@ function isShootInProgress() {
   );
 }
 
-/** Esc during countdown / shutter / freeze — abort the shoot chain. */
+/** Esc during countdown / shutter / freeze — abort and reset to ready. */
 function cancelShoot() {
   if (!isShootInProgress()) return;
-  console.log("[Camera] Shoot cancelled (Esc)");
+  console.log("[Camera] Shoot cancelled (Esc) — resetting to start");
   shootCancelled = true;
   abortCanonShotPrep();
   cancelCountdownSleep();
@@ -781,12 +781,18 @@ function cancelShoot() {
   cancelHighlightLead();
   abortHighlightCapture();
   highlightRecording.value = false;
+  showFlash.value = false;
   isCountingDown.value = false;
   isCapturing.value = false;
   isReviewing.value = false;
   reviewStillUrl.value = "";
   countdownValue.value = 0;
+  freezeCountdown.value = store.shootingPreviewCountdownSeconds;
+  // Clear any shots already taken this run so the strip / counter
+  // go back to zero and Start can begin a fresh session.
+  store.resetSession();
   endSequence();
+  resetInactivityTimer();
   void unfreezeLivePreview();
 }
 

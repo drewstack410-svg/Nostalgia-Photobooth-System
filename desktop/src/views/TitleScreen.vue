@@ -12,8 +12,15 @@ const router = useRouter();
 const store = usePhotoboothStore();
 const eventsStore = useGalleryEventsStore();
 
+const bannerDismissed = ref(false);
+
 function endLaunchedEvent() {
   eventsStore.stopActiveEvent();
+  bannerDismissed.value = false;
+}
+
+function dismissEventBanner() {
+  bannerDismissed.value = true;
 }
 
 const badgeClickCount = ref(0);
@@ -171,7 +178,7 @@ onUnmounted(() => {
     <WelcomeStage @start="startPhotobooth" />
 
     <div
-      v-if="eventsStore.activeEvent"
+      v-if="eventsStore.activeEvent && !bannerDismissed"
       class="event-launch-banner"
       role="status"
     >
@@ -190,9 +197,9 @@ onUnmounted(() => {
       <button
         type="button"
         class="event-launch-banner__close"
-        aria-label="End live event"
-        title="End live event"
-        @click="endLaunchedEvent"
+        aria-label="Hide reminder"
+        title="Hide reminder"
+        @click="dismissEventBanner"
       >
         ×
       </button>

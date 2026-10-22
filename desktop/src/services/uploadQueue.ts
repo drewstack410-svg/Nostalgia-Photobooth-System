@@ -141,20 +141,35 @@ function stampStrips(sessionId: string, status: MediaUploadStatus, shareableUrl?
   });
 }
 
+/**
+ * Chromium's navigator.onLine is a hint only. On many Windows mini-PCs
+ * (NucBox and similar) it stays false with virtual NICs / NCSI even when
+ * the booth has a working WAN path — so we never treat it as definitive.
+ */
 export function isBrowserOffline(): boolean {
   return typeof navigator !== "undefined" && navigator.onLine === false;
 }
 
+export type CloudReadyReason =
+  | "ready"
+  | "not-configured"
+  | "unreachable"
+  | "timeout";
+
 export type UploadRetryResult = {
   ok: boolean;
   uploaded?: number;
+  /** True when the cloud could not be reached / is not set up. */
   noConnection?: boolean;
+  reason?: CloudReadyReason;
+  /** Raw detail from the R2 status probe (HTTP code, missing keys, …). */
+  detail?: string;
 };
 
-export async function cloudIsReady(timeoutMs = PING_TIMEOUT_MS): Promise<boolean> {
-  if (isBrowserOffline()) {
-    return false;
-  }
+export async function probeCloud(
+  timeoutMs = PING_TIMEOUT_MS,
+): Promise<{ ready: boolean; reason: CloudReadyReason; detail?: string }> {
+  // Always probe R2 — do not short-circuit on navigator.onLine.
   try {
     const status = await Promise.race([
       getR2Status(),
@@ -162,10 +177,32 @@ export async function cloudIsReady(timeoutMs = PING_TIMEOUT_MS): Promise<boolean
         setTimeout(() => reject(new Error("R2 ping timed out")), timeoutMs),
       ),
     ]);
-    return !!(status.configured && status.apiOk);
-  } catch {
-    return false;
+    if (!status.configured) {
+      return {
+        ready: false,
+        reason: "not-configured",
+        detail: status.error || status.missing?.join(", "),
+      };
+    }
+    if (status.apiOk) {
+      return { ready: true, reason: "ready" };
+    }
+    return {
+      ready: false,
+      reason: "unreachable",
+      detail: status.error || "Cloudflare R2 API check failed",
+    };
+  } catch (err) {
+    return {
+      ready: false,
+      reason: "timeout",
+      detail: err instanceof Error ? err.message : String(err),
+    };
   }
+}
+
+export async function cloudIsReady(timeoutMs = PING_TIMEOUT_MS): Promise<boolean> {
+  return (await probeCloud(timeoutMs)).ready;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -457,8 +494,14 @@ export async function retrySessionUpload(
     patchJob(sessionId, { status: "pending", error: undefined });
     stampStrips(sessionId, "pending");
   }
-  if (isBrowserOffline() || !(await cloudIsReady())) {
-    return { ok: false, noConnection: true };
+  const probe = await probeCloud();
+  if (!probe.ready) {
+    return {
+      ok: false,
+      noConnection: true,
+      reason: probe.reason,
+      detail: probe.detail,
+    };
   }
   const ok = await processSessionUpload(sessionId);
   return { ok };
@@ -471,14 +514,18 @@ export async function retryPendingUploads(): Promise<UploadRetryResult> {
       stampStrips(job.sessionId, "pending");
     }
   }
-  if (isBrowserOffline()) {
-    return { ok: false, uploaded: 0, noConnection: true };
-  }
   if (processing) return { ok: true, uploaded: 0 };
   const due = jobs.filter((j) => j.status === "pending" || j.status === "failed");
   if (!due.length) return { ok: true, uploaded: 0 };
-  if (!(await cloudIsReady())) {
-    return { ok: false, uploaded: 0, noConnection: true };
+  const probe = await probeCloud();
+  if (!probe.ready) {
+    return {
+      ok: false,
+      uploaded: 0,
+      noConnection: true,
+      reason: probe.reason,
+      detail: probe.detail,
+    };
   }
   processing = true;
   let uploaded = 0;

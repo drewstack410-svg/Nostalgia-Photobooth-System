@@ -14,12 +14,12 @@ import {
   cropDataUrlToHighlightedView,
 } from "@/utils/viewfinderCrop";
 import {
-  isBrowserOffline,
   jobForSession,
   onUploadQueueChange,
   pendingUploadCount,
   retryPendingUploads,
   retrySessionUpload,
+  type CloudReadyReason,
 } from "@/services/uploadQueue";
 
 interface GalleryPhoto {
@@ -951,9 +951,28 @@ function formatDate(date: Date) {
 
 const retryBusy = ref(false);
 const retryNotice = ref("");
-const NO_CONNECTION_MSG = "No internet connection.";
 const queuePending = ref(pendingUploadCount());
 let stopQueueWatch: (() => void) | null = null;
+
+function cloudFailureMessage(
+  reason?: CloudReadyReason,
+  detail?: string,
+): string {
+  const base = (() => {
+    switch (reason) {
+      case "not-configured":
+        return "Cloud storage is not configured on this booth (.env / R2 keys).";
+      case "timeout":
+        return "Cloud storage timed out — check firewall to *.r2.cloudflarestorage.com.";
+      case "unreachable":
+        return "Cannot reach Cloudflare R2 — check R2 keys on this booth.";
+      default:
+        return "Cannot reach Cloudflare R2 — check R2 keys on this booth.";
+    }
+  })();
+  const extra = (detail || "").trim();
+  return extra ? `${base} (${extra})` : base;
+}
 
 function sessionUploadStatus(photo: GalleryPhoto): MediaUploadStatus | "" {
   if (photo.isOriginal) return "";
@@ -980,18 +999,15 @@ const canRetryUploads = computed(
 async function retryUploads(sessionId?: string) {
   if (retryBusy.value) return;
   retryNotice.value = "";
-  if (isBrowserOffline()) {
-    retryNotice.value = NO_CONNECTION_MSG;
-    return;
-  }
   retryBusy.value = true;
   try {
     if (sessionId) {
       const result = await retrySessionUpload(sessionId);
       if (result.noConnection) {
-        retryNotice.value = NO_CONNECTION_MSG;
+        retryNotice.value = cloudFailureMessage(result.reason, result.detail);
       } else if (!result.ok) {
         console.warn("[Gallery] Retry upload failed for", sessionId);
+        retryNotice.value = "Upload failed — try again or check R2 credentials.";
       } else if (qrPhoto.value?.sessionId === sessionId) {
         const url = resolveShareUrl(qrPhoto.value);
         if (url) {
@@ -1002,7 +1018,9 @@ async function retryUploads(sessionId?: string) {
     } else {
       const result = await retryPendingUploads();
       if (result.noConnection) {
-        retryNotice.value = NO_CONNECTION_MSG;
+        retryNotice.value = cloudFailureMessage(result.reason, result.detail);
+      } else if (!result.ok) {
+        retryNotice.value = "Upload failed — try again or check R2 credentials.";
       }
     }
     queuePending.value = pendingUploadCount();
