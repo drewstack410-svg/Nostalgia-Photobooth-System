@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, onUnmounted } from "vue";
+import { onMounted, ref, onUnmounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import { useGalleryEventsStore } from "@/stores/galleryEvents";
@@ -8,20 +8,54 @@ import WelcomeStage from "@/components/WelcomeStage.vue";
 /** Once per app launch — send operator to Gallery to Launch an event. */
 const BOOT_EVENT_REDIRECT_KEY = "nostalgia-boot-event-redirected";
 
+/** How long the live-event reminder banner stays on the title screen. */
+const EVENT_BANNER_MS = 2000;
+
 const router = useRouter();
 const store = usePhotoboothStore();
 const eventsStore = useGalleryEventsStore();
 
 const bannerDismissed = ref(false);
+let bannerAutoHideTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function clearBannerAutoHide() {
+  if (bannerAutoHideTimeout) {
+    clearTimeout(bannerAutoHideTimeout);
+    bannerAutoHideTimeout = null;
+  }
+}
 
 function endLaunchedEvent() {
+  clearBannerAutoHide();
   eventsStore.stopActiveEvent();
   bannerDismissed.value = false;
 }
 
 function dismissEventBanner() {
+  clearBannerAutoHide();
   bannerDismissed.value = true;
 }
+
+function scheduleBannerAutoHide() {
+  clearBannerAutoHide();
+  bannerDismissed.value = false;
+  bannerAutoHideTimeout = setTimeout(() => {
+    bannerDismissed.value = true;
+    bannerAutoHideTimeout = null;
+  }, EVENT_BANNER_MS);
+}
+
+watch(
+  () => eventsStore.activeEvent?.id ?? null,
+  (id) => {
+    if (id) scheduleBannerAutoHide();
+    else {
+      clearBannerAutoHide();
+      bannerDismissed.value = false;
+    }
+  },
+  { immediate: true },
+);
 
 const badgeClickCount = ref(0);
 const badgeClickTimeout = ref<ReturnType<typeof setTimeout> | null>(null);
@@ -169,6 +203,7 @@ onUnmounted(() => {
   if (badgeClickTimeout.value) {
     clearTimeout(badgeClickTimeout.value);
   }
+  clearBannerAutoHide();
   window.removeEventListener("keydown", onAdminHotkey);
 });
 </script>
