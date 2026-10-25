@@ -427,14 +427,7 @@
       return;
     }
 
-    // Strips tab: still frame + play overlay using the SAME highlight-strip
-    // video (never a lone per-shot clip).
-    if (view.kind === "image" && framedStripUrl()) {
-      renderTemplateWithPlay(view);
-      return;
-    }
-
-    // image (Template): single <img>, preload so we can show a loading state
+    // Strips tab: still print only (video lives on the GIF tab).
     loadingEl.hidden = false;
     const img = document.createElement("img");
     img.className = "stage-img";
@@ -972,133 +965,6 @@
     lightboxEl.hidden = false;
     document.body.classList.add("hl-lightbox-open");
     lightboxCleanup = mountHighlightPlayer(lightboxStage, urls, startIndex);
-  }
-
-  function containFitBox(nw, nh, maxW, maxH) {
-    const scale = Math.min(maxW / nw, maxH / nh);
-    return { w: Math.max(1, nw * scale), h: Math.max(1, nh * scale) };
-  }
-
-  function sizeHighlightStrip(strip, nw, nh) {
-    const box = stageInner.getBoundingClientRect();
-    const fit = containFitBox(nw, nh, box.width, box.height);
-    strip.style.width = fit.w + "px";
-    strip.style.height = fit.h + "px";
-    strip.style.aspectRatio = nw + " / " + nh;
-  }
-
-  function renderTemplateWithPlay(view) {
-    loadingEl.hidden = true;
-    updateSaveLabel(view);
-    const urls = highlightUrls;
-    if (!urls.length) {
-      errorEl.hidden = false;
-      return;
-    }
-
-    const strip = document.createElement("div");
-    strip.className = "highlight-strip";
-
-    const playSvg =
-      '<svg viewBox="0 0 24 24" width="36" height="36" fill="currentColor"><polygon points="7,4 21,12 7,20"/></svg>';
-    const pauseSvg =
-      '<svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
-
-    const playBtn = document.createElement("button");
-    playBtn.type = "button";
-    playBtn.className = "template-play-btn";
-    playBtn.setAttribute("aria-label", "Play highlights");
-    playBtn.innerHTML = playSvg;
-
-    // Always play the framed strip MP4 — never vids[0] if that is a
-    // lone per-shot clip (that made Play look different from the strip).
-    const stripVideoUrl = framedStripUrl() || urls[0] || "";
-
-    const vid = document.createElement("video");
-    vid.className = "highlight-strip-video";
-    vid.src = stripVideoUrl;
-    bindR2SrcFallback(vid);
-    vid.muted = true;
-    vid.loop = true;
-    vid.playsInline = true;
-    vid.setAttribute("playsinline", "");
-    vid.setAttribute("webkit-playsinline", "");
-    vid.preload = "auto";
-    vid.setAttribute("controlslist", "nodownload");
-    vid.hidden = true;
-
-    let playing = false;
-
-    function setPlaying(on) {
-      playing = on;
-      strip.classList.toggle("is-playing", on);
-      playBtn.innerHTML = on ? pauseSvg : playSvg;
-      playBtn.setAttribute("aria-label", on ? "Pause" : "Play highlights");
-      vid.hidden = !on;
-      if (on) {
-        try {
-          vid.currentTime = 0;
-        } catch (_) {
-          /* ignore */
-        }
-        vid.play().catch(() => {});
-      } else {
-        vid.pause();
-        try {
-          vid.currentTime = 0;
-        } catch (_) {
-          /* ignore */
-        }
-      }
-    }
-
-    playBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      setPlaying(!playing);
-    });
-    vid.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (playing) setPlaying(false);
-    });
-
-    function watchStripSize(nw, nh) {
-      sizeHighlightStrip(strip, nw, nh);
-      if (typeof ResizeObserver === "undefined") return;
-      const ro = new ResizeObserver(() => sizeHighlightStrip(strip, nw, nh));
-      ro.observe(stageInner);
-      stripResizeCleanup = () => {
-        ro.disconnect();
-        setPlaying(false);
-      };
-    }
-
-    const frameUrl = view.url || (printId ? imageUrl(printId) : "");
-    if (frameUrl) {
-      loadingEl.hidden = false;
-      const frame = document.createElement("img");
-      frame.className = "highlight-strip-frame";
-      frame.alt = view.label || "Strips";
-      frame.onload = () => {
-        loadingEl.hidden = true;
-        watchStripSize(frame.naturalWidth, frame.naturalHeight);
-      };
-      frame.onerror = () => {
-        loadingEl.hidden = true;
-        const ar = printAspect || { w: 2, h: 3 };
-        watchStripSize(ar.w, ar.h);
-      };
-      frame.src = frameUrl;
-      bindR2SrcFallback(frame);
-      strip.appendChild(frame);
-    } else {
-      vid.addEventListener("loadedmetadata", () => {
-        watchStripSize(vid.videoWidth || 2, vid.videoHeight || 3);
-      });
-    }
-
-    strip.appendChild(vid);
-    strip.appendChild(playBtn);
-    stageInner.appendChild(strip);
   }
 
   function mountHighlightPlayer(host, urls, startIndex) {
