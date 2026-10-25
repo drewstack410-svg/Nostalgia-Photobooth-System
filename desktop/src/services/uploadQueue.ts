@@ -620,7 +620,7 @@ async function reconstructJobFromFolder(
       assets.push({
         kind: "highlight-strip",
         filename: name,
-        publicId: `nostalgia_${sessionTs}_highlight-strip.mp4`,
+        publicId: `nostalgia_${sessionTs}_hlstrip`,
         mime: "video/mp4",
       });
     } else if (/^highlight-\d+\./i.test(name)) {
@@ -628,7 +628,7 @@ async function reconstructJobFromFolder(
       assets.push({
         kind: "highlight-full",
         filename: name,
-        publicId: `nostalgia_${sessionTs}_highlight-${n}.mp4`,
+        publicId: `nostalgia_${sessionTs}_hl${n}`,
         mime: "video/mp4",
       });
     }

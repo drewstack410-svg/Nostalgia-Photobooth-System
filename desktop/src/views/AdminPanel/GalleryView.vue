@@ -22,6 +22,10 @@ import {
   retryUploadFromFolder,
   type CloudReadyReason,
 } from "@/services/uploadQueue";
+import { composeStripVideo, type StripSlot } from "@/utils/composeStripVideo";
+import { cellCaptureIndex, templateShotCount } from "@/utils/photoLayoutFile";
+import { isPlayableMp4, remuxToGuestMp4 } from "@/utils/guestMp4";
+import { mediaUrlToBytes, objectUrlFromBlob, revokeMediaUrl } from "@/utils/mediaBytes";
 
 interface GalleryPhoto {
   id: string;
@@ -589,6 +593,7 @@ function openPhoto(photo: GalleryPhoto) {
 
 function closePhoto() {
   selectedPhoto.value = null;
+  fixVideoNotice.value = "";
 }
 
 // ── Re-show a session's QR ─────────────────────────────────────────
@@ -850,6 +855,195 @@ async function applyQrUrl(photo: GalleryPhoto, url: string) {
     console.error("[Gallery] Failed to build QR:", err);
   } finally {
     qrBusy.value = false;
+  }
+}
+
+const fixVideoBusy = ref(false);
+const fixVideoNotice = ref("");
+
+async function readSessionDiskDataUrl(relOrAbs: string): Promise<string | null> {
+  if (!window.electronAPI?.readSessionFile) return null;
+  try {
+    const r = await window.electronAPI.readSessionFile(relOrAbs);
+    if (!r?.success || !r.bytes) return null;
+    const bytes =
+      r.bytes instanceof Uint8Array
+        ? r.bytes
+        : new Uint8Array(r.bytes as ArrayBuffer);
+    const mime = r.mime || "application/octet-stream";
+    if (mime.startsWith("video/")) {
+      const blob = new Blob([bytes], { type: mime });
+      return objectUrlFromBlob(blob);
+    }
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(
+        null,
+        Array.from(bytes.subarray(i, i + chunk)),
+      );
+    }
+    return `data:${mime};base64,${btoa(binary)}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Rebuild highlight-strip.mp4 for a session from disk stills/clips so the
+ * guest GIF matches the printed strip, then re-upload to R2.
+ */
+async function fixSessionVideo(photo: GalleryPhoto) {
+  if (fixVideoBusy.value) return;
+  fixVideoNotice.value = "";
+  fixVideoBusy.value = true;
+  try {
+    const folder = sessionFolderRelFromPhoto(photo);
+    if (!folder || !window.electronAPI?.listSessionFiles) {
+      fixVideoNotice.value = "Can't find this session folder on disk.";
+      return;
+    }
+    const files = await window.electronAPI.listSessionFiles(folder);
+    if (!files?.length) {
+      fixVideoNotice.value = "Session folder is empty.";
+      return;
+    }
+
+    const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
+    const stripFile = byName.get("strip.png");
+    if (!stripFile) {
+      fixVideoNotice.value = "No strip.png in this session — can't rebuild video.";
+      return;
+    }
+
+    const stillUrls: string[] = [];
+    const clipUrls: string[] = [];
+    for (let i = 1; i <= 12; i++) {
+      const printName = `photo-${i}-print.jpg`;
+      const photoName = `photo-${i}.jpg`;
+      const clipName = `highlight-${i}.mp4`;
+      const stillFile = byName.get(printName) || byName.get(photoName);
+      if (!stillFile && !byName.has(clipName)) {
+        if (i > 1) break;
+      }
+      const still = stillFile
+        ? await readSessionDiskDataUrl(stillFile.path || `${folder}/${stillFile.name}`)
+        : "";
+      if (!still && !byName.has(printName) && !byName.has(photoName) && !byName.has(clipName)) {
+        break;
+      }
+      stillUrls.push(still || "");
+      const clipFile = byName.get(clipName);
+      const clip = clipFile
+        ? await readSessionDiskDataUrl(clipFile.path || `${folder}/${clipName}`)
+        : "";
+      clipUrls.push(clip || "");
+    }
+
+    if (!stillUrls.some(Boolean) && !clipUrls.some(Boolean)) {
+      fixVideoNotice.value = "No photos/clips found to rebuild the strip video.";
+      return;
+    }
+
+    const frameDataUrl =
+      (await readSessionDiskDataUrl(stripFile.path || `${folder}/strip.png`)) ||
+      "";
+    if (!frameDataUrl) {
+      fixVideoNotice.value = "Couldn't read strip.png.";
+      return;
+    }
+
+    let slots: StripSlot[] = [];
+    const tplId = photo.templateId;
+    const tpl = tplId
+      ? store.templates.find((t) => t.id === tplId)
+      : undefined;
+    if (tpl?.cells?.length) {
+      const shotCount = templateShotCount(tpl);
+      slots = tpl.cells.map((c, i) => ({
+        x: c.x,
+        y: c.y,
+        w: c.w,
+        h: c.h,
+        rotation: c.rotation || 0,
+        shot: cellCaptureIndex(c, i, shotCount),
+      }));
+    }
+    if (!slots.length) {
+      // Fallback: one full-bleed window per still (vertical stack).
+      const n = Math.max(1, stillUrls.filter(Boolean).length);
+      slots = stillUrls.map((_, i) => ({
+        x: 0.08,
+        y: 0.04 + (i / n) * 0.92,
+        w: 0.84,
+        h: 0.92 / n,
+        shot: i,
+      })).filter((_, i) => stillUrls[i] || clipUrls[i]);
+    }
+
+    let overlayDataUrl: string | undefined;
+    if (tpl?.frameImageUrl) overlayDataUrl = tpl.frameImageUrl;
+
+    const composed = await composeStripVideo({
+      frameDataUrl,
+      overlayDataUrl,
+      clipDataUrls: clipUrls,
+      stillDataUrls: stillUrls,
+      slots,
+      cropBarPercent: 0,
+    });
+    // Revoke blob: clip URLs
+    for (const u of clipUrls) {
+      if (u.startsWith("blob:")) revokeMediaUrl(u);
+    }
+    if (!composed) {
+      fixVideoNotice.value = "Couldn't compose strip video.";
+      return;
+    }
+
+    const safeUrl = (await remuxToGuestMp4(composed)) || composed;
+    const parsed = await mediaUrlToBytes(safeUrl);
+    if (safeUrl !== composed) revokeMediaUrl(safeUrl);
+    if (composed.startsWith("blob:")) revokeMediaUrl(composed);
+    if (!parsed || !isPlayableMp4(parsed.bytes)) {
+      fixVideoNotice.value = "Rebuilt video isn't a playable MP4.";
+      return;
+    }
+
+    const saved = await window.electronAPI.saveSessionBytes({
+      bytes: parsed.bytes,
+      filename: `${folder}/highlight-strip.mp4`,
+    });
+    if (!saved?.success) {
+      fixVideoNotice.value = saved?.error || "Failed to save highlight-strip.mp4.";
+      return;
+    }
+
+    const result = await retryUploadFromFolder({
+      sessionId: photo.sessionId,
+      folder,
+      templateId: photo.templateId,
+    });
+    if (result.noConnection) {
+      fixVideoNotice.value = cloudFailureMessage(result.reason, result.detail);
+      return;
+    }
+    if (!result.ok) {
+      fixVideoNotice.value =
+        "Video saved locally but re-upload failed — tap Reupload on Show QR.";
+      return;
+    }
+    if (result.shareableUrl) {
+      photo.shareUrl = result.shareableUrl;
+      if (result.sessionId) photo.sessionId = result.sessionId;
+    }
+    fixVideoNotice.value = "Strip video fixed and uploaded.";
+  } catch (err) {
+    console.error("[Gallery] Fix video failed:", err);
+    fixVideoNotice.value =
+      err instanceof Error ? err.message : "Fix video failed.";
+  } finally {
+    fixVideoBusy.value = false;
   }
 }
 
@@ -1934,11 +2128,11 @@ onUnmounted(() => {
         </div>
 
         <p
-          v-if="retryNotice"
+          v-if="retryNotice || fixVideoNotice"
           class="gallery-retry-notice gallery-retry-notice--modal"
           role="status"
         >
-          {{ retryNotice }}
+          {{ fixVideoNotice || retryNotice }}
         </p>
         <div class="modal-actions">
           <button
@@ -1956,6 +2150,15 @@ onUnmounted(() => {
             @click="showQr(selectedPhoto)"
           >
             Show QR
+          </button>
+          <button
+            v-if="!selectedPhoto.isOriginal && sessionFolderRelFromPhoto(selectedPhoto)"
+            type="button"
+            class="btn btn-reprint"
+            :disabled="fixVideoBusy"
+            @click="fixSessionVideo(selectedPhoto)"
+          >
+            {{ fixVideoBusy ? "Fixing video…" : "Fix video" }}
           </button>
           <button
             v-if="sessionNeedsRetry(selectedPhoto)"

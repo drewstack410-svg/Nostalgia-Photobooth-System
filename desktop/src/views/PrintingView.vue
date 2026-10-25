@@ -1422,10 +1422,16 @@ async function saveComposite() {
         });
       }
       for (const item of preparedClips) {
+        // Avoid "highlight-strip" inside the object key — some CDNs /
+        // proxies mangled that segment and guests got 404s on GIF.
+        const idStem =
+          item.kind === "strip"
+            ? `nostalgia_${sessionTs}_hlstrip`
+            : `nostalgia_${sessionTs}_hl${item.name.replace(/^highlight-/, "")}`;
         assets.push({
           kind: item.kind === "strip" ? "highlight-strip" : "highlight-full",
           filename: `${item.name}.${item.ext}`,
-          publicId: `nostalgia_${sessionTs}_${item.name}.mp4`,
+          publicId: idStem,
           mime: "video/mp4",
           bytes: item.bytes,
         });
