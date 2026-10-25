@@ -234,9 +234,10 @@ export async function composeStripVideo(opts: {
   /** Print stills — GIF crop follows each still's aspect, same as Strips. */
   stillDataUrls?: string[];
 }): Promise<string | null> {
-  const clips = opts.clipDataUrls.filter(Boolean);
-  if (!opts.frameDataUrl || !clips.length) {
-    console.warn("[StripVideo] Missing frame or clips");
+  const hasClips = (opts.clipDataUrls || []).some(Boolean);
+  const hasStills = (opts.stillDataUrls || []).some(Boolean);
+  if (!opts.frameDataUrl || (!hasClips && !hasStills)) {
+    console.warn("[StripVideo] Missing frame or media");
     return null;
   }
   if (!opts.slots.length) {
@@ -276,26 +277,51 @@ export async function composeStripVideo(opts: {
     return null;
   }
 
-  let videos: HTMLVideoElement[] = [];
+  // Keep clip URLs aligned by shot index (holes allowed). Never compact
+  // the array — that was scrambling poses vs the printed strip.
+  const clipUrls = (opts.clipDataUrls || []).slice();
+  const stillUrls = (opts.stillDataUrls || []).slice();
+  const mediaCount = Math.max(clipUrls.length, stillUrls.length, 1);
+
+  let videos: Array<HTMLVideoElement | null> = [];
   try {
-    videos = await Promise.all(clips.map(loadVideo));
+    videos = await Promise.all(
+      Array.from({ length: mediaCount }, async (_, i) => {
+        const url = clipUrls[i];
+        if (!url) return null;
+        try {
+          return await loadVideo(url);
+        } catch {
+          console.warn(`[StripVideo] Clip ${i + 1} failed to load — using still`);
+          return null;
+        }
+      }),
+    );
   } catch (e) {
     console.warn("[StripVideo] Clip load failed:", errText(e));
     host.remove();
     return null;
   }
   videos.forEach((v) => {
+    if (!v) return;
     v.width = 8;
     v.height = 8;
     host.appendChild(v);
   });
 
-  const stillUrls = (opts.stillDataUrls || []).filter(Boolean);
-  const stills = stillUrls.length
-    ? await Promise.all(stillUrls.map(loadImage)).catch(() => [] as HTMLImageElement[])
-    : [];
+  const stills = await Promise.all(
+    Array.from({ length: mediaCount }, async (_, i) => {
+      const url = stillUrls[i];
+      if (!url) return null;
+      try {
+        return await loadImage(url);
+      } catch {
+        return null;
+      }
+    }),
+  );
   const stillAspect = (i: number) => {
-    const img = stills.length ? stills[i % stills.length] : null;
+    const img = stills[i] || null;
     const sw = img?.naturalWidth || 0;
     const sh = img?.naturalHeight || 0;
     return sw > 0 && sh > 0 ? sw / sh : 0;
@@ -303,17 +329,25 @@ export async function composeStripVideo(opts: {
 
   const slots = opts.slots;
   const useOverlay = !!overlay;
+  const shotMedia = (shot: number) => {
+    const v = videos[shot] || null;
+    if (v) return { media: v as CanvasImageSource, kind: "video" as const, shot };
+    const img = stills[shot] || null;
+    if (img) return { media: img as CanvasImageSource, kind: "still" as const, shot };
+    return null;
+  };
   const paint = () => {
     ctx.clearRect(0, 0, width, height);
     if (!useOverlay) {
       ctx.drawImage(frame, 0, 0, width, height);
     }
     slots.forEach((slot, i) => {
-      const clipIndex =
-        typeof slot.shot === "number" && slot.shot >= 0
-          ? slot.shot % videos.length
-          : i % videos.length;
-      const v = videos[clipIndex];
+      // Same shot mapping as the printed strip — never `% clips.length`
+      // (that remapped missing clips onto the wrong pose).
+      const shot =
+        typeof slot.shot === "number" && slot.shot >= 0 ? slot.shot : i;
+      const picked = shotMedia(shot);
+      if (!picked) return;
       const x = slot.x * width;
       const y = slot.y * height;
       const w = slot.w * width;
@@ -329,13 +363,13 @@ export async function composeStripVideo(opts: {
       ctx.clip();
       drawCover(
         ctx,
-        v,
+        picked.media,
         x,
         y,
         w,
         h,
-        stills.length ? 0 : (opts.cropBarPercent ?? 0),
-        stillAspect(clipIndex),
+        picked.kind === "still" ? (opts.cropBarPercent ?? 0) : stills.some(Boolean) ? 0 : (opts.cropBarPercent ?? 0),
+        picked.kind === "video" ? stillAspect(shot) : undefined,
       );
       ctx.restore();
     });
@@ -343,18 +377,20 @@ export async function composeStripVideo(opts: {
     if (useOverlay) fillGalleryBackdrop(ctx, width, height);
   };
 
+  const playable = videos.filter((v): v is HTMLVideoElement => !!v);
   const durationMs = Math.min(
     MAX_MS,
     Math.max(
       4000,
-      ...videos.map((v) =>
+      ...playable.map((v) =>
         isFinite(v.duration) && v.duration > 0 ? v.duration * 1000 : 15000,
       ),
+      stills.some(Boolean) && !playable.length ? 6000 : 0,
     ),
   );
 
   await Promise.all(
-    videos.map((v) => {
+    playable.map((v) => {
       try {
         v.currentTime = 0;
       } catch {
@@ -382,7 +418,7 @@ export async function composeStripVideo(opts: {
     }
   }
 
-  videos.forEach((v) => {
+  playable.forEach((v) => {
     v.pause();
     v.removeAttribute("src");
     v.load();
@@ -437,10 +473,9 @@ export async function composeStripStill(opts: {
   }
   opts.slots.forEach((slot, i) => {
     const shot =
-      typeof slot.shot === "number" && slot.shot >= 0
-        ? slot.shot % images.length
-        : i % images.length;
-    const img = images[shot];
+      typeof slot.shot === "number" && slot.shot >= 0 ? slot.shot : i;
+    const img = images[shot] || images[i % images.length];
+    if (!img) return;
     const x = slot.x * width;
     const y = slot.y * height;
     const w = slot.w * width;

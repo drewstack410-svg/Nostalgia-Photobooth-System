@@ -19,6 +19,7 @@ import {
   pendingUploadCount,
   retryPendingUploads,
   retrySessionUpload,
+  retryUploadFromFolder,
   type CloudReadyReason,
 } from "@/services/uploadQueue";
 
@@ -99,6 +100,38 @@ function looksLikeOriginalFile(nameOrPath?: string): boolean {
 
 function normalizePath(filePath?: string): string {
   return (filePath || "").replace(/\\/g, "/").toLowerCase();
+}
+
+/** Match Electron main's session folder naming for Events/<name>/…. */
+function sanitizeEventFolderName(name: string): string {
+  const cleaned = String(name || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[. ]+$/g, "")
+    .slice(0, 60);
+  return cleaned || "Event";
+}
+
+/**
+ * A photo belongs to an event if it was tagged in photoIds OR it was
+ * saved under that event's disk folder (Events/<name>/…). Disk is the
+ * durable index — photoIds alone disappear when recentStrips rotate.
+ */
+function photoBelongsToEvent(
+  photo: GalleryPhoto,
+  event: { name: string; photoIds: string[] },
+): boolean {
+  const ids = event.photoIds;
+  if (ids.includes(photo.id)) return true;
+  if (photo.path && ids.includes(photo.path)) return true;
+  const folder = sanitizeEventFolderName(event.name).toLowerCase();
+  const norm = normalizePath(photo.path);
+  if (!norm || !folder) return false;
+  return (
+    norm.includes(`/events/${folder}/`) ||
+    norm.startsWith(`events/${folder}/`)
+  );
 }
 
 function fileNameOf(filePath?: string): string {
@@ -255,16 +288,14 @@ const catalogPhotos = computed(() => {
 const displayPhotos = computed(() => {
   const event = eventsStore.selectedEvent;
   if (!event) return [];
-  const ids = new Set(event.photoIds);
-  return catalogPhotos.value.filter((p) => ids.has(p.id));
+  return catalogPhotos.value.filter((p) => photoBelongsToEvent(p, event));
 });
 
 /** Full gallery — only while picking existing shots to add. */
 const addablePhotos = computed(() => {
   const event = eventsStore.selectedEvent;
   if (!event) return [];
-  const already = new Set(event.photoIds);
-  return catalogPhotos.value.filter((p) => !already.has(p.id));
+  return catalogPhotos.value.filter((p) => !photoBelongsToEvent(p, event));
 });
 
 const gridPhotos = computed(() =>
@@ -450,8 +481,7 @@ function applyRemoveFromEvent() {
 function eventCountLabel(eventId: string): number {
   const event = eventsStore.events.find((e) => e.id === eventId);
   if (!event) return 0;
-  const ids = new Set(event.photoIds);
-  return catalogPhotos.value.filter((p) => ids.has(p.id)).length;
+  return catalogPhotos.value.filter((p) => photoBelongsToEvent(p, event)).length;
 }
 
 function launchSelectedEvent() {
@@ -539,6 +569,7 @@ function openSession(session: GallerySessionCard) {
   if (selectionMode.value) return;
   selectedSession.value = session;
   selectedPhoto.value = null;
+  void ensureSessionPreviews(session.photos);
 }
 
 function closeSession() {
@@ -549,6 +580,11 @@ function closeSession() {
 function openPhoto(photo: GalleryPhoto) {
   if (selectionMode.value) return;
   selectedPhoto.value = photo;
+  if (!photo.src && photo.path) void loadPreviewForPath(photo.path).then((src) => {
+    if (src && selectedPhoto.value?.id === photo.id) {
+      selectedPhoto.value = { ...photo, src };
+    }
+  });
 }
 
 function closePhoto() {
@@ -568,6 +604,61 @@ function sessionFolderOf(filePath?: string): string {
   return filePath.replace(/\\/g, "/").replace(/\/[^/]+$/, "").toLowerCase();
 }
 
+/** Absolute/normalized folder path → { sessionId, templateId } from session.json. */
+const sessionMetaByFolder = ref<
+  Record<string, { sessionId?: string; templateId?: string }>
+>({});
+
+async function readSessionMeta(
+  folderAbsPath: string,
+): Promise<{ sessionId?: string; templateId?: string } | null> {
+  const parent = folderAbsPath.replace(/\\/g, "/").replace(/\/$/, "");
+  const folderKey = parent.toLowerCase();
+  if (!folderKey || !window.electronAPI?.readSessionFile) return null;
+  if (sessionMetaByFolder.value[folderKey]) {
+    return sessionMetaByFolder.value[folderKey];
+  }
+  try {
+    const r = await window.electronAPI.readSessionFile(`${parent}/session.json`);
+    if (!r?.success || !r.bytes) return null;
+    const bytes =
+      r.bytes instanceof Uint8Array
+        ? r.bytes
+        : new Uint8Array(r.bytes as ArrayBuffer);
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
+      sessionId?: string;
+      templateId?: string | null;
+    };
+    const meta = {
+      sessionId: parsed.sessionId || undefined,
+      templateId: parsed.templateId || undefined,
+    };
+    sessionMetaByFolder.value = {
+      ...sessionMetaByFolder.value,
+      [folderKey]: meta,
+    };
+    return meta;
+  } catch {
+    return null;
+  }
+}
+
+async function loadPreviewForPath(filePath: string): Promise<string> {
+  const key = normalizePath(filePath);
+  if (!key) return "";
+  if (localPreviewByPath.value[key]) return localPreviewByPath.value[key]!;
+  if (!window.electronAPI?.readPhoto) return "";
+  try {
+    const raw = await window.electronAPI.readPhoto(filePath);
+    if (!raw) return "";
+    const src = await makePreviewDataUrl(raw);
+    localPreviewByPath.value = { ...localPreviewByPath.value, [key]: src };
+    return src;
+  } catch {
+    return "";
+  }
+}
+
 async function hydrateSessionFromDisk() {
   if (!window.electronAPI) return;
   try {
@@ -577,49 +668,100 @@ async function hydrateSessionFromDisk() {
     );
     const previews: Record<string, string> = { ...localPreviewByPath.value };
     const extras: GalleryPhoto[] = [];
+    const foldersNeedingMeta = new Set<string>();
+    /** One thumb preview per session folder (strip.png preferred). */
+    const thumbPathByFolder = new Map<string, string>();
 
     for (const photo of listed) {
       if (!isSessionDiskFile(photo.path)) continue;
       const key = normalizePath(photo.path);
       const name = fileNameOf(photo.name || photo.path);
-      if (!key || isPrintCropName(name)) continue;
+      if (!key || isPrintCropName(name) || /^session\.json$/i.test(name)) continue;
 
       const alreadyListed = known.has(key);
       const strip = alreadyListed
         ? store.recentStrips.find((s) => normalizePath(s.path) === key)
         : undefined;
-      if (alreadyListed && strip?.dataUrl) continue;
+      // Still need a disk row when recentStrips kept the path but dropped
+      // the preview (slim localStorage). Don't skip registration.
+      if (alreadyListed && strip?.dataUrl) {
+        // Prefer strip.png as the session card thumb.
+        const folder = sessionFolderOf(photo.path);
+        if (folder && /^strip\.png$/i.test(name) && !thumbPathByFolder.has(folder)) {
+          thumbPathByFolder.set(folder, photo.path);
+        }
+        continue;
+      }
 
-      const raw = await window.electronAPI.readPhoto(photo.path);
-      if (!raw) continue;
-      const src = await makePreviewDataUrl(raw);
-      previews[key] = src;
-
-      if (alreadyListed) continue;
+      if (alreadyListed) {
+        // Refresh missing preview later via thumb pass.
+        const folder = sessionFolderOf(photo.path);
+        if (folder && /^strip\.png$/i.test(name)) {
+          thumbPathByFolder.set(folder, photo.path);
+        }
+        continue;
+      }
 
       const folder = sessionFolderOf(photo.path);
+      if (folder) foldersNeedingMeta.add(folder);
+      const isComposite = /^strip\.png$/i.test(name);
+      if (folder && isComposite) thumbPathByFolder.set(folder, photo.path);
+      else if (folder && !thumbPathByFolder.has(folder) && !looksLikeOriginalFile(name)) {
+        thumbPathByFolder.set(folder, photo.path);
+      }
+
       const sib = store.recentStrips.find(
         (s) => normalizePath(s.path) === key || sessionFolderOf(s.path) === folder,
       );
+      const diskMeta = folder ? sessionMetaByFolder.value[folder] : undefined;
       extras.push({
         id: photo.path,
-        src,
+        src: previews[key] || "",
         name: looksLikeOriginalFile(name)
           ? name.replace(/-original/i, " (original)")
-          : /^strip\.png$/i.test(name)
+          : isComposite
             ? "Printed strip"
             : name,
         timestamp: new Date(photo.created),
         path: photo.path,
         isLocal: true,
-        isComposite: /^strip\.png$/i.test(name),
+        isComposite,
         isOriginal: looksLikeOriginalFile(name),
-        sessionId: sib?.sessionId,
-        templateId: sib?.templateId,
+        sessionId: sib?.sessionId || diskMeta?.sessionId,
+        templateId: sib?.templateId || diskMeta?.templateId,
         sessionIndex: sessionIndexFromName(name),
         shareUrl: sib?.shareableUrl || "",
       });
       known.add(key);
+    }
+
+    // Load only one thumb image per session for the browse grid — full
+    // previews load when the operator opens that session.
+    for (const [, thumbPath] of thumbPathByFolder) {
+      const key = normalizePath(thumbPath);
+      if (previews[key]) continue;
+      const raw = await window.electronAPI.readPhoto(thumbPath);
+      if (!raw) continue;
+      const src = await makePreviewDataUrl(raw);
+      previews[key] = src;
+    }
+    for (const p of extras) {
+      const key = normalizePath(p.path);
+      if (key && previews[key]) p.src = previews[key]!;
+    }
+
+    // Load session.json for every folder we saw, then backfill extras.
+    for (const folder of foldersNeedingMeta) {
+      const sample = extras.find((p) => sessionFolderOf(p.path) === folder);
+      if (!sample?.path) continue;
+      const parent = sample.path.replace(/[/\\][^/\\]+$/, "");
+      const meta = await readSessionMeta(parent);
+      if (!meta) continue;
+      for (const p of extras) {
+        if (sessionFolderOf(p.path) !== folder) continue;
+        if (!p.sessionId && meta.sessionId) p.sessionId = meta.sessionId;
+        if (!p.templateId && meta.templateId) p.templateId = meta.templateId;
+      }
     }
 
     localPreviewByPath.value = previews;
@@ -627,6 +769,28 @@ async function hydrateSessionFromDisk() {
   } catch (err) {
     console.error("Failed to hydrate session photos from disk:", err);
   }
+}
+
+async function ensureSessionPreviews(photos: GalleryPhoto[]) {
+  let loaded = false;
+  for (const photo of photos) {
+    if (photo.src || !photo.path) continue;
+    const src = await loadPreviewForPath(photo.path);
+    if (!src) continue;
+    loaded = true;
+    const disk = diskSessionPhotos.value.find((p) => p.id === photo.id);
+    if (disk) disk.src = src;
+  }
+  if (!loaded || !selectedSession.value) return;
+  // Refresh the open dialog with newly loaded thumbs (computed cards
+  // are plain objects — mutate + replace so Vue re-renders).
+  selectedSession.value = {
+    ...selectedSession.value,
+    photos: selectedSession.value.photos.map((p) => ({
+      ...p,
+      src: localPreviewByPath.value[normalizePath(p.path)] || p.src,
+    })),
+  };
 }
 
 function resolveShareUrl(photo: GalleryPhoto): string {
@@ -665,12 +829,20 @@ async function encodeQr(url: string): Promise<string> {
   }
 }
 
-async function showQr(photo: GalleryPhoto) {
-  qrPhoto.value = photo;
-  qrDataUrl.value = "";
-  const url = resolveShareUrl(photo);
-  if (url && !photo.shareUrl) photo.shareUrl = url;
-  if (!url) return;
+function sessionFolderRelFromPhoto(photo: GalleryPhoto): string | null {
+  if (!photo.path) return null;
+  const norm = photo.path.replace(/\\/g, "/");
+  const m = norm.match(
+    /((?:Events\/[^/]+\/)?\d{2}-\d{2}-\d{2}\/Session \d+)/i,
+  );
+  return m ? m[1] : null;
+}
+
+async function applyQrUrl(photo: GalleryPhoto, url: string) {
+  photo.shareUrl = url;
+  if (qrPhoto.value && qrPhoto.value.id === photo.id) {
+    qrPhoto.value = { ...qrPhoto.value, shareUrl: url, sessionId: photo.sessionId || qrPhoto.value.sessionId };
+  }
   qrBusy.value = true;
   try {
     qrDataUrl.value = await encodeQr(url);
@@ -681,9 +853,86 @@ async function showQr(photo: GalleryPhoto) {
   }
 }
 
+async function reuploadForQrPhoto(photo: GalleryPhoto): Promise<boolean> {
+  retryNotice.value = "";
+  retryBusy.value = true;
+  try {
+    const folder = sessionFolderRelFromPhoto(photo);
+    const result = folder
+      ? await retryUploadFromFolder({
+          sessionId: photo.sessionId,
+          folder,
+          templateId: photo.templateId,
+        })
+      : photo.sessionId
+        ? await retrySessionUpload(photo.sessionId)
+        : null;
+
+    if (!result) {
+      retryNotice.value =
+        "Can't find this session on disk — open a photo from the Session folder.";
+      return false;
+    }
+
+    if (result.sessionId && !photo.sessionId) {
+      photo.sessionId = result.sessionId;
+      if (qrPhoto.value) qrPhoto.value.sessionId = result.sessionId;
+    }
+
+    if (result.noConnection) {
+      retryNotice.value = cloudFailureMessage(result.reason, result.detail);
+      return false;
+    }
+    if (!result.ok) {
+      retryNotice.value = "Upload failed — try Reupload again or check R2.";
+      return false;
+    }
+
+    const url =
+      result.shareableUrl ||
+      resolveShareUrl(photo) ||
+      (result.sessionId
+        ? store.recentStrips.find(
+            (s) => s.sessionId === result.sessionId && s.shareableUrl,
+          )?.shareableUrl
+        : "") ||
+      "";
+    if (url) {
+      await applyQrUrl(photo, url);
+      retryNotice.value = "";
+      return true;
+    }
+    retryNotice.value =
+      "Upload finished but no gallery link yet — tap Reupload once more.";
+    return false;
+  } finally {
+    retryBusy.value = false;
+    queuePending.value = pendingUploadCount();
+  }
+}
+
+async function showQr(photo: GalleryPhoto) {
+  qrPhoto.value = { ...photo };
+  qrDataUrl.value = "";
+  retryNotice.value = "";
+  const url = resolveShareUrl(photo);
+  if (url) {
+    await applyQrUrl(photo, url);
+    return;
+  }
+  // No link yet — auto reupload, then show QR if it succeeds.
+  qrBusy.value = true;
+  try {
+    await reuploadForQrPhoto(photo);
+  } finally {
+    qrBusy.value = false;
+  }
+}
+
 function closeQr() {
   qrPhoto.value = null;
   qrDataUrl.value = "";
+  retryNotice.value = "";
 }
 
 function startSelectionMode(mode: "reprint" | "delete") {
@@ -756,25 +1005,132 @@ function decrementReprintCount() {
 }
 
 function getSelectedPhotos(): GalleryPhoto[] {
-  return displayPhotos.value.filter((p) => selectedIds.value.has(p.id));
+  const ids = selectedIds.value;
+  if (ids.size === 0) return [];
+  const pools = [
+    selectedSession.value?.photos ?? [],
+    displayPhotos.value,
+    allPhotos.value,
+  ];
+  const found: GalleryPhoto[] = [];
+  const seen = new Set<string>();
+  for (const pool of pools) {
+    for (const p of pool) {
+      if (!ids.has(p.id) || seen.has(p.id)) continue;
+      seen.add(p.id);
+      found.push(p);
+    }
+  }
+  return found;
+}
+
+async function resolveReprintSeed(
+  photos: GalleryPhoto[],
+): Promise<GalleryPhoto | null> {
+  const direct = photos.find((p) => p.sessionId && p.templateId);
+  if (direct) return direct;
+
+  const anchor = photos[0] || selectedSession.value?.photos[0];
+  if (!anchor) return null;
+
+  const folder = sessionFolderOf(anchor.path);
+  const pool = [
+    ...(selectedSession.value?.photos ?? []),
+    ...allPhotos.value,
+    ...diskSessionPhotos.value,
+  ];
+
+  const sibling = pool.find(
+    (p) =>
+      p.sessionId &&
+      p.templateId &&
+      ((anchor.sessionId && p.sessionId === anchor.sessionId) ||
+        (folder && sessionFolderOf(p.path) === folder)),
+  );
+  if (sibling) return sibling;
+
+  // Disk session.json (written on save) for sessions older than this
+  // code path still works once present; for current folders load now.
+  if (anchor.path) {
+    const parent = anchor.path.replace(/[/\\][^/\\]+$/, "");
+    const meta = await readSessionMeta(parent);
+    if (meta?.templateId) {
+      return {
+        ...anchor,
+        sessionId: meta.sessionId || anchor.sessionId || `disk_${folder}`,
+        templateId: meta.templateId,
+      };
+    }
+  }
+
+  // recentStrips match by folder even when the selected tile lacked ids.
+  if (folder) {
+    const strip = store.recentStrips.find(
+      (s) => s.templateId && sessionFolderOf(s.path) === folder,
+    );
+    if (strip) {
+      return {
+        ...anchor,
+        sessionId: strip.sessionId || anchor.sessionId || `disk_${folder}`,
+        templateId: strip.templateId,
+      };
+    }
+  }
+
+  return null;
+}
+
+function findStripPathForFolder(folder: string): string | undefined {
+  if (!folder) return undefined;
+  const pool = [
+    ...(selectedSession.value?.photos ?? []),
+    ...allPhotos.value,
+    ...diskSessionPhotos.value,
+  ];
+  const composite = pool.find(
+    (p) => p.isComposite && sessionFolderOf(p.path) === folder && p.path,
+  );
+  if (composite?.path) return composite.path;
+  const any = pool.find((p) => sessionFolderOf(p.path) === folder && p.path);
+  if (!any?.path) return undefined;
+  return any.path.replace(/[/\\][^/\\]+$/, "") + "/strip.png";
 }
 
 async function confirmReprint() {
   const photos = getSelectedPhotos();
   const count = reprintCount.value;
 
-  // A real reprint rebuilds the templated print sheet from the
-  // ORIGINAL session captures and sends it to the printer — it must
-  // match a fresh print exactly. That requires the session metadata
-  // (sessionId + templateId) carried on recent strips, so reprint
-  // works from the "Session" view. Raw "Saved"-tab files don't have
-  // the template they were shot with, so they can't be re-framed.
-  const seed = photos.find((p) => p.sessionId && p.templateId);
-  if (!seed) {
+  if (photos.length === 0 && !selectedSession.value) {
+    alert("Select a photo to reprint first.");
+    return;
+  }
+
+  // Rebuild from session captures when we can resolve templateId.
+  // Falls back to printing the saved strip.png when metadata is gone
+  // (localStorage quota / old sessions without session.json).
+  const seed = await resolveReprintSeed(
+    photos.length ? photos : selectedSession.value?.photos || [],
+  );
+  const folder =
+    sessionFolderOf(seed?.path) ||
+    sessionFolderOf(photos[0]?.path) ||
+    sessionFolderOf(selectedSession.value?.photos[0]?.path);
+
+  if (!seed?.templateId) {
+    const stripPath = findStripPathForFolder(folder);
+    if (stripPath && store.loadStripFileForReprint(stripPath, count)) {
+      dashboardStore.recordReprintSale(
+        count,
+        dashboardStore.reprintPricePerUnit,
+      );
+      closeConfirmModal();
+      cancelSelectionMode();
+      selectedSession.value = null;
+      router.push("/printing");
+      return;
+    }
     alert(
-      photos.length === 0
-        ? "Select a photo to reprint first."
-        : "These photos have no session info, so the original template can't be rebuilt. Reprint from the Session tab instead.",
+      "These photos have no session info, so the original template can't be rebuilt. Open the Session tab and reprint the Printed strip, or reshoot after updating the app (new sessions save reprint metadata).",
     );
     return;
   }
@@ -784,7 +1140,6 @@ async function confirmReprint() {
   // Skip the composite "printed strip" entry — reprint re-renders the
   // sheet from the raw captures, so feeding the composite back in would
   // wrongly treat it as an extra photo.
-  const folder = sessionFolderOf(seed.path);
   type ReprintSrc = {
     id: string;
     sessionIndex: number;
@@ -804,7 +1159,11 @@ async function confirmReprint() {
     if (!prev.previewUrl && src.previewUrl) prev.previewUrl = src.previewUrl;
   };
   for (const s of store.recentStrips) {
-    if (s.sessionId !== seed.sessionId || s.isComposite || s.isOriginal) continue;
+    if (s.isComposite || s.isOriginal) continue;
+    const same =
+      (seed.sessionId && s.sessionId === seed.sessionId) ||
+      (folder && sessionFolderOf(s.path) === folder);
+    if (!same) continue;
     consider({
       id: s.id,
       sessionIndex: s.sessionIndex ?? 0,
@@ -813,11 +1172,16 @@ async function confirmReprint() {
       previewUrl: s.dataUrl,
     });
   }
-  for (const p of diskSessionPhotos.value) {
+  const diskPool = [
+    ...diskSessionPhotos.value,
+    ...(selectedSession.value?.photos ?? []),
+    ...allPhotos.value,
+  ];
+  for (const p of diskPool) {
     if (p.isComposite || p.isOriginal) continue;
     if (isPrintCropName(fileNameOf(p.path || p.name))) continue;
     const sameSession =
-      (p.sessionId && p.sessionId === seed.sessionId) ||
+      (seed.sessionId && p.sessionId === seed.sessionId) ||
       (folder && sessionFolderOf(p.path) === folder);
     if (!sameSession) continue;
     consider({
@@ -863,11 +1227,12 @@ async function confirmReprint() {
     captures.push({ id: s.id, dataUrl });
   }
 
-  const ok = store.loadSessionForReprint(
-    captures,
-    seed.templateId,
-    count,
-  );
+  let ok = store.loadSessionForReprint(captures, seed.templateId, count);
+  if (!ok) {
+    // Template removed — still try printing the saved strip.png.
+    const stripPath = findStripPathForFolder(folder);
+    ok = !!(stripPath && store.loadStripFileForReprint(stripPath, count));
+  }
   if (!ok) {
     alert(
       "Couldn't rebuild this reprint — the template may have been removed.",
@@ -887,6 +1252,7 @@ async function confirmReprint() {
 
   closeConfirmModal();
   cancelSelectionMode();
+  selectedSession.value = null;
 
   // Hand off to the existing print pipeline. PrintingView sees
   // store.reprintMode in onMounted, rebuilds + prints `count` copies
@@ -983,9 +1349,10 @@ function sessionUploadStatus(photo: GalleryPhoto): MediaUploadStatus | "" {
 
 function sessionNeedsRetry(photo: GalleryPhoto): boolean {
   if (photo.isOriginal) return false;
-  if (!photo.sessionId) return false;
   if (resolveShareUrl(photo)) return false;
-  return true;
+  // Disk sessions may lack sessionId until session.json / reupload —
+  // still offer retry when we can see a Session folder path.
+  return !!(photo.sessionId || sessionFolderRelFromPhoto(photo));
 }
 
 const canRetryUploads = computed(
@@ -1626,11 +1993,13 @@ onUnmounted(() => {
           <p class="gallery-qr-hint">Scan to open this session's photos.</p>
           <p class="gallery-qr-url">{{ qrPhoto.shareUrl }}</p>
         </template>
-        <p v-else-if="qrBusy" class="gallery-qr-hint">Building QR…</p>
+        <p v-else-if="qrBusy || retryBusy" class="gallery-qr-hint">
+          {{ retryBusy ? "Uploading digital copies…" : "Building QR…" }}
+        </p>
         <p v-else class="gallery-qr-hint">
           No online link for this session — the upload is pending or didn't
-          complete (the booth may have been offline). Photos are still here:
-          tap Retry Upload, or use Download / Reprint.
+          complete (the booth may have been offline). Photos are still here —
+          tap Reupload, or use Download / Reprint.
         </p>
         <p
           v-if="retryNotice"
@@ -1641,13 +2010,13 @@ onUnmounted(() => {
         </p>
         <div class="modal-actions">
           <button
-            v-if="qrPhoto && sessionNeedsRetry(qrPhoto)"
+            v-if="qrPhoto && !qrDataUrl"
             type="button"
             class="btn btn-reprint"
-            :disabled="retryBusy"
-            @click="retryUploads(qrPhoto.sessionId)"
+            :disabled="retryBusy || qrBusy"
+            @click="reuploadForQrPhoto(qrPhoto)"
           >
-            {{ retryBusy ? "Uploading…" : "Retry Upload" }}
+            {{ retryBusy ? "Uploading…" : "Reupload" }}
           </button>
           <button type="button" class="btn btn-secondary" @click="closeQr">Close</button>
         </div>

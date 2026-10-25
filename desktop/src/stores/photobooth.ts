@@ -3153,7 +3153,20 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     currentPhotoIndex.value = capturedPhotos.value.length;
   }
 
-  function addHighlightClip(dataUrl: string) {
+  /**
+   * Store a per-shot highlight clip. `shotIndex` is 0-based and must
+   * align with `capturedPhotos` — pushing without an index used to
+   * shift later clips when an earlier stop failed, so the strip video
+   * showed the wrong pose (and wrapped the last window to shot 1).
+   */
+  function addHighlightClip(dataUrl: string, shotIndex?: number) {
+    if (typeof shotIndex === "number" && shotIndex >= 0) {
+      const next = highlightClips.value.slice();
+      while (next.length <= shotIndex) next.push("");
+      next[shotIndex] = dataUrl || "";
+      highlightClips.value = next;
+      return;
+    }
     if (dataUrl) highlightClips.value.push(dataUrl);
   }
 
@@ -3194,6 +3207,8 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   // onMounted and takes the side-effect-free path.
   const reprintMode = ref(false);
   const reprintCopies = ref(1);
+  /** When set, PrintingView prints this existing strip file (no rebuild). */
+  const reprintFilePath = ref<string | null>(null);
   // Where PrintingView returns after a reprint completes. Admin Gallery
   // reprints go back to "/admin" (default); a customer "print more
   // copies" reprint returns to "/qr" so the guest lands back on their
@@ -3228,6 +3243,19 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
       timestamp: new Date(),
     }));
     currentPhotoIndex.value = capturedPhotos.value.length;
+    reprintFilePath.value = null;
+    reprintCopies.value = Math.max(
+      1,
+      Math.min(99, Math.floor(copies) || 1),
+    );
+    reprintMode.value = true;
+    return true;
+  }
+
+  /** Reprint an already-composited strip.png when template metadata is gone. */
+  function loadStripFileForReprint(filePath: string, copies: number): boolean {
+    if (!filePath) return false;
+    reprintFilePath.value = filePath;
     reprintCopies.value = Math.max(
       1,
       Math.min(99, Math.floor(copies) || 1),
@@ -3239,6 +3267,7 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   function clearReprintMode() {
     reprintMode.value = false;
     reprintCopies.value = 1;
+    reprintFilePath.value = null;
     reprintReturnRoute.value = "/admin";
   }
 
@@ -3266,35 +3295,71 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
   // localStorage writes are guarded: a QuotaExceededError must never
   // break the post-print flow (the in-memory list keeps working; only
   // persistence across restarts is lost for that write).
+  /**
+   * Keep this many distinct booth sessions in memory / localStorage.
+   * Each sitting stores many strip rows (captures + originals +
+   * composite), so an entry-count cap of 200 only held ~20–25
+   * sessions and made earlier gallery nights vanish. Disk under
+   * Pictures/NostalgiaPhotobooth remains the source of truth for
+   * the event gallery; this list is for QR / reprint metadata.
+   */
+  const MAX_RECENT_SESSIONS = 300;
+
+  function trimRecentStripsToSessionCap() {
+    const order: string[] = [];
+    const seen = new Set<string>();
+    for (const s of recentStrips.value) {
+      const key = s.sessionId || `solo:${s.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      order.push(key);
+    }
+    if (order.length <= MAX_RECENT_SESSIONS) return;
+    const keep = new Set(order.slice(0, MAX_RECENT_SESSIONS));
+    recentStrips.value = recentStrips.value.filter((s) =>
+      keep.has(s.sessionId || `solo:${s.id}`),
+    );
+  }
+
   function persistRecentStrips() {
     try {
-      localStorage.setItem(
-        RECENT_STRIPS_KEY,
-        JSON.stringify(recentStrips.value),
-      );
+      // Drop preview dataUrls when a disk path exists — previews are
+      // huge and blow the ~5–10 MB localStorage quota long before we
+      // hit 50–200 sessions. Gallery / film-roll rehydrate from disk.
+      const slim = recentStrips.value.map((s) => {
+        if (!s.path) return s;
+        return { ...s, dataUrl: "" };
+      });
+      localStorage.setItem(RECENT_STRIPS_KEY, JSON.stringify(slim));
     } catch (e) {
       console.warn(
         "Failed to persist recent strips (likely storage quota):",
         e,
       );
+      // Last resort: keep only the newest sessions' metadata.
+      try {
+        trimRecentStripsToSessionCap();
+        const slim = recentStrips.value.slice(0, 80).map((s) => ({
+          ...s,
+          dataUrl: "",
+        }));
+        localStorage.setItem(RECENT_STRIPS_KEY, JSON.stringify(slim));
+      } catch (e2) {
+        console.warn("[RecentStrips] Persist retry failed:", e2);
+      }
     }
   }
 
-  // Each SESSION writes photoCount + 1 entries (every capture plus the
-  // composite), so 20 entries was only ~2 sessions on the 4x2 layout —
-  // and once a session rotated out, its digital-copies link was gone for
-  // good, which defeats the gallery's "re-show the QR" purpose.
-  const MAX_RECENT_ENTRIES = 200;
-
   function addRecentStrip(strip: SavedPhotoStrip) {
     recentStrips.value.unshift(strip);
-    if (recentStrips.value.length > MAX_RECENT_ENTRIES) {
-      recentStrips.value = recentStrips.value.slice(0, MAX_RECENT_ENTRIES);
-    }
+    trimRecentStripsToSessionCap();
     persistRecentStrips();
     // Launched event mode: every new strip belongs only to that event.
+    // Store path as well as strip id so the gallery still finds the
+    // file after this row ages out of recentStrips.
     try {
-      useGalleryEventsStore().attachToActiveEvent([strip.id]);
+      const ids = [strip.id, strip.path].filter(Boolean) as string[];
+      useGalleryEventsStore().attachToActiveEvent(ids);
     } catch (e) {
       console.warn("[RecentStrips] Could not attach to active event:", e);
     }
@@ -3487,8 +3552,10 @@ export const usePhotoboothStore = defineStore("photobooth", () => {
     // -----------------------------
     reprintMode,
     reprintCopies,
+    reprintFilePath,
     reprintReturnRoute,
     loadSessionForReprint,
+    loadStripFileForReprint,
     reprintCurrentSession,
     clearReprintMode,
 

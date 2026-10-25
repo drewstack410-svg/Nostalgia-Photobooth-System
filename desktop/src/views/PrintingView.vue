@@ -1166,8 +1166,13 @@ async function saveComposite() {
       // Bake clips into the printed strip, save locally. Cloud upload
       // goes through the pending queue so offline sittings can retry.
       const highlightPreparePromise: Promise<PreparedClip[]> = (async () => {
-        const clips = store.highlightClips.filter(Boolean);
-        if (!clips.length) return [];
+        // Keep empty slots so highlight-N matches photo-N (same as strip).
+        const alignedStills = store.capturedPhotos.map((p) => p.dataUrl || "");
+        const alignedClips = alignedStills.map(
+          (_, i) => store.highlightClips[i] || "",
+        );
+        const hasAnyClip = alignedClips.some(Boolean);
+        if (!hasAnyClip && !alignedStills.some(Boolean)) return [];
         let stripDataUrl: string | null = null;
         if (shareComposite) {
         try {
@@ -1179,16 +1184,13 @@ async function saveComposite() {
           if (pngFrame) {
             overlayDataUrl = await prepareFrameDataUrl(pngFrame);
           }
-          const stills = store.capturedPhotos
-            .map((p) => p.dataUrl)
-            .filter(Boolean);
           stripDataUrl = await composeStripVideo({
             frameDataUrl: shareComposite,
             overlayDataUrl,
-            clipDataUrls: clips,
+            clipDataUrls: alignedClips,
             slots,
             cropBarPercent: 0,
-            stillDataUrls: stills,
+            stillDataUrls: alignedStills,
           });
         } catch (e) {
           console.warn("[Save] Strip video compose failed:", e);
@@ -1198,10 +1200,9 @@ async function saveComposite() {
         const stripItem = stripDataUrl
           ? { dataUrl: stripDataUrl, name: "highlight-strip" }
           : null;
-        const fullItems = clips.map((dataUrl, i) => ({
-          dataUrl,
-          name: `highlight-${i + 1}`,
-        }));
+        const fullItems = alignedClips
+          .map((dataUrl, i) => ({ dataUrl, name: `highlight-${i + 1}` }))
+          .filter((item) => !!item.dataUrl);
         const toSave = stripItem ? [stripItem, ...fullItems] : fullItems;
         const prepared: PreparedClip[] = [];
         for (const item of toSave) {
@@ -1375,6 +1376,25 @@ async function saveComposite() {
       const preparedClips = await highlightPreparePromise;
       const sessionId = `session_${sessionTs}`;
       const templateId = store.selectedTemplate?.id;
+      // Persist session metadata next to the captures so Gallery reprint
+      // still works after localStorage quota drops recentStrips.
+      if (sessionFolder && window.electronAPI?.saveSessionBytes) {
+        try {
+          const meta = new TextEncoder().encode(
+            JSON.stringify({
+              sessionId,
+              templateId: templateId || null,
+              createdAt: sessionTs,
+            }),
+          );
+          await window.electronAPI.saveSessionBytes({
+            bytes: meta,
+            filename: `${sessionFolder}/session.json`,
+          });
+        } catch (e) {
+          console.warn("[Session] session.json save failed:", e);
+        }
+      }
       const galleryShortCode = makeGalleryShortCode();
       const layout = await galleryLayoutParam();
       const template = store.sessionTemplate ?? store.selectedTemplate;
@@ -1624,23 +1644,31 @@ function goToQRView() {
 async function runReprint() {
   printStatus.value = "printing";
   try {
-    const printComposite = await createCompositeImage("print");
-    if (!window.electronAPI || !printComposite) {
-      console.error(
-        "[Reprint] no composite (missing electronAPI or template) — aborting",
-      );
+    let printPathForJob = store.reprintFilePath || "";
+    if (!printPathForJob) {
+      const printComposite = await createCompositeImage("print");
+      if (!window.electronAPI || !printComposite) {
+        console.error(
+          "[Reprint] no composite (missing electronAPI or template) — aborting",
+        );
+        printStatus.value = "error";
+        printError.value =
+          "Couldn't rebuild the print — the template may no longer exist.";
+        return;
+      }
+      const printOpaque = await flattenPngDataUrlToWhite(printComposite);
+      // Transient temp file just for the print job (same as a fresh
+      // print's print sheet — never lands in the user's Pictures).
+      const saved = await window.electronAPI.saveTempPhoto(printOpaque);
+      if (!saved.success || !saved.path) {
+        printStatus.value = "error";
+        printError.value = saved.error || "Failed to stage reprint";
+        return;
+      }
+      printPathForJob = saved.path;
+    } else if (!window.electronAPI) {
       printStatus.value = "error";
-      printError.value =
-        "Couldn't rebuild the print — the template may no longer exist.";
-      return;
-    }
-    const printOpaque = await flattenPngDataUrlToWhite(printComposite);
-    // Transient temp file just for the print job (same as a fresh
-    // print's print sheet — never lands in the user's Pictures).
-    const saved = await window.electronAPI.saveTempPhoto(printOpaque);
-    if (!saved.success || !saved.path) {
-      printStatus.value = "error";
-      printError.value = saved.error || "Failed to stage reprint";
+      printError.value = "Reprint requires the desktop app.";
       return;
     }
     // Exact reprint count, decoupled from the kiosk-wide printCopies
@@ -1652,7 +1680,7 @@ async function runReprint() {
     console.log(`[Reprint] printing ${remaining} copy/copies`);
     while (remaining > 0) {
       const batch = Math.min(10, remaining);
-      await printSavedPhoto(saved.path, batch);
+      await printSavedPhoto(printPathForJob, batch);
       if (printStatus.value === "error") break; // don't keep feeding a failing printer
       remaining -= batch;
     }

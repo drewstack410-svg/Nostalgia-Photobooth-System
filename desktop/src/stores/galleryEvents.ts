@@ -1,7 +1,10 @@
 /**
- * Admin gallery events — named collections of existing strip/photo IDs.
- * Photos stay in Session/Saved; events only reference them. Deleting an
- * event never deletes photos. Persisted in localStorage.
+ * Admin gallery events — named collections of strip/photo IDs (and disk
+ * paths). Photos live on disk under Pictures/NostalgiaPhotobooth; when an
+ * event is Live, captures also go in Events/<name>/…. The gallery shows
+ * anything tagged in photoIds OR saved under that event folder, so a
+ * night of 50–200 sessions survives after recentStrips rotates.
+ * Deleting an event never deletes photos. Persisted in localStorage.
  */
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";

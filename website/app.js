@@ -404,6 +404,13 @@
       return;
     }
 
+    // Strips tab: still frame + play overlay using the SAME highlight-strip
+    // video (never a lone per-shot clip).
+    if (view.kind === "image" && framedStripUrl()) {
+      renderTemplateWithPlay(view);
+      return;
+    }
+
     // image (Template): single <img>, preload so we can show a loading state
     loadingEl.hidden = false;
     const img = document.createElement("img");
@@ -651,8 +658,50 @@
       else video.pause();
     });
 
+    const fixBtn = document.createElement("button");
+    fixBtn.type = "button";
+    fixBtn.className = "fix-video-btn";
+    fixBtn.textContent = "Fix video";
+    fixBtn.title = "Rebuild strip video so it matches the printed strip";
+    fixBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (fixBtn.disabled) return;
+      fixBtn.disabled = true;
+      const prevLabel = fixBtn.textContent;
+      fixBtn.textContent = "Fixing…";
+      try {
+        const fixedUrl = await rebuildStripVideoMatchingPrint();
+        if (!fixedUrl) {
+          fixBtn.textContent = "Couldn't fix";
+          setTimeout(() => {
+            fixBtn.textContent = prevLabel;
+            fixBtn.disabled = false;
+          }, 1800);
+          return;
+        }
+        revokeVideoSrc();
+        await bindVideoSrc(video, fixedUrl);
+        view.url = fixedUrl;
+        view.downloadUrl = fixedUrl;
+        video.play().catch(() => showPlay());
+        fixBtn.textContent = "Fixed";
+        setTimeout(() => {
+          fixBtn.textContent = prevLabel;
+          fixBtn.disabled = false;
+        }, 1600);
+      } catch (err) {
+        console.warn("[Gallery] Fix video failed:", err);
+        fixBtn.textContent = "Fix failed";
+        setTimeout(() => {
+          fixBtn.textContent = prevLabel;
+          fixBtn.disabled = false;
+        }, 1800);
+      }
+    });
+
     wrap.appendChild(video);
     wrap.appendChild(playBtn);
+    wrap.appendChild(fixBtn);
     stageInner.appendChild(wrap);
     bindHoldToSave(wrap, () => {
       suppressNextClick = true;
@@ -710,6 +759,9 @@
           w: n[2],
           h: n[3],
           r: n.length >= 5 && isFinite(n[4]) ? n[4] : 0,
+          // Same shot index the booth printed — required so Fix video
+          // (and any client compose) matches the strip poses.
+          shot: n.length >= 6 && isFinite(n[5]) ? n[5] : undefined,
         };
       })
       .filter(Boolean);
@@ -958,9 +1010,13 @@
     playBtn.setAttribute("aria-label", "Play highlights");
     playBtn.innerHTML = playSvg;
 
+    // Always play the framed strip MP4 — never vids[0] if that is a
+    // lone per-shot clip (that made Play look different from the strip).
+    const stripVideoUrl = framedStripUrl() || urls[0] || "";
+
     const vid = document.createElement("video");
     vid.className = "highlight-strip-video";
-    vid.src = urls[0];
+    vid.src = stripVideoUrl;
     bindR2SrcFallback(vid);
     vid.muted = true;
     vid.loop = true;
@@ -1040,9 +1096,234 @@
       });
     }
 
+    const fixBtn = document.createElement("button");
+    fixBtn.type = "button";
+    fixBtn.className = "fix-video-btn";
+    fixBtn.textContent = "Fix video";
+    fixBtn.title = "Rebuild strip video so it matches the printed strip";
+    fixBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (fixBtn.disabled) return;
+      fixBtn.disabled = true;
+      const prev = fixBtn.textContent;
+      fixBtn.textContent = "Fixing…";
+      try {
+        const fixedUrl = await rebuildStripVideoMatchingPrint();
+        if (!fixedUrl) {
+          fixBtn.textContent = "Couldn't fix";
+          setTimeout(() => {
+            fixBtn.textContent = prev;
+            fixBtn.disabled = false;
+          }, 1800);
+          return;
+        }
+        revokeVideoSrc();
+        vid.src = fixedUrl;
+        bindR2SrcFallback(vid);
+        // Prefer the fixed clip for GIF tab / save as well.
+        const gifView = getView("gif");
+        if (gifView && gifView.kind === "gif") {
+          gifView.url = fixedUrl;
+          gifView.downloadUrl = fixedUrl;
+        }
+        setPlaying(true);
+        fixBtn.textContent = "Fixed";
+        setTimeout(() => {
+          fixBtn.textContent = prev;
+          fixBtn.disabled = false;
+        }, 1600);
+      } catch (err) {
+        console.warn("[Gallery] Fix video failed:", err);
+        fixBtn.textContent = "Fix failed";
+        setTimeout(() => {
+          fixBtn.textContent = prev;
+          fixBtn.disabled = false;
+        }, 1800);
+      }
+    });
+
     strip.appendChild(vid);
     strip.appendChild(playBtn);
+    strip.appendChild(fixBtn);
     stageInner.appendChild(strip);
+  }
+
+  function loadImg(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("image load failed"));
+      img.src = src;
+    });
+  }
+
+  function loadVid(src) {
+    return new Promise((resolve, reject) => {
+      const v = document.createElement("video");
+      v.crossOrigin = "anonymous";
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = "auto";
+      v.src = src;
+      v.onloadeddata = () => resolve(v);
+      v.onerror = () => reject(new Error("video load failed"));
+    });
+  }
+
+  function coverDraw(ctx, media, x, y, w, h) {
+    const iw = media.videoWidth || media.naturalWidth || 0;
+    const ih = media.videoHeight || media.naturalHeight || 0;
+    if (!iw || !ih || w <= 0 || h <= 0) return;
+    const ir = iw / ih;
+    const cr = w / h;
+    let sx = 0;
+    let sy = 0;
+    let sw = iw;
+    let sh = ih;
+    if (ir > cr) {
+      sw = ih * cr;
+      sx = (iw - sw) / 2;
+    } else {
+      sh = iw / cr;
+      sy = (ih - sh) / 2;
+    }
+    ctx.drawImage(media, sx, sy, sw, sh, x, y, w, h);
+  }
+
+  /**
+   * Rebuild a strip MP4 that uses the same shot→window mapping as the
+   * printed strip. Uses per-shot highlight clips when present, otherwise
+   * the still photos — never remaps a missing clip onto another pose.
+   */
+  async function rebuildStripVideoMatchingPrint() {
+    const frameUrl = printId ? imageUrl(printId) : "";
+    const stillUrls = (fullIds.length ? fullIds : ids).map((id) => imageUrl(id));
+    const clipUrls = (fullVids || []).map((id) => imageUrl(id));
+    if (!frameUrl || !stillUrls.length) return null;
+
+    const slots =
+      layoutSlots && layoutSlots.length
+        ? layoutSlots
+        : stillUrls.map((_, i) => ({
+            x: 0.05,
+            y: 0.05 + (i / Math.max(1, stillUrls.length)) * 0.9,
+            w: 0.9,
+            h: 0.9 / Math.max(1, stillUrls.length),
+            r: 0,
+            shot: i,
+          }));
+
+    const frame = await loadImg(frameUrl);
+    const stills = await Promise.all(
+      stillUrls.map((u) => loadImg(u).catch(() => null)),
+    );
+    const clips = await Promise.all(
+      stillUrls.map((_, i) =>
+        clipUrls[i] ? loadVid(clipUrls[i]).catch(() => null) : Promise.resolve(null),
+      ),
+    );
+
+    const maxEdge = 720;
+    const scale = Math.min(1, maxEdge / Math.max(frame.naturalWidth, frame.naturalHeight));
+    const width = Math.max(2, Math.round(frame.naturalWidth * scale) & ~1);
+    const height = Math.max(2, Math.round(frame.naturalHeight * scale) & ~1);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    const paint = () => {
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(frame, 0, 0, width, height);
+      slots.forEach((slot, i) => {
+        const shot =
+          typeof slot.shot === "number" && slot.shot >= 0 ? slot.shot : i;
+        const media = clips[shot] || stills[shot];
+        if (!media) return;
+        const x = slot.x * width;
+        const y = slot.y * height;
+        const w = slot.w * width;
+        const h = slot.h * height;
+        ctx.save();
+        if (slot.r) {
+          ctx.translate(x + w / 2, y + h / 2);
+          ctx.rotate((slot.r * Math.PI) / 180);
+          ctx.translate(-(x + w / 2), -(y + h / 2));
+        }
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.clip();
+        coverDraw(ctx, media, x, y, w, h);
+        ctx.restore();
+      });
+    };
+
+    clips.forEach((v) => {
+      if (!v) return;
+      try {
+        v.currentTime = 0;
+        v.play().catch(() => {});
+      } catch (_) {
+        /* ignore */
+      }
+    });
+
+    if (typeof MediaRecorder === "undefined" || !canvas.captureStream) {
+      clips.forEach((v) => v && v.pause());
+      return null;
+    }
+    const stream = canvas.captureStream(30);
+    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+      ? "video/webm;codecs=vp9"
+      : MediaRecorder.isTypeSupported("video/webm")
+        ? "video/webm"
+        : "";
+    if (!mime) {
+      clips.forEach((v) => v && v.pause());
+      return null;
+    }
+    const chunks = [];
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2_500_000 });
+    rec.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunks.push(e.data);
+    };
+    const stopped = new Promise((resolve) => {
+      rec.onstop = () => resolve();
+    });
+    rec.start(200);
+    const started = performance.now();
+    await new Promise((resolve) => {
+      const tick = () => {
+        paint();
+        if (performance.now() - started >= 5000) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    rec.stop();
+    await stopped;
+    clips.forEach((v) => {
+      if (!v) return;
+      v.pause();
+    });
+    stream.getTracks().forEach((t) => t.stop());
+    if (!chunks.length) return null;
+    const blob = new Blob(chunks, { type: mime });
+    const url = URL.createObjectURL(blob);
+    if (videoSrcCleanup) videoSrcCleanup();
+    videoSrcCleanup = () => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {
+        /* ignore */
+      }
+    };
+    return url;
   }
 
   function mountHighlightPlayer(host, urls, startIndex) {

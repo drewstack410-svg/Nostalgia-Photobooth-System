@@ -2,6 +2,8 @@ import { createRouter, createWebHashHistory } from "vue-router";
 import TitleScreen from "@/views/TitleScreen.vue";
 import AdminPanel from "@/views/AdminPanel/index.vue";
 import { useAuthStore } from "@/stores/auth";
+import { usePhotoboothStore } from "@/stores/photobooth";
+import { usePaymentStore } from "@/stores/payment";
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -25,6 +27,7 @@ const router = createRouter({
       path: "/camera",
       name: "camera",
       component: () => import("@/views/CameraView.vue"),
+      meta: { requiresPayment: true },
     },
     {
       path: "/printing",
@@ -67,16 +70,28 @@ const router = createRouter({
   ],
 });
 
-// Navigation guard — left in place but inert because no current
-// route has meta.requiresAuth. If/when auth is re-enabled on a
-// route, this guard automatically picks it back up.
+// Auth guard (inert unless a route sets meta.requiresAuth) + payment
+// gate so /camera cannot be reached while Payment mode is ON without
+// a consumed sale / free-booth grant.
 router.beforeEach((to, _from, next) => {
   const authStore = useAuthStore();
   if (to.meta.requiresAuth && !authStore.checkAuth()) {
     next({ name: "login", query: { redirect: to.fullPath } });
-  } else {
-    next();
+    return;
   }
+  if (to.meta.requiresPayment) {
+    const booth = usePhotoboothStore();
+    const payment = usePaymentStore();
+    if (booth.paymentEnabled && !payment.paidForSession) {
+      next(
+        booth.selectedTemplate
+          ? { name: "bill-acceptor" }
+          : { name: "templates" },
+      );
+      return;
+    }
+  }
+  next();
 });
 
 export default router;

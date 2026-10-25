@@ -52,6 +52,12 @@ export const usePaymentStore = defineStore("payment", () => {
   /** ISO timestamp the current session was armed (for diagnostics). */
   const sessionStartedAt = ref<string | null>(null);
   const currency = ref(CURRENCY);
+  /**
+   * One-shot gate for CameraView: set true when payment is consumed
+   * (or when payment is disabled). Cleared on reset / next beginSession
+   * so guests cannot hash-navigate to /camera and skip the till.
+   */
+  const paidForSession = ref(false);
 
   /** True once enough money is in to cover the price. */
   const isPaid = computed(
@@ -77,10 +83,15 @@ export const usePaymentStore = defineStore("payment", () => {
    * price but callers may override (e.g. a promo, a multi-print order).
    */
   function beginSession(priceRequired: number = DEFAULT_SESSION_PRICE) {
-    amountRequired.value = Math.max(0, priceRequired);
+    const price =
+      typeof priceRequired === "number" && Number.isFinite(priceRequired)
+        ? priceRequired
+        : DEFAULT_SESSION_PRICE;
+    amountRequired.value = Math.max(0, price);
     amountReceived.value = 0;
     lastError.value = "";
     sessionStartedAt.value = new Date().toISOString();
+    paidForSession.value = false;
     // A zero price means "free mode" — instantly satisfied so the
     // operator can disable payment without ripping this screen out.
     status.value = amountRequired.value === 0 ? "paid" : "awaiting";
@@ -123,6 +134,7 @@ export const usePaymentStore = defineStore("payment", () => {
     amountRequired.value = 0;
     amountReceived.value = 0;
     sessionStartedAt.value = null;
+    paidForSession.value = true;
   }
 
   /** Hard reset back to idle (e.g. customer cancelled / timed out). */
@@ -132,6 +144,16 @@ export const usePaymentStore = defineStore("payment", () => {
     amountReceived.value = 0;
     lastError.value = "";
     sessionStartedAt.value = null;
+    paidForSession.value = false;
+  }
+
+  /** Mark the next camera visit as authorized (free booth / after pay). */
+  function grantSessionAccess() {
+    paidForSession.value = true;
+  }
+
+  function clearSessionAccess() {
+    paidForSession.value = false;
   }
 
   return {
@@ -142,6 +164,7 @@ export const usePaymentStore = defineStore("payment", () => {
     lastError,
     sessionStartedAt,
     currency,
+    paidForSession,
     // derived
     isPaid,
     remaining,
@@ -152,5 +175,7 @@ export const usePaymentStore = defineStore("payment", () => {
     fail,
     consume,
     reset,
+    grantSessionAccess,
+    clearSessionAccess,
   };
 });

@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
+import { usePaymentStore } from "@/stores/payment";
 import QRCode from "qrcode";
 import KioskDecor from "@/components/KioskDecor.vue";
 import { useKioskScreen } from "@/composables/useKioskScreen";
@@ -9,6 +10,7 @@ import { isOperatorRoute } from "@/utils/operatorRoute";
 
 const router = useRouter();
 const store = usePhotoboothStore();
+const paymentStore = usePaymentStore();
 const { laidOut, boxStyle, textOf, textStyle, buttonLabel, buttonLook, buttonArt } = useKioskScreen("qr");
 const qrDataUrl = ref("");
 const isGenerating = ref(true);
@@ -80,6 +82,8 @@ function leaveQrScreen() {
   }
   if (isUnmounted) return;
   store.resetSession();
+  // Session finished — next guest must pay again when payment mode is on.
+  paymentStore.clearSessionAccess();
   router.push("/");
 }
 

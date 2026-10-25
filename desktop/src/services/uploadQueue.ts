@@ -49,6 +49,8 @@ export type GalleryUploadJob = {
   templateId?: string;
   status: MediaUploadStatus;
   error?: string;
+  /** Set when upload + gallery manifest succeed. */
+  shareableUrl?: string;
   assets: GalleryUploadAsset[];
   layout?: GalleryLayoutMeta;
   updatedAt: number;
@@ -164,6 +166,8 @@ export type UploadRetryResult = {
   reason?: CloudReadyReason;
   /** Raw detail from the R2 status probe (HTTP code, missing keys, …). */
   detail?: string;
+  sessionId?: string;
+  shareableUrl?: string;
 };
 
 export async function probeCloud(
@@ -431,7 +435,11 @@ export async function processSessionUpload(sessionId: string): Promise<boolean> 
       cloudinaryUrl: photoMeta[0]?.url,
       cloudinaryPublicId: photoMeta[0]?.publicId,
     });
-    patchJob(sessionId, { status: "done", error: undefined });
+    patchJob(sessionId, {
+      status: "done",
+      error: undefined,
+      shareableUrl,
+    });
     console.log("[UploadQueue] Session uploaded:", sessionId, shareableUrl);
     return true;
   } catch (err) {
@@ -504,7 +512,8 @@ export async function retrySessionUpload(
     };
   }
   const ok = await processSessionUpload(sessionId);
-  return { ok };
+  const doneJob = jobs.find((j) => j.sessionId === sessionId);
+  return { ok, sessionId, shareableUrl: doneJob?.shareableUrl };
 }
 
 export async function retryPendingUploads(): Promise<UploadRetryResult> {
@@ -559,13 +568,11 @@ function mimeFromName(name: string): string {
   return "application/octet-stream";
 }
 
-async function reconstructJobFromDisk(
+async function reconstructJobFromFolder(
   sessionId: string,
+  folder: string,
+  templateId?: string,
 ): Promise<GalleryUploadJob | null> {
-  const store = usePhotoboothStore();
-  const strips = store.recentStrips.filter((s) => s.sessionId === sessionId);
-  const folder =
-    strips.map((s) => sessionFolderFromPath(s.path)).find(Boolean) || null;
   if (!folder || !window.electronAPI?.listSessionFiles) return null;
 
   const files = await window.electronAPI.listSessionFiles(folder);
@@ -636,11 +643,111 @@ async function reconstructJobFromDisk(
     sessionTs,
     sessionFolder: folder,
     shortCode: makeGalleryShortCode(),
-    templateId: strips.find((s) => s.templateId)?.templateId,
+    templateId,
     status: "pending",
     assets,
     updatedAt: Date.now(),
   };
+}
+
+async function reconstructJobFromDisk(
+  sessionId: string,
+): Promise<GalleryUploadJob | null> {
+  const store = usePhotoboothStore();
+  const strips = store.recentStrips.filter((s) => s.sessionId === sessionId);
+  const folder =
+    strips.map((s) => sessionFolderFromPath(s.path)).find(Boolean) || null;
+  if (!folder) return null;
+  return reconstructJobFromFolder(
+    sessionId,
+    folder,
+    strips.find((s) => s.templateId)?.templateId,
+  );
+}
+
+/**
+ * Rebuild + upload a session from its disk folder (Admin Gallery Show QR
+ * when recentStrips / queue no longer hold the sitting).
+ */
+export async function retryUploadFromFolder(opts: {
+  sessionId?: string;
+  folder: string;
+  templateId?: string;
+}): Promise<UploadRetryResult & { sessionId?: string; shareableUrl?: string }> {
+  const folder = opts.folder.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!folder) return { ok: false };
+
+  let sessionId = (opts.sessionId || "").trim();
+  if (!sessionId) {
+    // Prefer session.json if present; else a stable id from the folder.
+    try {
+      const r = await window.electronAPI?.readSessionFile?.(
+        `${folder}/session.json`,
+      );
+      if (r?.success && r.bytes) {
+        const bytes =
+          r.bytes instanceof Uint8Array
+            ? r.bytes
+            : new Uint8Array(r.bytes as ArrayBuffer);
+        const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
+          sessionId?: string;
+          templateId?: string;
+        };
+        if (parsed.sessionId) sessionId = parsed.sessionId;
+        if (!opts.templateId && parsed.templateId) {
+          opts.templateId = parsed.templateId;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!sessionId) {
+    sessionId = `session_${folder.replace(/[^a-zA-Z0-9]+/g, "_")}`;
+  }
+
+  let job = jobs.find((j) => j.sessionId === sessionId);
+  if (!job) {
+    const rebuilt = await reconstructJobFromFolder(
+      sessionId,
+      folder,
+      opts.templateId,
+    );
+    if (!rebuilt) return { ok: false, sessionId };
+    job = rebuilt;
+    enqueueGalleryUpload(job);
+  } else if (job.status === "done") {
+    const store = usePhotoboothStore();
+    const url =
+      job.shareableUrl ||
+      store.recentStrips.find(
+        (s) => s.sessionId === sessionId && s.shareableUrl,
+      )?.shareableUrl;
+    return { ok: true, sessionId, shareableUrl: url };
+  } else {
+    patchJob(sessionId, { status: "pending", error: undefined });
+    stampStrips(sessionId, "pending");
+  }
+
+  const probe = await probeCloud();
+  if (!probe.ready) {
+    return {
+      ok: false,
+      noConnection: true,
+      reason: probe.reason,
+      detail: probe.detail,
+      sessionId,
+    };
+  }
+  const ok = await processSessionUpload(sessionId);
+  const doneJob = jobs.find((j) => j.sessionId === sessionId);
+  const store = usePhotoboothStore();
+  const shareableUrl =
+    doneJob?.shareableUrl ||
+    store.recentStrips.find(
+      (s) => s.sessionId === sessionId && s.shareableUrl,
+    )?.shareableUrl;
+  return { ok, sessionId, shareableUrl };
 }
 
 export function startUploadQueueWatcher(): void {

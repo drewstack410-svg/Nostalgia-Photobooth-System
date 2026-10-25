@@ -4,6 +4,7 @@ import { storeToRefs } from "pinia";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
 import type { CameraFilter } from "@/stores/photobooth";
+import { usePaymentStore } from "@/stores/payment";
 import { loadLut } from "@/utils/lut";
 import type { ParsedLut } from "@/utils/lut";
 import { applyCaptureLook } from "@/utils/applyCaptureLook";
@@ -850,8 +851,11 @@ async function unfreezeLivePreview() {
 }
 
 async function finishHighlightClip(shotNumber: number) {
+  const shotIndex = Math.max(0, shotNumber - 1);
   if (!isHighlightRecording()) {
     highlightRecording.value = false;
+    // Keep slot alignment even when recording never started.
+    store.addHighlightClip("", shotIndex);
     return;
   }
   try {
@@ -859,13 +863,15 @@ async function finishHighlightClip(shotNumber: number) {
     highlightRecording.value = false;
     if (!clip) {
       console.warn("[Highlight] Stop returned no clip");
+      store.addHighlightClip("", shotIndex);
       return;
     }
-    store.addHighlightClip(clip);
+    store.addHighlightClip(clip, shotIndex);
     await saveHighlightLocally(clip, shotNumber);
   } catch (e) {
     highlightRecording.value = false;
     console.warn("[Highlight] Stop failed:", e);
+    store.addHighlightClip("", shotIndex);
     abortHighlightCapture();
   }
 }
@@ -1314,8 +1320,9 @@ function returnToHome() {
   resetInactivityTimer();
   stopCameraStream();
 
-  // Clear captured photos
+  // Clear captured photos + payment grant so the next guest must pay.
   store.resetSession();
+  usePaymentStore().clearSessionAccess();
 
   // Return to home
   router.push("/");
@@ -1348,8 +1355,9 @@ function confirmGoBack() {
   // Clear all timers before navigating
   resetInactivityTimer();
 
-  // Clear captured photos before going back
+  // Clear captured photos + payment grant before going back
   store.resetSession();
+  usePaymentStore().clearSessionAccess();
   showBackWarning.value = false;
   router.push("/templates");
 }
@@ -1374,6 +1382,14 @@ watch(
 onMounted(() => {
   if (!store.selectedTemplate) {
     router.push("/templates");
+    return;
+  }
+  // Payment mode ON: refuse the shoot unless BillAcceptorView just
+  // consumed a paid sale (or free mode granted access). Blocks hash
+  // jumps / stray nav to /camera.
+  const paymentStore = usePaymentStore();
+  if (store.paymentEnabled && !paymentStore.paidForSession) {
+    router.replace("/bill-acceptor");
     return;
   }
   // Capture phase so Esc wins over overlays; main process also forwards

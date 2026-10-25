@@ -82,20 +82,13 @@ function simulateBill(amount: number) {
 }
 
 // ── "U" test bypass ──────────────────────────────────────────────
-// Pressing U skips payment so the rest of the flow (shooting, printing,
-// QR landing page) can be exercised without feeding real bills. It
-// credits the payment store with the full remaining amount rather than
-// routing around it, so `isPaid` flips and the normal onPaid() path runs
-// — the session ends up in exactly the state a real payment produces.
-//
-// NOTE FOR PRODUCTION: this is deliberately always-on so it works in the
-// client's packaged test build. Set PAYMENT_BYPASS_KEY_ENABLED = false
-// before the live event so a stray USB keyboard can't hand out free
-// sessions.
-const PAYMENT_BYPASS_KEY_ENABLED = true;
-
+// Pressing U skips payment so the rest of the flow can be exercised
+// without feeding real bills. Only available in Vite DEV or when
+// VITE_ENABLE_PAYMENT_SIMULATOR is baked into the build — production
+// booths with payment mode ON must not hand out free sessions from a
+// stray USB keyboard.
 function onBypassKey(e: KeyboardEvent) {
-  if (!PAYMENT_BYPASS_KEY_ENABLED) return;
+  if (!canSimulate.value) return;
   if (e.key !== "u" && e.key !== "U") return;
   // Ignore while typing in a field, and don't double-fire once paid.
   const el = e.target as HTMLElement | null;
@@ -225,7 +218,13 @@ onMounted(() => {
   const configuredPrice = templateId
     ? dashboardStore.priceByTemplateId[templateId]
     : undefined;
-  paymentStore.beginSession(configuredPrice);
+  // Only pass a real number — undefined must use the env default, not
+  // arm a ₱0 "already paid" session that auto-advances to the camera.
+  paymentStore.beginSession(
+    typeof configuredPrice === "number" && configuredPrice > 0
+      ? configuredPrice
+      : undefined,
+  );
   billAcceptor = createBillAcceptorAdapter();
   billAcceptor.start(paymentStore);
   // templateId lets the middleware attribute the sale to a template

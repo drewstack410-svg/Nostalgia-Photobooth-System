@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { usePhotoboothStore } from "@/stores/photobooth";
+import { usePaymentStore } from "@/stores/payment";
 import TemplatePreview from "@/components/TemplatePreview.vue";
 import KioskDecor from "@/components/KioskDecor.vue";
 import { useKioskScreen } from "@/composables/useKioskScreen";
@@ -9,6 +10,7 @@ import { isOperatorRoute } from "@/utils/operatorRoute";
 
 const router = useRouter();
 const store = usePhotoboothStore();
+const paymentStore = usePaymentStore();
 const { laidOut, boxStyle, textOf, textStyle, buttonLabel, buttonLook, buttonArt } =
   useKioskScreen("templates");
 
@@ -127,8 +129,14 @@ function selectTemplate() {
   // once the middleware reports it paid in full.
   //
   // With payment switched OFF (Admin → Settings → Payment → "Charge for
-  // sessions"), the booth is free — skip straight to shooting.
-  router.push(store.paymentEnabled ? "/bill-acceptor" : "/camera");
+  // sessions"), the booth is free — grant camera access and shoot.
+  if (store.paymentEnabled) {
+    paymentStore.clearSessionAccess();
+    router.push("/bill-acceptor");
+    return;
+  }
+  paymentStore.grantSessionAccess();
+  router.push("/camera");
 }
 
 function goBack() {
