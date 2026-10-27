@@ -341,6 +341,10 @@ function createWindow() {
     }
     if (input.key === "f" || input.key === "F") {
       mainWindow.webContents.send("hotkey:f");
+      return;
+    }
+    if (input.key === "u" || input.key === "U") {
+      mainWindow.webContents.send("hotkey:u");
     }
   });
 

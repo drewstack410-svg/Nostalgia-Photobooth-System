@@ -81,22 +81,27 @@ function simulateBill(amount: number) {
   paymentStore.addCredit(amount);
 }
 
-// ── "U" test bypass ──────────────────────────────────────────────
-// Pressing U skips payment so the rest of the flow can be exercised
-// without feeding real bills. Only available in Vite DEV or when
-// VITE_ENABLE_PAYMENT_SIMULATOR is baked into the build — production
-// booths with payment mode ON must not hand out free sessions from a
-// stray USB keyboard.
+// ── "U" operator bypass ──────────────────────────────────────────
+// Pressing U on this screen credits the remaining amount and advances
+// to shooting. Without U (and without a real paid signal) the guest
+// stays here. Listener is attached only while this view is mounted.
+let lastUBypassAt = 0;
+function skipPaymentBypass() {
+  if (isPaid.value) return;
+  const now = Date.now();
+  if (now - lastUBypassAt < 250) return;
+  lastUBypassAt = now;
+  const credit = remaining.value > 0 ? remaining.value : amountRequired.value || 1;
+  console.log("[Payment] 'U' bypass — crediting", credit);
+  paymentStore.addCredit(credit);
+}
+
 function onBypassKey(e: KeyboardEvent) {
-  if (!canSimulate.value) return;
   if (e.key !== "u" && e.key !== "U") return;
-  // Ignore while typing in a field, and don't double-fire once paid.
   const el = e.target as HTMLElement | null;
   if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
-  if (isPaid.value) return;
   e.preventDefault();
-  console.log("[Payment] 'U' bypass — crediting remaining", remaining.value);
-  paymentStore.addCredit(remaining.value);
+  skipPaymentBypass();
 }
 
 // Auto-advance once paid. `consume()` clears the credit so a
@@ -123,6 +128,7 @@ let warningTimer: ReturnType<typeof setTimeout> | null = null;
 let countdownInterval: ReturnType<typeof setInterval> | null = null;
 let eventListeners: Array<{ event: string; handler: () => void }> = [];
 let isUnmounted = false;
+let unsubscribeUHotkey: (() => void) | null = null;
 
 // Inactivity timer: 1 minute (60000ms)
 const INACTIVITY_TIMEOUT = 60000;
@@ -247,6 +253,7 @@ onMounted(() => {
   // `handler: () => void` and can't carry a KeyboardEvent handler, and this
   // one must not be passive (it calls preventDefault).
   window.addEventListener("keydown", onBypassKey);
+  unsubscribeUHotkey = window.electronAPI?.onUHotkey?.(skipPaymentBypass) ?? null;
 });
 
 onUnmounted(() => {
@@ -278,6 +285,8 @@ onUnmounted(() => {
   // Without this the handler survives navigation and "U" would fire the
   // bypass from the camera/printing screens too.
   window.removeEventListener("keydown", onBypassKey);
+  unsubscribeUHotkey?.();
+  unsubscribeUHotkey = null;
 
   // Reset state
   showInactivityWarning.value = false;

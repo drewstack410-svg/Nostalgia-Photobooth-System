@@ -187,7 +187,7 @@ try {
       return ipcRenderer.invoke('toggle-windowed');
     },
 
-    /** Esc / F from main (kiosk-safe). Returns an unsubscribe function. */
+    /** Esc / F / U from main (kiosk-safe). Returns an unsubscribe function. */
     onEscapeHotkey: (callback) => {
       const handler = () => {
         try {
@@ -210,6 +210,18 @@ try {
       };
       ipcRenderer.on('hotkey:f', handler);
       return () => ipcRenderer.removeListener('hotkey:f', handler);
+    },
+
+    onUHotkey: (callback) => {
+      const handler = () => {
+        try {
+          callback();
+        } catch (err) {
+          console.warn('[Preload] onUHotkey callback error:', err);
+        }
+      };
+      ipcRenderer.on('hotkey:u', handler);
+      return () => ipcRenderer.removeListener('hotkey:u', handler);
     },
     
     quitApp: () => {
