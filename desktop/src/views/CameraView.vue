@@ -706,6 +706,14 @@ function applyHighlightLook(ctx: CanvasRenderingContext2D) {
   });
 }
 
+/** Live Canon EVF <img> already painted each IPC frame — highlight draws this. */
+function liveCanonEvfImage(): HTMLImageElement | null {
+  const root = cameraScreenRef.value;
+  const el = root?.querySelector?.("img.js-canon-evf");
+  if (el instanceof HTMLImageElement && el.naturalWidth >= 2) return el;
+  return null;
+}
+
 /** Start streaming the live camera 10s before each shutter. */
 function armHighlightRecording(countdownSeconds: number) {
   cancelHighlightLead();
@@ -719,6 +727,9 @@ function armHighlightRecording(countdownSeconds: number) {
         ok = await startHighlightCapture({
           stream: stream.value,
           video: videoRef.value,
+          // Canon: paint from the same EVF <img> the guest sees. Re-decoding
+          // each JPEG via getStillUrl alone was freezing clips on frame 1.
+          getStillImage: () => liveCanonEvfImage(),
           getStillUrl: () => latestEvfUrl || liveViewFrame.value,
           getMirror: () => store.mirrorMode,
           applyLook: applyHighlightLook,

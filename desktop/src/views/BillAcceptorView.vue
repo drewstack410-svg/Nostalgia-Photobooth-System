@@ -82,39 +82,66 @@ function simulateBill(amount: number) {
 }
 
 // ── "U" operator bypass ──────────────────────────────────────────
-// Pressing U on this screen credits the remaining amount and advances
-// to shooting. Without U (and without a real paid signal) the guest
-// stays here. Listener is attached only while this view is mounted.
+// Pressing U on this screen must always advance to shooting (trial /
+// operator skip). Do not rely only on isPaid + watch — if credit
+// already flipped paid but navigation failed, U must still proceed.
 let lastUBypassAt = 0;
+let advancingPaid = false;
+
+function goToCameraAfterPay() {
+  // Listener only lives while this view is mounted — do not also require
+  // route.name === "bill-acceptor" (that can fail mid-transition and
+  // leave U looking "dead" after credit already applied).
+  if (isUnmounted || advancingPaid) return;
+  advancingPaid = true;
+  resetInactivityTimer();
+  paymentStore.grantSessionAccess();
+  paymentStore.consume();
+  void window.electronAPI?.notifyPaymentSession?.({ phase: "consume" });
+  router.push("/camera").finally(() => {
+    advancingPaid = false;
+  });
+}
+
 function skipPaymentBypass() {
-  if (isPaid.value) return;
+  if (isUnmounted) return;
   const now = Date.now();
-  if (now - lastUBypassAt < 250) return;
+  if (now - lastUBypassAt < 400) return;
   lastUBypassAt = now;
-  const credit = remaining.value > 0 ? remaining.value : amountRequired.value || 1;
-  console.log("[Payment] 'U' bypass — crediting", credit);
-  paymentStore.addCredit(credit);
+
+  if (!isPaid.value) {
+    const credit = Math.max(
+      remaining.value,
+      amountRequired.value,
+      1,
+    );
+    console.log("[Payment] 'U' bypass — crediting", credit);
+    paymentStore.addCredit(credit);
+  } else {
+    console.log("[Payment] 'U' bypass — already paid, forcing camera");
+  }
+  // Always grant + navigate (watch alone can miss if consume races isPaid).
+  goToCameraAfterPay();
 }
 
 function onBypassKey(e: KeyboardEvent) {
-  if (e.key !== "u" && e.key !== "U") return;
+  const isU =
+    e.key === "u" ||
+    e.key === "U" ||
+    e.code === "KeyU";
+  if (!isU) return;
   const el = e.target as HTMLElement | null;
-  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+    return;
+  }
   e.preventDefault();
+  e.stopPropagation();
   skipPaymentBypass();
 }
 
-// Auto-advance once paid. `consume()` clears the credit so a
-// back-navigation can't reuse the same payment. NOTE: the capture
-// flow is currently orphaned from this screen (TemplateSelect still
-// routes straight to /camera) — this navigation is here so the
-// screen is testable in isolation and ready for when the flow is
-// wired up later.
+// Auto-advance once paid (real bill / QR / U credit).
 function onPaid() {
-  resetInactivityTimer();
-  paymentStore.consume();
-  void window.electronAPI?.notifyPaymentSession?.({ phase: "consume" });
-  router.push("/camera");
+  goToCameraAfterPay();
 }
 
 watch(isPaid, (paid) => {
@@ -252,8 +279,15 @@ onMounted(() => {
   // Registered separately from `eventListeners` above: that array is typed
   // `handler: () => void` and can't carry a KeyboardEvent handler, and this
   // one must not be passive (it calls preventDefault).
-  window.addEventListener("keydown", onBypassKey);
-  unsubscribeUHotkey = window.electronAPI?.onUHotkey?.(skipPaymentBypass) ?? null;
+  // Capture phase so kiosk overlays can't swallow U before we see it.
+  window.addEventListener("keydown", onBypassKey, true);
+  unsubscribeUHotkey =
+    window.electronAPI?.onUHotkey?.(skipPaymentBypass) ?? null;
+  if (!window.electronAPI?.onUHotkey) {
+    console.warn(
+      "[Payment] onUHotkey missing — U relies on window keydown only",
+    );
+  }
 });
 
 onUnmounted(() => {
@@ -284,7 +318,7 @@ onUnmounted(() => {
   eventListeners = [];
   // Without this the handler survives navigation and "U" would fire the
   // bypass from the camera/printing screens too.
-  window.removeEventListener("keydown", onBypassKey);
+  window.removeEventListener("keydown", onBypassKey, true);
   unsubscribeUHotkey?.();
   unsubscribeUHotkey = null;
 

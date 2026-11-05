@@ -126,6 +126,30 @@
     return "";
   }
 
+  // iPhone / iPad (incl. desktop-mode iPadOS). <a download> does not put
+  // files in Photos — Web Share with File objects is the reliable path.
+  function isIosLike() {
+    const ua = navigator.userAgent || "";
+    if (/iPad|iPhone|iPod/i.test(ua)) return true;
+    return (
+      navigator.platform === "MacIntel" &&
+      typeof navigator.maxTouchPoints === "number" &&
+      navigator.maxTouchPoints > 1
+    );
+  }
+
+  function canShareFiles(files) {
+    try {
+      return !!(
+        navigator.share &&
+        navigator.canShare &&
+        navigator.canShare({ files })
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   if (footnoteEl) {
     const appName = inAppBrowserName();
     if (appName) {
@@ -238,8 +262,15 @@
       btn.appendChild(check);
 
       btn.addEventListener("click", async () => {
-        await saveByUrl(downloadUrl, downloadName);
-        btn.classList.add("saved");
+        btn.disabled = true;
+        try {
+          await saveMediaUrl(downloadUrl, downloadName, "image/jpeg");
+          btn.classList.add("saved");
+        } catch (_) {
+          alert("Couldn't save that photo. Try again.");
+        } finally {
+          btn.disabled = false;
+        }
       });
 
       individualPanel.appendChild(btn);
@@ -265,7 +296,8 @@
     if (!videoItems.length) {
       highlightUrls.forEach((url, i) => {
         const isStrip =
-          /highlight-strip/i.test(url) || highlightUrls.length === 1;
+          /hlstrip|highlight-strip|highlight_strip/i.test(url) ||
+          highlightUrls.length === 1;
         videoItems.push({
           url,
           downloadName: isStrip
@@ -304,8 +336,15 @@
       btn.appendChild(check);
 
       btn.addEventListener("click", async () => {
-        await saveByUrl(item.url, item.downloadName);
-        btn.classList.add("saved");
+        btn.disabled = true;
+        try {
+          await saveMediaUrl(item.url, item.downloadName, "video/mp4");
+          btn.classList.add("saved");
+        } catch (_) {
+          alert("Couldn't save that video. Try again.");
+        } finally {
+          btn.disabled = false;
+        }
       });
 
       individualPanel.appendChild(btn);
@@ -1301,8 +1340,37 @@
   async function saveFiles(files) {
     const list = files.filter(Boolean);
     if (!list.length) return;
-    // Direct download, same as “save individual photos” — no share
-    // sheet / permission prompt.
+
+    // iOS / iPadOS: only the share sheet can land files in Photos.
+    // Prefer one multi-file share ("Save X Items"); fall back to one-by-one.
+    if (isIosLike() && typeof navigator.share === "function") {
+      if (canShareFiles(list)) {
+        try {
+          await navigator.share({ files: list, title });
+          return;
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+        }
+      }
+      for (let i = 0; i < list.length; i++) {
+        const one = [list[i]];
+        if (!canShareFiles(one)) {
+          await saveBlob(list[i], list[i].name, list[i].type);
+          continue;
+        }
+        try {
+          await navigator.share({
+            files: one,
+            title: list[i].name || title,
+          });
+        } catch (err) {
+          if (err && err.name === "AbortError") continue;
+        }
+      }
+      return;
+    }
+
+    // Desktop / Android: silent <a download> for each file.
     for (let i = 0; i < list.length; i++) {
       await saveBlob(list[i], list[i].name, list[i].type);
       if (i < list.length - 1) {
@@ -1315,27 +1383,55 @@
     const url = framedStripUrl();
     if (!url) return null;
     const raw = await fetchAsFile(url, "nostalgia_strip.mp4", "video/mp4");
-    return new File([raw], "nostalgia_strip.mp4", { type: "video/mp4" });
+    const buf = await raw.arrayBuffer();
+    const meta = sniffVideoMeta(buf);
+    return new File([buf], withVideoName("nostalgia_strip.mp4", meta.ext), {
+      type: meta.type,
+    });
+  }
+
+  async function fetchVideoFile(url, name) {
+    const file = await fetchAsFile(url, name, "video/mp4");
+    const buf = await file.arrayBuffer();
+    const meta = sniffVideoMeta(buf);
+    return new File([buf], withVideoName(name, meta.ext), { type: meta.type });
   }
 
   async function highlightFiles() {
     const files = [];
     const stripUrl = framedStripUrl();
-    const urls = stripUrl ? [stripUrl] : highlightUrls;
+    const shotUrls = fullHighlightUrls.length ? fullHighlightUrls : [];
+    const urls = [];
+    const names = [];
+
+    shotUrls.forEach((url, i) => {
+      urls.push(url);
+      names.push(highlightDownloadName(url, i + 1));
+    });
+    if (stripUrl && !urls.includes(stripUrl)) {
+      urls.push(stripUrl);
+      names.push("nostalgia_strip.mp4");
+    }
+    if (!urls.length) {
+      const fallback = stripUrl ? [stripUrl] : highlightUrls;
+      fallback.forEach((url, i) => {
+        urls.push(url);
+        names.push(
+          stripUrl && url === stripUrl
+            ? "nostalgia_strip.mp4"
+            : highlightDownloadName(
+                url,
+                fallback.length === 1 ? undefined : i + 1,
+              ),
+        );
+      });
+    }
+
     for (let i = 0; i < urls.length; i++) {
-      const url = urls[i];
-      const name =
-        stripUrl && url === stripUrl
-          ? "nostalgia_strip.mp4"
-          : highlightDownloadName(url, urls.length === 1 ? undefined : i + 1);
       try {
-        const file = await fetchAsFile(url, name, "video/mp4");
-        const buf = await file.arrayBuffer();
-        const meta = sniffVideoMeta(buf);
-        const fileName = withVideoName(name, meta.ext);
-        files.push(new File([buf], fileName, { type: meta.type }));
+        files.push(await fetchVideoFile(urls[i], names[i]));
       } catch (_) {
-        await saveByUrl(url, name);
+        /* skip unreachable clip; others still save */
       }
     }
     return files;
@@ -1348,10 +1444,10 @@
 
   async function saveStripAndHighlights(view) {
     const files = [];
-    if (highlightUrls.length) {
+    if (highlightUrls.length || fullHighlightUrls.length) {
       files.push(...(await highlightFiles()));
     }
-    if (view.downloadUrl) {
+    if (view && view.downloadUrl) {
       try {
         files.push(
           await fetchAsFile(
@@ -1361,60 +1457,167 @@
           ),
         );
       } catch (_) {
-        await saveByUrl(view.downloadUrl, view.downloadName);
+        /* continue with videos */
       }
     }
     if (files.length) await saveFiles(files);
   }
 
-  async function saveActiveView() {
-    const view = getView(activeKey);
-    setSaveBusy(true);
+  /** Every guest-facing asset for this session (photos + videos + strip). */
+  async function collectAllSessionFiles(onProgress) {
+    const files = [];
+    const seen = new Set();
+
+    function push(file) {
+      if (!file) return;
+      const key = `${file.name}|${file.size}|${file.type}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      files.push(file);
+    }
+
+    function progress(msg) {
+      if (typeof onProgress === "function") onProgress(msg);
+    }
+
+    progress("Saving strip…");
+    if (printId) {
+      try {
+        push(
+          await fetchAsFile(
+            imageUrl(printId, {
+              download: true,
+              name: "nostalgia_template",
+            }),
+            "nostalgia_template.png",
+            "image/png",
+          ),
+        );
+      } catch (_) {
+        /* optional */
+      }
+    }
+
+    progress("Saving photos…");
+    for (let i = 0; i < fullIds.length; i++) {
+      try {
+        push(
+          await fetchAsFile(
+            imageUrl(fullIds[i], {
+              download: true,
+              name: `nostalgia_${i + 1}`,
+            }),
+            `nostalgia_${i + 1}.jpg`,
+            "image/jpeg",
+          ),
+        );
+      } catch (_) {
+        /* skip one photo */
+      }
+    }
+
+    if (ids.length > 0) {
+      try {
+        progress("Saving grid…");
+        const blob = await buildGridBlob(ids);
+        push(new File([blob], "nostalgia_grid.jpg", { type: "image/jpeg" }));
+      } catch (_) {
+        /* grid is optional */
+      }
+    }
+
+    progress("Saving videos…");
     try {
-      const files = [];
-      const gifSave = gifSaveTarget(view);
-      if (gifSave) {
-        try {
-          files.push(
-            await fetchAsFile(gifSave.url, gifSave.name, gifSave.type),
-          );
-        } catch (_) {
-          await saveByUrl(gifSave.url, gifSave.name);
-        }
-        if (files.length) await saveFiles(files);
+      const strip = await fetchStripVideoFile();
+      push(strip);
+    } catch (_) {
+      /* no strip video */
+    }
+    const clips = await highlightFiles();
+    clips.forEach(push);
+
+    return files;
+  }
+
+  /** One photo/video — iOS share sheet or desktop download. */
+  async function saveMediaUrl(url, filename, fallbackType) {
+    const looksVideo =
+      /^video\//i.test(fallbackType || "") ||
+      /\.(mp4|webm|mov|m4v)(?:\?|$)/i.test(`${filename || ""} ${url}`);
+    try {
+      if (looksVideo) {
+        const file = await fetchVideoFile(url, filename || "nostalgia.mp4");
+        await saveFiles([file]);
         return;
       }
-      if (framedStripUrl()) {
-        try {
-          const strip = await fetchStripVideoFile();
-          if (strip) files.push(strip);
-        } catch (_) {
-          await saveByUrl(framedStripUrl(), "nostalgia_strip.mp4");
-        }
+      const file = await fetchAsFile(
+        url,
+        filename || "nostalgia.jpg",
+        fallbackType || "image/jpeg",
+      );
+      await saveFiles([file]);
+    } catch (_) {
+      await saveByUrl(url, filename);
+    }
+  }
+
+  // iOS drops user-activation after long fetches; a second tap re-opens
+  // the share sheet with files already prepared.
+  let pendingIosSaveFiles = null;
+
+  async function saveActiveView() {
+    if (pendingIosSaveFiles && pendingIosSaveFiles.length) {
+      const ready = pendingIosSaveFiles;
+      pendingIosSaveFiles = null;
+      setSaveBusy(true, "Choose Save Video / Save Image…");
+      try {
+        await saveFiles(ready);
+      } catch (_) {
+        alert("Couldn't save — try again.");
+      } finally {
+        setSaveBusy(false);
       }
-      if (view.kind === "grid") {
-        const blob = await buildGridBlob(view.ids);
-        files.push(new File([blob], view.downloadName, { type: "image/jpeg" }));
-      } else if (view.downloadUrl) {
-        try {
-          files.push(
-            await fetchAsFile(
-              view.downloadUrl,
-              view.downloadName || "nostalgia_template.png",
-              "image/png",
-            ),
-          );
-        } catch (_) {
-          await saveByUrl(view.downloadUrl, view.downloadName);
-        }
+      return;
+    }
+
+    setSaveBusy(true, "Preparing…");
+    try {
+      const files = await collectAllSessionFiles((msg) =>
+        setSaveBusy(true, msg || "Preparing…"),
+      );
+      if (!files.length) {
+        alert(
+          "Couldn't find files to save — check your connection and try again.",
+        );
+        return;
       }
-      if (files.length) await saveFiles(files);
+
+      if (isIosLike() && typeof navigator.share === "function") {
+        // Try share in the same click first (works when prep is fast).
+        if (canShareFiles(files)) {
+          try {
+            setSaveBusy(true, "Choose Save Video / Save Image…");
+            await navigator.share({ files, title });
+            return;
+          } catch (err) {
+            if (err && err.name === "AbortError") return;
+            // NotAllowedError / other — need a fresh gesture.
+          }
+        }
+        pendingIosSaveFiles = files;
+        saveBtn.disabled = false;
+        saveBtnLabel.textContent = `Tap again to save ${files.length} items`;
+        return;
+      }
+
+      setSaveBusy(true, "Downloading…");
+      await saveFiles(files);
     } catch (err) {
       alert(
-        "Couldn't save that — check your connection and try again, or use “save individual photos” below.",
+        "Couldn't save that — check your connection and try again, or use “save photos & videos” below.",
       );
     } finally {
-      setSaveBusy(false);
+      if (!pendingIosSaveFiles) setSaveBusy(false);
     }
   }
 
@@ -1470,7 +1673,7 @@
       : "Save to Camera Roll";
   }
 
-  // Save a hosted asset by URL â€” Template / individual captures.
+  // Save a hosted asset by URL — Template / individual captures.
   // R2 has no attachment transform, so we fetch as a blob when CORS
   // allows (required for the gallery Grid/GIF canvas too).
   async function saveByUrl(url, filename) {
@@ -1483,14 +1686,17 @@
         );
         if (looksVideo) {
           const meta = sniffVideoMeta(buf);
-          const name = withVideoName(filename || "nostalgia_highlight.mp4", meta.ext);
-          await saveBlob(new Blob([buf], { type: meta.type }), name, meta.type);
+          const name = withVideoName(
+            filename || "nostalgia_highlight.mp4",
+            meta.ext,
+          );
+          const file = new File([buf], name, { type: meta.type });
+          await saveFiles([file]);
           return;
         }
-        const blob = new Blob([buf], {
-          type: res.headers.get("content-type") || "image/jpeg",
-        });
-        await saveBlob(blob, filename, blob.type || "image/jpeg");
+        const type = res.headers.get("content-type") || "image/jpeg";
+        const file = new File([buf], filename || "nostalgia.jpg", { type });
+        await saveFiles([file]);
         return;
       }
     } catch (err) {
@@ -1502,6 +1708,7 @@
       a.href = url;
       a.download = filename;
       a.rel = "noopener";
+      a.target = "_blank";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1510,10 +1717,25 @@
     }
   }
 
-  // Save a blob we already built client-side (the composited Grid
-  // image) — no fetch needed. Always a silent <a download>, matching
-  // the individual-photo links (no share-sheet permission prompt).
-  async function saveBlob(blob, filename, _mimeType) {
+  // Desktop / Android download path. On iOS, prefer saveFiles() so the
+  // share sheet can write into Photos; this remains the fallback.
+  async function saveBlob(blob, filename, mimeType) {
+    if (isIosLike() && typeof navigator.share === "function") {
+      const file =
+        blob instanceof File
+          ? blob
+          : new File([blob], filename || "nostalgia.bin", {
+              type: mimeType || blob.type || "application/octet-stream",
+            });
+      if (canShareFiles([file])) {
+        try {
+          await navigator.share({ files: [file], title: file.name || title });
+          return;
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+        }
+      }
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

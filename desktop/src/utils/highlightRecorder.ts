@@ -30,7 +30,17 @@ type AvcHwAccel = "no-preference" | "prefer-hardware" | "prefer-software";
 export type HighlightCaptureOpts = {
   stream?: MediaStream | null;
   video?: HTMLVideoElement | null;
+  /**
+   * Latest still as a data-/blob-URL (Canon EVF). Prefer
+   * `getStillImage` when the booth already paints an <img>.
+   */
   getStillUrl?: () => string | null;
+  /**
+   * Live canvas source already decoding frames (Canon `.js-canon-evf`
+   * <img>). Drawing this every pump tick avoids re-decoding the same
+   * JPEG via `new Image()` — that path often froze the clip on frame 1.
+   */
+  getStillImage?: () => CanvasImageSource | null;
   getMirror?: () => boolean;
   /** Bake the booth filter onto each live frame (not the freeze blit). */
   applyLook?: (ctx: CanvasRenderingContext2D) => void;
@@ -49,10 +59,12 @@ let starting = false;
 let frozen = false;
 let sourceVideo: HTMLVideoElement | null = null;
 let getStillUrl: (() => string | null) | null = null;
+let getStillImage: (() => CanvasImageSource | null) | null = null;
 let getMirror: (() => boolean) | null = null;
 let applyLook: ((ctx: CanvasRenderingContext2D) => void) | null = null;
 let cropBarPct = 0;
 let stillImg: HTMLImageElement | null = null;
+let stillBitmap: ImageBitmap | null = null;
 let lastStillUrl = "";
 let pendingStillUrl = "";
 let stillLoading = false;
@@ -118,9 +130,44 @@ function drawCropped(
   if (mirror) ctx.restore();
 }
 
+function mediaSize(
+  media: CanvasImageSource | null | undefined,
+): { width: number; height: number } | null {
+  if (!media) return null;
+  if (media instanceof HTMLVideoElement) {
+    if (media.readyState >= 2 && media.videoWidth >= 2) {
+      return { width: media.videoWidth, height: media.videoHeight };
+    }
+    return null;
+  }
+  if (typeof ImageBitmap !== "undefined" && media instanceof ImageBitmap) {
+    if (media.width >= 2 && media.height >= 2) {
+      return { width: media.width, height: media.height };
+    }
+    return null;
+  }
+  const img = media as HTMLImageElement | HTMLCanvasElement;
+  const w =
+    "naturalWidth" in img
+      ? img.naturalWidth || img.width
+      : (img as HTMLCanvasElement).width;
+  const h =
+    "naturalHeight" in img
+      ? img.naturalHeight || img.height
+      : (img as HTMLCanvasElement).height;
+  if (w >= 2 && h >= 2) return { width: w, height: h };
+  return null;
+}
+
 function sizeFromSources(): { width: number; height: number } | null {
   if (sourceVideo && sourceVideo.readyState >= 2 && sourceVideo.videoWidth >= 2) {
     return { width: sourceVideo.videoWidth, height: sourceVideo.videoHeight };
+  }
+  const live = getStillImage?.() ?? null;
+  const liveSize = mediaSize(live);
+  if (liveSize) return liveSize;
+  if (stillBitmap && stillBitmap.width >= 2) {
+    return { width: stillBitmap.width, height: stillBitmap.height };
   }
   if (stillImg && stillImg.complete && stillImg.naturalWidth >= 2) {
     return { width: stillImg.naturalWidth, height: stillImg.naturalHeight };
@@ -128,24 +175,70 @@ function sizeFromSources(): { width: number; height: number } | null {
   return null;
 }
 
+function releaseStillBitmap() {
+  if (stillBitmap) {
+    try {
+      stillBitmap.close();
+    } catch {
+      /* ignore */
+    }
+    stillBitmap = null;
+  }
+}
+
+/**
+ * Decode the latest Canon EVF JPEG without blocking the pump on a
+ * single `Image()` that never advances past frame 1. Uses
+ * createImageBitmap; overlaps decode of the newest URL while encoding.
+ */
 function pullStill() {
   const url = getStillUrl?.() || "";
   if (!url) return;
   pendingStillUrl = url;
+  if (url === lastStillUrl && (stillBitmap || stillImg?.complete)) return;
   if (stillLoading) return;
-  if (url === lastStillUrl && stillImg?.complete) return;
   const next = pendingStillUrl;
   stillLoading = true;
+
+  const finish = (ok: boolean) => {
+    stillLoading = false;
+    if (ok) lastStillUrl = next;
+    if (pendingStillUrl && pendingStillUrl !== lastStillUrl) pullStill();
+  };
+
+  if (typeof createImageBitmap === "function") {
+    fetch(next)
+      .then((r) => r.blob())
+      .then((blob) => createImageBitmap(blob))
+      .then((bmp) => {
+        if (!pumping && !recording && !starting) {
+          bmp.close();
+          finish(false);
+          return;
+        }
+        releaseStillBitmap();
+        stillBitmap = bmp;
+        finish(true);
+      })
+      .catch(() => {
+        // Fallback for data: URLs some Chromium builds reject via fetch.
+        const img = new Image();
+        img.onload = () => {
+          stillImg = img;
+          finish(true);
+        };
+        img.onerror = () => finish(false);
+        img.src = next;
+      });
+    return;
+  }
+
   const img = new Image();
   img.onload = () => {
     stillImg = img;
-    lastStillUrl = next;
-    stillLoading = false;
-    if (pendingStillUrl && pendingStillUrl !== lastStillUrl) pullStill();
+    finish(true);
   };
-  img.onerror = () => {
-    stillLoading = false;
-  };
+  img.onerror = () => finish(false);
   img.src = next;
 }
 
@@ -155,11 +248,24 @@ function drawLiveOrFreeze() {
     ctx.drawImage(freezeCanvas, 0, 0, canvas.width, canvas.height);
     return;
   }
-  pullStill();
+  // Webcam: paint the <video>. Canon: prefer the live EVF <img> that
+  // CameraView already updates every IPC frame — that stays in sync
+  // with the preview. Only fall back to async-decoded stills.
   if (sourceVideo && sourceVideo.readyState >= 2 && sourceVideo.videoWidth >= 2) {
     drawCropped(sourceVideo, sourceVideo.videoWidth, sourceVideo.videoHeight);
-  } else if (stillImg && stillImg.complete && stillImg.naturalWidth >= 2) {
-    drawCropped(stillImg, stillImg.naturalWidth, stillImg.naturalHeight);
+  } else {
+    const live = getStillImage?.() ?? null;
+    const liveSize = mediaSize(live);
+    if (live && liveSize) {
+      drawCropped(live, liveSize.width, liveSize.height);
+    } else {
+      pullStill();
+      if (stillBitmap && stillBitmap.width >= 2) {
+        drawCropped(stillBitmap, stillBitmap.width, stillBitmap.height);
+      } else if (stillImg && stillImg.complete && stillImg.naturalWidth >= 2) {
+        drawCropped(stillImg, stillImg.naturalWidth, stillImg.naturalHeight);
+      }
+    }
   }
   if (ctx) {
     try {
@@ -401,15 +507,22 @@ async function waitForSourceSize(timeoutMs = 2000) {
 async function startCanvasCapture(opts: HighlightCaptureOpts): Promise<boolean> {
   sourceVideo = opts.video ?? null;
   getStillUrl = opts.getStillUrl ?? null;
+  getStillImage = opts.getStillImage ?? null;
   getMirror = opts.getMirror ?? null;
   applyLook = opts.applyLook ?? null;
   cropBarPct = Math.max(0, opts.cropBarPercent ?? 0);
+  releaseStillBitmap();
+  stillImg = null;
+  lastStillUrl = "";
+  pendingStillUrl = "";
+  stillLoading = false;
 
   const size = await waitForSourceSize();
   if (!size) {
     console.warn("[Highlight] No live video to record yet");
     sourceVideo = null;
     getStillUrl = null;
+    getStillImage = null;
     getMirror = null;
     applyLook = null;
     cropBarPct = 0;
@@ -499,10 +612,12 @@ function resetState() {
   frozen = false;
   sourceVideo = null;
   getStillUrl = null;
+  getStillImage = null;
   getMirror = null;
   applyLook = null;
   cropBarPct = 0;
   stillImg = null;
+  releaseStillBitmap();
   lastStillUrl = "";
   pendingStillUrl = "";
   stillLoading = false;

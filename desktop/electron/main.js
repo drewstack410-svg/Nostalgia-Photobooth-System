@@ -343,7 +343,9 @@ function createWindow() {
       mainWindow.webContents.send("hotkey:f");
       return;
     }
-    if (input.key === "u" || input.key === "U") {
+    // Operator payment bypass on the bill-acceptor screen. Match both
+    // key and code — some USB keyboards report uneven key values in kiosk.
+    if (input.key === "u" || input.key === "U" || input.code === "KeyU") {
       mainWindow.webContents.send("hotkey:u");
     }
   });
