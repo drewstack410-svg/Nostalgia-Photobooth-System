@@ -1291,11 +1291,17 @@ const shotPlan = computed(() => {
   const gridCells = rows * cols;
   const placed = newTemplateCells.value.length;
   const shots = templateShotCount({
+    photoCount:
+      newTemplateShots.value != null && newTemplateShots.value > 0
+        ? newTemplateShots.value
+        : undefined,
     cells: newTemplateCells.value,
     frameRows: rows,
     frameCols: cols,
   });
-  const cells = placed || gridCells;
+  // Hand-placed slots define the sheet; only fall back to rows×cols when
+  // the editor is still empty (otherwise a 1-slot layout looks like 4).
+  const cells = placed > 0 ? placed : gridCells;
   const copies = shots > 0 ? cells / shots : 1;
   return { cells, shots, copies, even: Number.isInteger(copies) };
 });

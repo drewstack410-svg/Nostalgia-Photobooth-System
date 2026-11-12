@@ -88,6 +88,9 @@ export function cellCaptureIndex(
 /**
  * How many photos the guest actually takes.
  * Numbered slots win (a 4×3 sheet with shots 1–4 is four captures, not 12).
+ * Hand-placed cells without shot numbers count as that many slots — never
+ * fall through to rows×cols while cells exist (that was resetting a
+ * deliberate 1-shot layout back to a 2×2 = 4-shot grid).
  */
 export function templateShotCount(t: {
   photoCount?: number;
@@ -95,7 +98,8 @@ export function templateShotCount(t: {
   frameRows?: number;
   frameCols?: number;
 }): number {
-  const cellShots = (t.cells ?? [])
+  const cells = t.cells ?? [];
+  const cellShots = cells
     .map((c) =>
       typeof c.shot === "number" && c.shot > 0 ? Math.floor(c.shot) : 0,
     )
@@ -110,6 +114,12 @@ export function templateShotCount(t: {
       return Math.floor(t.photoCount);
     }
     return maxShot;
+  }
+  if (cells.length > 0) {
+    if (t.photoCount != null && t.photoCount > 0) {
+      return Math.min(Math.floor(t.photoCount), cells.length);
+    }
+    return cells.length;
   }
   if (t.photoCount != null && t.photoCount > 0) {
     return Math.floor(t.photoCount);

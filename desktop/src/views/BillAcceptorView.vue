@@ -124,16 +124,23 @@ function skipPaymentBypass() {
   goToCameraAfterPay();
 }
 
-function onBypassKey(e: KeyboardEvent) {
-  const isU =
+function isUKeyEvent(e: KeyboardEvent) {
+  // Physical keys, Windows OSK / Touch Keyboard, and some USB HID
+  // overlays disagree on key vs code vs keyCode — accept all of them.
+  return (
     e.key === "u" ||
     e.key === "U" ||
-    e.code === "KeyU";
-  if (!isU) return;
-  const el = e.target as HTMLElement | null;
-  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
-    return;
-  }
+    e.code === "KeyU" ||
+    e.keyCode === 85 ||
+    e.which === 85
+  );
+}
+
+function onBypassKey(e: KeyboardEvent) {
+  if (!isUKeyEvent(e)) return;
+  // Payment screen has no guest text fields. Never ignore U just because
+  // a virtual keyboard focused an input / contenteditable elsewhere —
+  // that was swallowing OSK taps.
   e.preventDefault();
   e.stopPropagation();
   skipPaymentBypass();
@@ -280,7 +287,10 @@ onMounted(() => {
   // `handler: () => void` and can't carry a KeyboardEvent handler, and this
   // one must not be passive (it calls preventDefault).
   // Capture phase so kiosk overlays can't swallow U before we see it.
+  // keypress covers Windows On-Screen / Touch Keyboard paths that emit
+  // char/keypress without a usable keydown in the renderer.
   window.addEventListener("keydown", onBypassKey, true);
+  window.addEventListener("keypress", onBypassKey, true);
   unsubscribeUHotkey =
     window.electronAPI?.onUHotkey?.(skipPaymentBypass) ?? null;
   if (!window.electronAPI?.onUHotkey) {
@@ -319,6 +329,7 @@ onUnmounted(() => {
   // Without this the handler survives navigation and "U" would fire the
   // bypass from the camera/printing screens too.
   window.removeEventListener("keydown", onBypassKey, true);
+  window.removeEventListener("keypress", onBypassKey, true);
   unsubscribeUHotkey?.();
   unsubscribeUHotkey = null;
 

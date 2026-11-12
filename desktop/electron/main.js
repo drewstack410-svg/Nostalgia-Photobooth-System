@@ -332,20 +332,25 @@ function createWindow() {
   // Kiosk / fullscreen can swallow keys before the renderer sees them.
   // Forward Esc + F; the renderer applies focus checks and debouncing.
   mainWindow.webContents.on("before-input-event", (_event, input) => {
-    if (input.type !== "keyDown" || input.control || input.alt || input.meta) {
+    if (input.control || input.alt || input.meta) {
       return;
     }
-    if (input.key === "Escape") {
-      mainWindow.webContents.send("hotkey:escape");
-      return;
+    if (input.type === "keyDown") {
+      if (input.key === "Escape") {
+        mainWindow.webContents.send("hotkey:escape");
+        return;
+      }
+      if (input.key === "f" || input.key === "F") {
+        mainWindow.webContents.send("hotkey:f");
+        return;
+      }
     }
-    if (input.key === "f" || input.key === "F") {
-      mainWindow.webContents.send("hotkey:f");
-      return;
-    }
-    // Operator payment bypass on the bill-acceptor screen. Match both
-    // key and code — some USB keyboards report uneven key values in kiosk.
-    if (input.key === "u" || input.key === "U" || input.code === "KeyU") {
+    // Operator payment bypass. Windows On-Screen / Touch Keyboard often
+    // delivers soft keys as `char` (not keyDown) — accept both.
+    if (
+      (input.type === "keyDown" || input.type === "char") &&
+      (input.key === "u" || input.key === "U" || input.code === "KeyU")
+    ) {
       mainWindow.webContents.send("hotkey:u");
     }
   });

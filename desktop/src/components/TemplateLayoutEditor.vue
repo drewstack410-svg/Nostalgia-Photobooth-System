@@ -163,12 +163,17 @@ function redo() {
 }
 
 function commit() {
-  emit("update:modelValue", JSON.parse(JSON.stringify(cells.value)));
+  // Keep explicit shot numbers on every slot so a 1-cell layout can't be
+  // misread as "no shots → use rows×cols" by templateShotCount.
   const shots = Math.max(
     1,
-    ...cells.value.map((c, i) => cellShotNumber(c, i, props.photoCount)),
+    ...cells.value.map((c, i) =>
+      cellShotNumber(c, i, Math.max(1, props.photoCount)),
+    ),
   );
-  if (shots > props.photoCount) emit("update:photoCount", shots);
+  cells.value = stampCellShots(cells.value, shots);
+  emit("update:modelValue", JSON.parse(JSON.stringify(cells.value)));
+  if (shots !== props.photoCount) emit("update:photoCount", shots);
 }
 
 /** An evenly spaced grid matching the form's rows × cols, margin, and gap. */
@@ -902,14 +907,21 @@ const CORNERS: { key: string; sx: -1 | 1; sy: -1 | 1 }[] = [
   { key: "br", sx: 1, sy: 1 },
 ];
 
+/** True when slots still match an untouched rows×cols grid (safe to reflow). */
+function isSyncedGridLayout(cellCount = cells.value.length) {
+  const grid =
+    Math.max(1, props.frameRows || 1) * Math.max(1, props.frameCols || 1);
+  return cellCount === 0 || cellCount === grid;
+}
+
 onMounted(async () => {
-  const need = expectedSlotCount();
-  if (props.modelValue?.length >= need) {
+  // Any saved / in-progress slots win — including a deliberate 1-shot
+  // sheet on a form that still says 2×2. Reseeding whenever
+  // cells.length < rows×cols was wiping 1-shot layouts back to a 4-grid.
+  if (props.modelValue?.length) {
     cells.value = JSON.parse(JSON.stringify(props.modelValue));
     seedNote.value = "";
   } else {
-    // Fewer slots than the grid/shots (common after frame detection
-    // merged a column into one tall window) — rebuild a balanced layout.
     await seed();
   }
   if (!placeholderShotUrl.value) placeholderShotUrl.value = makePlaceholderShot();
@@ -924,37 +936,67 @@ onBeforeUnmount(() => {
   void stopTestCamera();
 });
 
+// Only rebuild from the form grid when the operator is still on an
+// untouched rows×cols layout. Hand-placed / trimmed slots (e.g. 1 shot
+// on a former 2×2) must survive Gap / Zoom / Across nudges and reopen.
 watch(
   () =>
     [props.frameRows, props.frameCols, props.cellMargin, props.cellGap] as const,
-  () => {
-    applyGridFromForm();
+  (next, prev) => {
+    if (!prev) return;
+    const [rows, cols] = next;
+    const [prevRows, prevCols] = prev;
+    const gridChanged = rows !== prevRows || cols !== prevCols;
+    const prevGrid =
+      Math.max(1, prevRows || 1) * Math.max(1, prevCols || 1);
+    const stillSynced =
+      cells.value.length === 0 || cells.value.length === prevGrid;
+    if (gridChanged && stillSynced) {
+      snapshot();
+      applyGridFromForm();
+      return;
+    }
+    // Margin/gap tweaks: reflow only while slots still match the grid.
+    if (!gridChanged && isSyncedGridLayout()) {
+      applyGridFromForm();
+    }
   },
 );
 
-// If the sheet size changes while we still have too few slots (e.g. the
-// old merged-column detection), rebuild. Leave a complete hand-tuned
-// layout alone — fractions already track the new aspect.
+// Paper size change: keep hand-tuned slot counts; only rebuild empty /
+// still-synced grids (fractions already track aspect for custom slots).
 watch(
   () =>
     [props.paperSize, props.paperWidthIn, props.paperHeightIn] as const,
   () => {
-    if (cells.value.length >= expectedSlotCount()) return;
+    if (!isSyncedGridLayout()) return;
     snapshot();
     applyGridFromForm();
   },
 );
 
-// Raising the shot count after the editor is open should add the missing
-// slots. It must NOT trim: any slot beyond `photoCount` is a deliberate
-// duplicate, and truncating here would silently throw the operator's
-// layout away the moment they nudged the shot count.
+// Raising the shot count can append missing uniquely numbered slots.
+// It must NOT pad up to rows×cols — that forced 1-shot layouts back to
+// a full 4-grid (all stamped "1") the moment photoCount dropped to 1.
+// It must NOT trim: slots beyond photoCount are deliberate duplicates.
 watch(
   () => props.photoCount,
-  (n) => {
-    const count = Math.max(1, n, expectedSlotCount());
-    if (cells.value.length >= count) return;
-    const extra = gridSeed(count).slice(cells.value.length);
+  (n, prev) => {
+    const shots = Math.max(1, n || 1);
+    if (cells.value.length === 0) {
+      cells.value = gridSeed(Math.max(shots, expectedSlotCount()));
+      if (selected.value >= cells.value.length) selected.value = -1;
+      commit();
+      return;
+    }
+    if (cells.value.length >= shots) return;
+    // Only auto-grow when the operator raised the shot count (or the
+    // form started empty). Never inflate a trimmed layout just because
+    // rows×cols is still 2×2.
+    const prevShots = Math.max(1, prev || 0);
+    if (prev != null && shots <= prevShots) return;
+    const extra = gridSeed(shots).slice(cells.value.length);
+    if (!extra.length) return;
     cells.value = [...cells.value, ...extra];
     if (selected.value >= cells.value.length) selected.value = -1;
     commit();
