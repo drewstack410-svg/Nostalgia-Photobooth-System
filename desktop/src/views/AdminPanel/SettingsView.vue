@@ -4825,6 +4825,22 @@ function templatePriceLabel(id: string): string {
   display: flex;
 }
 
+.filters-studio-side {
+  grid-area: adjust;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  padding-right: 0.15rem;
+  padding-bottom: 1rem;
+}
+
 .filters-studio-side .upload-card {
   min-height: 48px;
   padding: 0.4rem 0.55rem;
@@ -4856,7 +4872,9 @@ function templatePriceLabel(id: string): string {
 
 .filters-studio--wide {
   grid-template-columns: minmax(0, 1fr) minmax(320px, 32vw);
-  grid-template-rows: auto auto minmax(0, auto) minmax(0, 1fr);
+  /* List + adjust both get real height and scroll — auto list rows used
+     to eat the panel so Glow sat below the clip with nowhere to scroll. */
+  grid-template-rows: auto auto minmax(96px, 0.75fr) minmax(220px, 1.35fr);
   grid-template-areas:
     "bar bar"
     "preview add"
@@ -5081,7 +5099,7 @@ function templatePriceLabel(id: string): string {
 @media (max-width: 860px) {
   .filters-studio--wide {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto minmax(180px, 32vh) minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(96px, 22vh) minmax(160px, 28vh) minmax(220px, 1fr);
     grid-template-areas:
       "bar"
       "add"
